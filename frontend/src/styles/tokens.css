@@ -1,0 +1,145 @@
+/* ============================================================
+   NEXUS RELAY · Design Tokens
+   Dark-first aurora theme with light companion
+   ============================================================ */
+
+:root,
+html[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #050508;
+  --bg-soft: #0a0a12;
+  --bg-elevated: #0f0f1a;
+  --surface: rgba(255, 255, 255, 0.035);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-3: rgba(255, 255, 255, 0.09);
+  --glass: rgba(14, 14, 24, 0.72);
+  --glass-strong: rgba(16, 16, 28, 0.88);
+
+  /* lines */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-soft: rgba(255, 255, 255, 0.05);
+
+  /* text */
+  --text: #f4f6fb;
+  --text-soft: #c3c9d9;
+  --text-muted: #8a93a8;
+  --text-faint: #5b6377;
+
+  /* brand gradient: aurora */
+  --primary: #22d3ee;
+  --primary-2: #8b5cf6;
+  --primary-3: #e879f9;
+  --grad: linear-gradient(120deg, #22d3ee 0%, #6366f1 45%, #a855f7 75%, #e879f9 100%);
+  --grad-soft: linear-gradient(120deg, rgba(34, 211, 238, 0.14), rgba(168, 85, 247, 0.14));
+
+  /* semantic */
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.14);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.14);
+  --danger: #fb7185;
+  --danger-soft: rgba(251, 113, 133, 0.14);
+  --info: #38bdf8;
+  --info-soft: rgba(56, 189, 248, 0.14);
+
+  /* chart palette */
+  --c1: #22d3ee;
+  --c2: #8b5cf6;
+  --c3: #e879f9;
+  --c4: #34d399;
+  --c5: #fbbf24;
+  --c6: #fb7185;
+  --c7: #38bdf8;
+
+  /* shadows & glows */
+  --shadow-sm: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.6);
+  --glow-primary: 0 0 24px rgba(34, 211, 238, 0.35);
+  --glow-violet: 0 0 32px rgba(139, 92, 246, 0.35);
+  --glow-pink: 0 0 32px rgba(232, 121, 249, 0.3);
+
+  /* aurora background */
+  --aurora-1: rgba(34, 211, 238, 0.12);
+  --aurora-2: rgba(139, 92, 246, 0.14);
+  --aurora-3: rgba(232, 121, 249, 0.1);
+
+  /* misc */
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-xl: 28px;
+  --radius-full: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  --font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+
+  --nav-w: 248px;
+  --rail-w: 72px;
+  --header-h: 72px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f4f5fa;
+  --bg-soft: #eceef6;
+  --bg-elevated: #ffffff;
+  --surface: rgba(255, 255, 255, 0.7);
+  --surface-2: rgba(255, 255, 255, 0.92);
+  --surface-3: rgba(255, 255, 255, 0.98);
+  --glass: rgba(255, 255, 255, 0.78);
+  --glass-strong: rgba(255, 255, 255, 0.94);
+
+  --border: rgba(10, 12, 30, 0.09);
+  --border-strong: rgba(10, 12, 30, 0.18);
+  --border-soft: rgba(10, 12, 30, 0.05);
+
+  --text: #0b0d1a;
+  --text-soft: #3c4155;
+  --text-muted: #6b7188;
+  --text-faint: #9aa0b5;
+
+  --grad: linear-gradient(120deg, #0891b2 0%, #6366f1 45%, #9333ea 75%, #c026d3 100%);
+  --grad-soft: linear-gradient(120deg, rgba(8, 145, 178, 0.1), rgba(147, 51, 234, 0.1));
+
+  --success-soft: rgba(16, 185, 129, 0.12);
+  --warning-soft: rgba(217, 119, 6, 0.12);
+  --danger-soft: rgba(225, 29, 72, 0.1);
+  --info-soft: rgba(2, 132, 199, 0.12);
+
+  --shadow-sm: 0 2px 10px rgba(20, 24, 60, 0.06);
+  --shadow-md: 0 12px 36px rgba(20, 24, 60, 0.1);
+  --shadow-lg: 0 24px 70px rgba(20, 24, 60, 0.16);
+  --glow-primary: 0 8px 28px rgba(8, 145, 178, 0.2);
+  --glow-violet: 0 8px 32px rgba(99, 102, 241, 0.22);
+  --glow-pink: 0 8px 32px rgba(192, 38, 211, 0.2);
+
+  --aurora-1: rgba(34, 211, 238, 0.2);
+  --aurora-2: rgba(139, 92, 246, 0.18);
+  --aurora-3: rgba(232, 121, 249, 0.14);
+
+  --c1: #0891b2;
+  --c2: #6366f1;
+  --c3: #c026d3;
+  --c4: #10b981;
+  --c5: #f59e0b;
+  --c6: #e11d48;
+  --c7: #0ea5e9;
+}
