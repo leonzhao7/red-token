@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Moon, Sun, Search, Bell, Command, ChevronDown, Menu } from 'lucide-vue-next'
+import { Moon, Sun, Search, Command, ChevronDown, Menu } from 'lucide-vue-next'
 import { useTheme } from '../composables/useTheme'
-import { store } from '../store'
 
 const { theme, toggle } = useTheme()
 const route = useRoute()
@@ -21,8 +20,6 @@ const clock = computed(() =>
 const date = computed(() =>
   now.value.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })
 )
-
-const alerts = computed(() => store.relays.filter((r) => r.status === 'disabled').length)
 </script>
 
 <template>
@@ -50,11 +47,6 @@ const alerts = computed(() => store.relays.filter((r) => r.status === 'disabled'
         <span class="clock-time">{{ clock }}</span>
         <span class="clock-date">{{ date }}</span>
       </div>
-
-      <button class="icon-btn bell" aria-label="通知">
-        <Bell :size="16" />
-        <span v-if="alerts" class="bell-dot">{{ alerts }}</span>
-      </button>
 
       <button class="icon-btn" @click="toggle" aria-label="切换主题">
         <Moon v-if="theme === 'dark'" :size="16" />
@@ -110,24 +102,6 @@ const alerts = computed(() => store.relays.filter((r) => r.status === 'disabled'
 .clock { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.25; padding: 0 6px; }
 .clock-time { font-size: 15px; font-weight: 700; color: var(--text); }
 .clock-date { font-size: 10.5px; color: var(--text-faint); }
-
-.bell { position: relative; }
-.bell-dot {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 3px;
-  border-radius: 99px;
-  background: var(--danger);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 
 .avatar-row { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .avatar {
