@@ -25,14 +25,6 @@ const collapsed = ref(false)
         </Transition>
       </RouterView>
     </main>
-    <footer class="footer">
-      <span class="mono" style="font-size: 11px; color: var(--text-faint)">
-        NEXUS RELAY CONSOLE · AI GATEWAY v2.4.1
-      </span>
-      <span class="mono" style="font-size: 11px; color: var(--text-faint)">
-        <span style="color: var(--success)">●</span> ALL SYSTEMS NOMINAL
-      </span>
-    </footer>
   </div>
 
   <ToastStack />
@@ -53,14 +45,6 @@ const collapsed = ref(false)
   max-width: 1500px;
   width: 100%;
   margin: 0 auto;
-}
-.footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 18px 28px 22px;
-  border-top: 1px solid var(--border-soft);
-  margin-top: 20px;
 }
 
 @media (max-width: 1024px) {

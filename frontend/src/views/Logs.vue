@@ -2,8 +2,8 @@
 import { ref, computed } from 'vue'
 import {
   Search,
-  Download,
   RefreshCw,
+  Trash2,
   Filter,
   ChevronLeft,
   ChevronRight,
@@ -18,11 +18,18 @@ import type { LogStatus } from '../types'
 
 const search = ref('')
 const modelFilter = ref('all')
-const statusFilter = ref<'all' | LogStatus>('all')
+const statusFilter = ref<'all' | 'success' | 'client' | 'server'>('all')
 const page = ref(1)
 const pageSize = 8
 
 const models = computed(() => Array.from(new Set(store.usageLogs.map((l) => l.model))))
+
+const statusMatch = (s: LogStatus, f: string) => {
+  if (f === 'all') return true
+  if (f === 'success') return s === 'success'
+  if (f === 'client') return s === 'error'
+  return s === 'timeout' || s === 'ratelimit'
+}
 
 const filtered = computed(() =>
   store.usageLogs.filter((l) => {
@@ -31,7 +38,7 @@ const filtered = computed(() =>
       l.key.includes(search.value.toLowerCase()) ||
       l.relay.toLowerCase().includes(search.value.toLowerCase())
     const okModel = modelFilter.value === 'all' || l.model === modelFilter.value
-    const okStatus = statusFilter.value === 'all' || l.status === statusFilter.value
+    const okStatus = statusMatch(l.status, statusFilter.value)
     return okSearch && okModel && okStatus
   })
 )
@@ -53,19 +60,10 @@ const statusMeta: Record<LogStatus, { label: string; cls: string }> = {
   ratelimit: { label: '限流', cls: 'info' }
 }
 
-function exportCsv() {
-  const rows = [['时间', '密钥', '模型', '中转站', 'Tokens', '延迟', '状态', '费用']]
-  filtered.value.forEach((l) =>
-    rows.push([l.time, l.keyName, l.model, l.relay, String(l.totalTokens), String(l.latency), statusMeta[l.status].label, String(l.cost)])
-  )
-  const csv = rows.map((r) => r.join(',')).join('\n')
-  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = 'nexus-usage-logs.csv'
-  a.click()
-  URL.revokeObjectURL(a.href)
-  toast('日志已导出', `${filtered.value.length} 条记录 → CSV`, 'success')
+function clearLogs() {
+  store.usageLogs = []
+  resetPage()
+  toast('日志已清空', '', 'warning')
 }
 
 function goPage(p: number) {
@@ -87,16 +85,15 @@ function goPage(p: number) {
           <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
         </select>
         <select v-model="statusFilter" class="select" style="width: 130px" @change="resetPage">
-          <option value="all">全部状态</option>
+          <option value="all">全部</option>
           <option value="success">成功</option>
-          <option value="error">失败</option>
-          <option value="timeout">超时</option>
-          <option value="ratelimit">限流</option>
+          <option value="client">客户端异常</option>
+          <option value="server">服务端异常</option>
         </select>
       </div>
       <div class="spacer"></div>
       <button class="btn btn-ghost" @click="toast('已刷新', '日志数据已更新', 'info')"><RefreshCw :size="15" /> 刷新</button>
-      <button class="btn btn-primary" @click="exportCsv"><Download :size="15" /> 导出 CSV</button>
+      <button class="btn btn-danger" @click="clearLogs"><Trash2 :size="15" /> 清空</button>
     </section>
 
     <!-- table -->
