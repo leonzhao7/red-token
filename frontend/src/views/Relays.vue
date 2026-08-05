@@ -20,7 +20,8 @@ import {
   LoaderCircle,
   RefreshCw,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ExternalLink
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
 import { MODEL_CATALOG } from '../data/mock'
@@ -42,12 +43,13 @@ import {
 import type { Relay, RelayKey, RelayModel, PlatformType } from '../types'
 
 const search = ref('')
-const platformFilter = ref<'all' | BackendType>('all')
+type ConsoleBackendType = Exclude<BackendType, ''>
+const platformFilter = ref<'all' | ConsoleBackendType>('all')
 type ModelFamily = 'gpt' | 'claude' | 'grok' | 'deepseek' | 'kimi'
 const modelFilter = ref<'all' | ModelFamily>('all')
 const page = ref(1)
 const pageSize = 10
-const backendTypes: BackendType[] = ['new-api', 'sub2api']
+const backendTypes: ConsoleBackendType[] = ['new-api', 'sub2api']
 const modelFamilies: Array<{ value: ModelFamily; keywords: string[] }> = [
   { value: 'gpt', keywords: ['gpt'] },
   { value: 'claude', keywords: ['claude'] },
@@ -93,6 +95,69 @@ function parseObject(raw: string | undefined): Record<string, any> {
   } catch {
     return {}
   }
+}
+
+function formatConsoleHeaders(headers: Record<string, string> | undefined) {
+  if (!headers) return ''
+  return Object.entries(headers)
+    .map(([key, value]) => `${key.trim()}: ${value.trim()}`)
+    .filter((line) => !line.startsWith(': ') && !line.endsWith(': '))
+    .join('\n')
+}
+
+function parseConsoleHeaders(raw: string) {
+  const headers: Record<string, string> = {}
+  const names = new Set<string>()
+  for (const sourceLine of raw.split(/\r?\n/)) {
+    const line = sourceLine.trim()
+    if (!line) continue
+    const separator = line.indexOf(':')
+    const key = separator >= 0 ? line.slice(0, separator).trim() : ''
+    const value = separator >= 0 ? line.slice(separator + 1).trim() : ''
+    if (!key || !value) throw new Error('Headers 每行必须使用 Key: Value 格式')
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key)) throw new Error(`无效的 Header 名称：${key}`)
+    const normalizedKey = key.toLowerCase()
+    if (names.has(normalizedKey)) throw new Error(`Header 名称重复：${key}`)
+    names.add(normalizedKey)
+    headers[key] = value
+  }
+  return headers
+}
+
+function parseModelList(raw: string) {
+  return [...new Set(raw.split(',').map((model) => model.trim()).filter(Boolean))]
+}
+
+function formatModelMapping(mapping: Record<string, string>) {
+  return Object.keys(mapping).length ? JSON.stringify(mapping) : ''
+}
+
+function parseModelMapping(raw: string) {
+  const value = raw.trim()
+  if (!value) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw new Error('Model Mapping 必须是有效的 JSON 对象')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Model Mapping 必须是有效的 JSON 对象')
+  }
+  const mapping: Record<string, string> = {}
+  for (const [source, target] of Object.entries(parsed)) {
+    if (typeof target !== 'string') throw new Error('Model Mapping 的映射值必须是字符串')
+    const model = source.trim()
+    const upstream = target.trim()
+    if (model && upstream) mapping[model] = upstream
+  }
+  return mapping
+}
+
+function consoleUserIdOf(backend: BackendResponse) {
+  const account = parseObject(backend.console_account_json)
+  if (typeof account.id === 'number' && Number.isFinite(account.id) && account.id > 0) return String(Math.trunc(account.id))
+  return typeof account.id === 'string' ? account.id.trim() : ''
 }
 
 function numberValue(value: unknown) {
@@ -209,7 +274,7 @@ function mapBackend(backend: BackendResponse): RelayView {
     models,
     keys: relayKeys,
     protocol: protocolOf(backend.protocol),
-    backendType: backend.backend_type === 'sub2api' ? 'sub2api' : 'new-api',
+    backendType: backend.backend_type === 'sub2api' || backend.backend_type === 'new-api' ? backend.backend_type : '',
     consoleUrl: backend.console_url || '',
     consoleSyncSupported: backend.backend_type === 'new-api' || backend.backend_type === 'sub2api',
     raw: backend
@@ -232,19 +297,6 @@ function isToday(value: string) {
   const now = new Date()
   return !Number.isNaN(date.getTime()) && date.toDateString() === now.toDateString()
 }
-
-const modelOptions = computed(() => {
-  const names = new Set(MODEL_CATALOG.map((model) => model.name))
-  relays.value.forEach((relay) => relay.models.forEach((model) => names.add(model.name)))
-  form.value.keys.forEach((key) => key.models.forEach((model) => names.add(model)))
-  return [...names].map((name) => MODEL_CATALOG.find((model) => model.name === name) || {
-    id: `model-${name}`,
-    name,
-    group: '自定义',
-    priceIn: 0,
-    priceOut: 0
-  })
-})
 
 const platformColor: Record<string, string> = {
   OpenAI: 'cyan',
@@ -380,9 +432,13 @@ function askRemove(r: RelayView) {
 interface KeyFormItem {
   name: string
   key: string
-  models: string[]
-  modelMap: Record<string, string>
+  modelsInput: string
+  modelMappingInput: string
   usedTokens: number
+}
+
+function defaultKeyFormItem(): KeyFormItem {
+  return { name: 'default', key: '', modelsInput: '', modelMappingInput: '', usedTokens: 0 }
 }
 
 const form = ref<{
@@ -394,11 +450,13 @@ const form = ref<{
   username: string
   password: string
   newApiRefresh: string
+  consoleHeaders: string
+  consoleUserId: string
   consoleAuthorization: string
   consoleCheckinPath: string
   channelUrl: string
-  notes: string
   proxyId: string
+  weight: number
   keys: KeyFormItem[]
 }>({
   name: '',
@@ -409,22 +467,44 @@ const form = ref<{
   username: '',
   password: '',
   newApiRefresh: '',
+  consoleHeaders: '',
+  consoleUserId: '',
   consoleAuthorization: '',
   consoleCheckinPath: '',
   channelUrl: '',
-  notes: '',
   proxyId: '',
+  weight: 10,
   keys: []
 })
 
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const isEditing = computed(() => editingId.value !== null)
+const isNewAPIBackendType = computed(() => form.value.backendType === 'new-api')
+const isSub2APIBackendType = computed(() => form.value.backendType === 'sub2api')
+const consoleHeadersError = computed(() => {
+  if (!isNewAPIBackendType.value) return ''
+  try {
+    parseConsoleHeaders(form.value.consoleHeaders)
+    return ''
+  } catch (error) {
+    return errorMessage(error)
+  }
+})
+const modelMappingErrors = computed(() => form.value.keys.map((key) => {
+  try {
+    parseModelMapping(key.modelMappingInput)
+    return ''
+  } catch (error) {
+    return errorMessage(error)
+  }
+}))
 
 function resetForm() {
   form.value = {
     name: '', url: '', protocol: 'openai', backendType: 'new-api', consoleUrl: '', username: '', password: '',
-    newApiRefresh: '', consoleAuthorization: '', consoleCheckinPath: '', channelUrl: '', notes: '', proxyId: '', keys: []
+    newApiRefresh: '', consoleHeaders: '', consoleUserId: '', consoleAuthorization: '', consoleCheckinPath: '',
+    channelUrl: '', proxyId: '', weight: 10, keys: []
   }
 }
 
@@ -445,63 +525,61 @@ function openEditRelay(r: RelayView) {
     username: r.raw.console_username || '',
     password: r.raw.console_password || '',
     newApiRefresh: r.raw.new_api_refresh || '',
+    consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
+    consoleUserId: consoleUserIdOf(r.raw),
     consoleAuthorization: r.raw.console_authorization || '',
     consoleCheckinPath: r.raw.console_checkin_path || '',
     channelUrl: r.raw.channel_url || '',
-    notes: r.raw.notes || '',
     proxyId: r.proxyId,
-    keys: r.keys.map((key) => ({ name: key.name, key: key.key, models: [...key.models], modelMap: { ...key.modelMap }, usedTokens: key.usedTokens }))
+    weight: numberValue(r.raw.weight) || 10,
+    keys: r.keys.length
+      ? r.keys.map((key) => ({
+          name: key.name,
+          key: key.key,
+          modelsInput: key.models.join(', '),
+          modelMappingInput: formatModelMapping(key.modelMap),
+          usedTokens: key.usedTokens
+        }))
+      : []
   }
   showForm.value = true
 }
 
 function addKeyRow() {
-  form.value.keys.push({ name: '', key: '', models: [], modelMap: {}, usedTokens: 0 })
+  form.value.keys.push(defaultKeyFormItem())
 }
 function removeKeyRow(i: number) {
   form.value.keys.splice(i, 1)
 }
-function toggleKeyModel(i: number, m: string) {
-  const item = form.value.keys[i]
-  const idx = item.models.indexOf(m)
-  if (idx >= 0) {
-    item.models.splice(idx, 1)
-    delete item.modelMap[m]
-  } else {
-    item.models.push(m)
-  }
-}
 
 function buildPayload() {
   const apiKeys: BackendApiKey[] = form.value.keys.map((key, index) => {
-    const modelMapping: Record<string, string> = {}
-    for (const model of key.models) {
-      const upstream = (key.modelMap[model] || '').trim()
-      if (upstream && upstream !== model) modelMapping[model] = upstream
-    }
     return {
       api_key: key.key.trim(),
       group: key.name.trim() || `key-${index + 1}`,
-      models: key.models,
-      model_mapping: modelMapping,
+      models: parseModelList(key.modelsInput),
+      model_mapping: parseModelMapping(key.modelMappingInput),
       used_quota: Math.max(0, Math.round(key.usedTokens || 0))
     }
   })
+  const backendType = form.value.backendType
   return {
     name: form.value.name.trim(),
     protocol: form.value.protocol,
-    backend_type: form.value.backendType,
+    backend_type: backendType,
     base_url: form.value.url.trim(),
     api_keys: apiKeys,
     console_url: form.value.consoleUrl.trim(),
     console_username: form.value.username.trim(),
     console_password: form.value.password,
-    new_api_refresh: form.value.newApiRefresh.trim(),
-    console_authorization: form.value.consoleAuthorization.trim(),
-    console_checkin_path: form.value.consoleCheckinPath.trim(),
-    channel_url: form.value.channelUrl.trim(),
-    notes: form.value.notes.trim(),
-    proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0
+    new_api_refresh: backendType === 'new-api' ? form.value.newApiRefresh.trim() : '',
+    console_headers: backendType === 'new-api' ? parseConsoleHeaders(form.value.consoleHeaders) : {},
+    console_user_id: backendType === 'new-api' ? form.value.consoleUserId.trim() : '',
+    console_authorization: backendType === 'sub2api' ? form.value.consoleAuthorization.trim() : '',
+    console_checkin_path: backendType === 'sub2api' ? form.value.consoleCheckinPath.trim() : '',
+    channel_url: backendType === 'sub2api' ? form.value.channelUrl.trim() : '',
+    proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0,
+    weight: Math.min(100, Math.max(1, Math.round(numberValue(form.value.weight) || 10)))
   }
 }
 
@@ -510,8 +588,17 @@ async function saveRelay() {
     toast('请填写名称与 URL', '', 'warning')
     return
   }
-  if (!form.value.keys.length || form.value.keys.some((key) => !key.key.trim() || !key.models.length)) {
-    toast('请至少配置一个 API Key', '每个 Key 都需要密钥和至少一个模型', 'warning')
+  if (form.value.keys.some((key) => !key.key.trim() || !key.name.trim() || !parseModelList(key.modelsInput).length)) {
+    toast('API Key 配置不完整', '已添加的每个 Key 都需要密钥、Group 和至少一个模型', 'warning')
+    return
+  }
+  const modelMappingError = modelMappingErrors.value.find(Boolean)
+  if (modelMappingError) {
+    toast('Model Mapping 格式错误', modelMappingError, 'warning')
+    return
+  }
+  if (consoleHeadersError.value) {
+    toast('Headers 格式错误', consoleHeadersError.value, 'warning')
     return
   }
   saving.value = true
@@ -626,10 +713,14 @@ onMounted(loadData)
                   <span v-if="r.status === 'disabled'" class="tag neutral">已停用</span>
                   <span v-else-if="r.status === 'abnormal'" class="tag danger">异常</span>
                 </div>
-                <span class="rl-sub mono">{{ r.keys.length }} Keys · {{ r.models.length }} 模型</span>
               </div>
             </div>
-            <div class="rl-cell"><span class="mono rl-host">{{ hostOf(r.url) }}</span></div>
+            <div class="rl-cell">
+              <a :href="r.url" target="_blank" rel="noopener noreferrer" class="mono rl-host" :title="r.url" @click.stop>
+                <span>{{ hostOf(r.url) }}</span>
+                <ExternalLink :size="12" />
+              </a>
+            </div>
             <div class="rl-cell models">
               <span v-for="m in r.models.slice(0, 3)" :key="m.id" class="tag">{{ m.name }}</span>
               <span v-if="r.models.length > 3" class="tag neutral">+{{ r.models.length - 3 }}</span>
@@ -750,117 +841,145 @@ onMounted(loadData)
     </section>
 
     <!-- add / edit modal -->
-    <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改后端账户配置，保存后立即生效' : '接入后端账户并配置 API Key 与控制台同步'" :icon="Server" @close="showForm = false">
-      <div class="form-grid-2">
-        <div class="field">
-          <label class="field-label">中转站名称 <span class="req">*</span></label>
-          <input v-model="form.name" class="input" placeholder="例如：官方中转 · OpenAI" />
-        </div>
-        <div class="field">
-          <label class="field-label">API 协议</label>
-          <select v-model="form.protocol" class="select">
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="both">OpenAI + Anthropic</option>
-          </select>
-        </div>
-      </div>
-      <div class="field">
-        <label class="field-label">Base URL <span class="req">*</span></label>
-        <input v-model="form.url" class="input mono" placeholder="https://api.openai.com/v1" />
-      </div>
-      <div class="form-grid-2">
-        <div class="field">
-          <label class="field-label">后端类型</label>
-          <select v-model="form.backendType" class="select">
-            <option value="new-api">new-api</option>
-            <option value="sub2api">sub2api</option>
-          </select>
-        </div>
-        <div class="field">
-          <label class="field-label">控制台用户名 / ID</label>
-          <input v-model="form.username" class="input mono" placeholder="console-user" />
-        </div>
-      </div>
-      <div class="field">
-        <label class="field-label">Console URL</label>
-        <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
-      </div>
-      <div class="form-grid-2">
-        <div class="field">
-          <label class="field-label">控制台密码</label>
-          <input v-model="form.password" class="input mono" type="password" placeholder="new-api 登录密码" />
-        </div>
-        <div class="field">
-          <label class="field-label">new-api Refresh Token</label>
-          <input v-model="form.newApiRefresh" class="input mono" type="password" placeholder="可选" />
-        </div>
-      </div>
-      <div v-if="form.backendType === 'sub2api'" class="form-grid-2">
-        <div class="field">
-          <label class="field-label">sub2api Authorization</label>
-          <input v-model="form.consoleAuthorization" class="input mono" type="password" placeholder="必填" />
-        </div>
-        <div class="field">
-          <label class="field-label">签到路径</label>
-          <input v-model="form.consoleCheckinPath" class="input mono" placeholder="/api/user/checkin" />
-        </div>
-      </div>
-      <div v-if="form.backendType === 'sub2api'" class="field">
-        <label class="field-label">渠道 / 定价路径</label>
-        <input v-model="form.channelUrl" class="input mono" placeholder="/api/channel" />
-      </div>
-      <div class="field">
-        <label class="field-label">连接代理</label>
-        <select v-model="form.proxyId" class="select">
-          <option value="">直连</option>
-          <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.address }}</option>
-        </select>
-      </div>
+    <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改后端账户配置，保存后立即生效' : '接入后端账户并配置 API Key 与控制台同步'" :icon="Server" width="760px" @close="showForm = false">
+      <div class="relay-form">
+        <section class="relay-form-section">
+          <div class="ke-head">
+            <span class="field-label">后端服务</span>
+            <em class="ke-hint">上游 API 服务的连接信息</em>
+          </div>
 
-      <div class="keys-editor">
-        <div class="ke-head">
-          <span class="field-label">已配置 API Key <em class="ke-hint">每个 Key 至少绑定一个模型</em></span>
-          <button class="btn btn-ghost btn-sm" @click="addKeyRow"><Plus :size="13" /> 添加 Key</button>
-        </div>
-        <div v-for="(k, i) in form.keys" :key="i" class="ke-card">
-          <div class="ke-top">
-            <div class="field">
-              <label class="field-label">Key 名称</label>
-              <input v-model="k.name" class="input mono" placeholder="主用 Key" />
-            </div>
-            <button class="icon-btn danger" title="移除" @click="removeKeyRow(i)"><Trash2 :size="14" /></button>
-          </div>
-          <div class="field">
-            <label class="field-label">API Key <em class="ke-hint">保存到后端路由池</em></label>
-            <input v-model="k.key" class="input mono" placeholder="sk-proj-xxxx…" />
-          </div>
           <div class="form-grid-2">
             <div class="field">
-              <label class="field-label">已用额度（tokens）</label>
-              <input v-model.number="k.usedTokens" class="input mono" type="number" min="0" step="0.1" />
+              <label class="field-label">名称 <span class="req">*</span></label>
+              <input v-model="form.name" class="input" placeholder="例如：OpenAI Primary" />
             </div>
             <div class="field">
-              <label class="field-label">绑定模型</label>
-              <div class="model-picker compact">
-                <label v-for="m in modelOptions" :key="m.id" class="model-chip" :class="{ on: k.models.includes(m.name) }" @click.prevent="toggleKeyModel(i, m.name)">
-                  <span class="tag">{{ m.name }}</span>
-                </label>
-              </div>
+              <label class="field-label">后端类型</label>
+              <select v-model="form.backendType" class="select">
+                <option value="">通用</option>
+                <option value="new-api">new-api</option>
+                <option value="sub2api">sub2api</option>
+              </select>
             </div>
           </div>
-          <div v-if="k.models.length" class="field">
-            <label class="field-label">模型转换 <em class="ke-hint">上游模型名，留空则不转换</em></label>
-            <div class="map-list">
-              <div v-for="m in k.models" :key="m" class="map-row">
-                <span class="tag rm-tag">{{ m }}</span>
-                <ArrowRight :size="13" />
-                <input v-model="k.modelMap[m]" class="input mono" placeholder="例如 claude-opus-4-8" />
-              </div>
+
+          <div class="field">
+            <label class="field-label">Server URL</label>
+            <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
+          </div>
+
+          <div class="form-grid-2">
+            <div class="field">
+              <label class="field-label">权重</label>
+              <input v-model.number="form.weight" class="input mono" type="number" min="1" max="100" />
+              <em class="ke-hint">负载均衡权重 1-100</em>
+            </div>
+            <div class="field">
+              <label class="field-label">代理</label>
+              <select v-model="form.proxyId" class="select">
+                <option value="">无代理</option>
+                <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.address }}</option>
+              </select>
             </div>
           </div>
-        </div>
-        <div v-if="!form.keys.length" class="ke-empty">尚未配置 API Key，点击右上角添加。</div>
+
+          <div class="form-grid-2">
+            <div class="field">
+              <label class="field-label">用户名</label>
+              <input v-model="form.username" class="input mono" placeholder="admin" />
+            </div>
+            <div class="field">
+              <label class="field-label">密码</label>
+              <input v-model="form.password" class="input mono" type="password" placeholder="••••••" />
+            </div>
+          </div>
+
+          <div v-if="isSub2APIBackendType" class="field">
+            <label class="field-label">Authorization</label>
+            <textarea v-model="form.consoleAuthorization" class="textarea mono" rows="2" placeholder="Bearer sk-..."></textarea>
+          </div>
+          <div v-if="isSub2APIBackendType" class="field">
+            <label class="field-label">签到 Path</label>
+            <input v-model="form.consoleCheckinPath" class="input mono" placeholder="/api/v1/checkin" />
+          </div>
+          <div v-if="isSub2APIBackendType" class="field">
+            <label class="field-label">渠道 URL</label>
+            <input v-model="form.channelUrl" class="input mono" placeholder="/api/v1/channels" />
+          </div>
+
+          <div v-if="isNewAPIBackendType" class="field">
+            <label class="field-label">Headers</label>
+            <textarea v-model="form.consoleHeaders" class="textarea mono" rows="3" placeholder="Authorization: Bearer token&#10;Cookie: session=abc123"></textarea>
+            <em v-if="consoleHeadersError" class="ke-hint">{{ consoleHeadersError }}</em>
+          </div>
+          <div v-if="isNewAPIBackendType" class="form-grid-2">
+            <div class="field">
+              <label class="field-label">new_api_refresh</label>
+              <input v-model="form.newApiRefresh" class="input mono" type="password" placeholder="Refresh token" />
+            </div>
+            <div class="field">
+              <label class="field-label">用户 ID</label>
+              <input v-model="form.consoleUserId" class="input mono" placeholder="1929" />
+            </div>
+          </div>
+        </section>
+
+        <section class="relay-form-section">
+          <div class="ke-head">
+            <span class="field-label">转发配置</span>
+            <em class="ke-hint">模型路由与负载均衡</em>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Base URL <span class="req">*</span></label>
+            <input v-model="form.url" class="input mono" placeholder="https://api.openai.com/v1" />
+          </div>
+
+          <div class="keys-editor">
+            <div class="ke-head">
+              <span class="field-label">API Keys <em class="ke-hint">可选；添加后每个 Key 至少绑定一个模型</em></span>
+              <button class="btn btn-ghost btn-sm" @click="addKeyRow"><Plus :size="13" /> 添加 Key</button>
+            </div>
+            <div v-for="(k, i) in form.keys" :key="i" class="ke-card">
+              <div class="ke-head">
+                <span class="field-label">Key {{ i + 1 }}</span>
+                <button class="icon-btn danger" title="移除" @click="removeKeyRow(i)"><Trash2 :size="14" /></button>
+              </div>
+              <div class="form-grid-2">
+                <div class="field">
+                  <label class="field-label">API Key <span class="req">*</span></label>
+                  <input v-model="k.key" class="input mono" type="password" placeholder="sk-..." />
+                </div>
+                <div class="field">
+                  <label class="field-label">Group <span class="req">*</span></label>
+                  <input v-model="k.name" class="input mono" placeholder="default" />
+                </div>
+              </div>
+              <div class="field">
+                <label class="field-label">Models <span class="req">*</span></label>
+                <input v-model="k.modelsInput" class="input mono" placeholder="gpt-4o, claude-3-5-sonnet, deepseek-chat" />
+                <em class="ke-hint">多个模型使用英文逗号分隔</em>
+              </div>
+              <div class="field">
+                <label class="field-label">Model Mapping <em class="ke-hint">客户端模型名 → 上游模型名</em></label>
+                <input v-model="k.modelMappingInput" class="input mono" placeholder='{ "gpt-4o": "azure-gpt-4o" }' />
+                <em v-if="modelMappingErrors[i]" class="ke-hint">{{ modelMappingErrors[i] }}</em>
+                <em v-else class="ke-hint">JSON 对象，留空表示不转换</em>
+              </div>
+            </div>
+            <div v-if="!form.keys.length" class="ke-empty">无需 API Key 时可直接保存，也可以点击右上角添加。</div>
+          </div>
+
+          <div class="field">
+            <label class="field-label">上游协议</label>
+            <select v-model="form.protocol" class="select">
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="both">OpenAI + Anthropic</option>
+            </select>
+          </div>
+        </section>
       </div>
 
       <template #footer>
@@ -980,7 +1099,7 @@ onMounted(loadData)
 .relay-list { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
 .rl-head {
   display: grid;
-  grid-template-columns: minmax(200px, 1.35fr) minmax(140px, 1fr) minmax(220px, 1.7fr) minmax(115px, 0.75fr) 64px 170px;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 170px;
   gap: 14px;
   align-items: center;
   padding: 12px 18px;
@@ -1002,7 +1121,7 @@ onMounted(loadData)
 
 .rl-main {
   display: grid;
-  grid-template-columns: minmax(200px, 1.35fr) minmax(140px, 1fr) minmax(220px, 1.7fr) minmax(115px, 0.75fr) 64px 170px;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 170px;
   gap: 14px;
   align-items: center;
   padding: 13px 18px;
@@ -1027,8 +1146,14 @@ onMounted(loadData)
 .rl-names { min-width: 0; display: flex; flex-direction: column; }
 .rl-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rl-names strong { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rl-sub { font-size: 10.5px; color: var(--text-faint); }
-.rl-host { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rl-host {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  font-size: 12px; color: var(--text-muted); text-decoration: none;
+}
+.rl-host span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rl-host svg { flex: none; color: var(--text-faint); }
+.rl-host:hover { color: var(--primary); }
+.rl-host:hover svg { color: currentColor; }
 
 .rl-cell.models { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 .rl-cell.models .tag { font-size: 10.5px; }
@@ -1134,20 +1259,15 @@ onMounted(loadData)
 .rk-model em { font-style: normal; color: var(--primary); }
 .rk-model.mapped { border-color: rgba(34,211,238,0.35); }
 
-.form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.model-picker { display: flex; flex-wrap: wrap; gap: 7px; max-height: 150px; overflow-y: auto; padding: 4px; }
-.model-picker.compact { max-height: 96px; }
-.model-chip { position: relative; cursor: pointer; }
-.model-chip input { position: absolute; opacity: 0; pointer-events: none; }
-.model-chip .tag { transition: all 0.2s ease; cursor: pointer; }
-.model-chip:hover .tag { transform: translateY(-1px); border-color: var(--border-strong); }
-.model-chip.on .tag { outline: 2px solid var(--primary); outline-offset: 1px; color: var(--text); background: var(--surface-3); }
-
-.keys-editor { display: flex; flex-direction: column; gap: 10px; }
+.relay-form { display: flex; flex-direction: column; gap: 10px; }
+.relay-form-section { display: flex; flex-direction: column; gap: 7px; }
+.relay-form .field { gap: 4px; margin-bottom: 0; }
+.form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.keys-editor { display: flex; flex-direction: column; gap: 6px; }
 .ke-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .ke-hint { font-style: normal; font-size: 11px; color: var(--text-faint); font-weight: 500; margin-left: 6px; }
 .ke-card {
-  display: flex; flex-direction: column; gap: 12px;
+  display: flex; flex-direction: column; gap: 6px;
   padding: 14px;
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -1156,11 +1276,6 @@ onMounted(loadData)
 .ke-top { display: flex; align-items: flex-end; gap: 10px; }
 .ke-top .field { flex: 1; }
 .ke-empty { font-size: 12px; color: var(--text-faint); text-align: center; padding: 14px 0; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); }
-
-.map-list { display: flex; flex-direction: column; gap: 7px; }
-.map-row { display: flex; align-items: center; gap: 8px; }
-.map-row svg { color: var(--text-faint); flex: none; }
-.map-row .input { flex: 1; }
 
 .rl-enter-active, .rl-leave-active { transition: all 0.3s var(--ease-out); }
 .rl-enter-from, .rl-leave-to { opacity: 0; transform: translateY(-8px); }

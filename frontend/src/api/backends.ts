@@ -1,5 +1,5 @@
 export type BackendProtocol = 'openai' | 'anthropic' | 'both'
-export type BackendType = 'new-api' | 'sub2api'
+export type BackendType = '' | 'new-api' | 'sub2api'
 export type BackendStatus = 'normal' | 'abnormal' | 'disabled'
 
 export interface BackendApiKey {
@@ -69,6 +69,8 @@ export interface BackendWritePayload {
   console_authorization?: string
   console_checkin_path?: string
   channel_url?: string
+  console_headers?: Record<string, string>
+  console_user_id?: string
   notes?: string
   proxy_id?: number
   status?: 'normal' | 'disabled'

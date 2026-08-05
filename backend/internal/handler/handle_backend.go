@@ -1477,7 +1477,7 @@ func validateBackendAPIKeys(values []domain.BackendAPIKey, legacyAPIKey string, 
 		}}
 	}
 	if len(values) == 0 {
-		return nil, errors.New("at least one api key is required")
+		return []domain.BackendAPIKey{}, nil
 	}
 
 	seen := make(map[string]struct{}, len(values))
