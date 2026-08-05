@@ -7,10 +7,7 @@ import {
   Filter,
   ChevronLeft,
   ChevronRight,
-  Timer,
-  Coins,
-  Ban,
-  AlertCircle
+  Timer
 } from 'lucide-vue-next'
 import { store } from '../store'
 import { toast } from '../composables/toast'
@@ -18,11 +15,13 @@ import type { LogStatus } from '../types'
 
 const search = ref('')
 const modelFilter = ref('all')
+const keyFilter = ref('all')
 const statusFilter = ref<'all' | 'success' | 'client' | 'server'>('all')
 const page = ref(1)
 const pageSize = 8
 
 const models = computed(() => Array.from(new Set(store.usageLogs.map((l) => l.model))))
+const keys = computed(() => store.apiKeys.map((k) => ({ name: k.name, key: k.key })))
 
 const statusMatch = (s: LogStatus, f: string) => {
   if (f === 'all') return true
@@ -38,8 +37,9 @@ const filtered = computed(() =>
       l.key.includes(search.value.toLowerCase()) ||
       l.relay.toLowerCase().includes(search.value.toLowerCase())
     const okModel = modelFilter.value === 'all' || l.model === modelFilter.value
+    const okKey = keyFilter.value === 'all' || l.key === keyFilter.value
     const okStatus = statusMatch(l.status, statusFilter.value)
-    return okSearch && okModel && okStatus
+    return okSearch && okModel && okKey && okStatus
   })
 )
 
@@ -80,9 +80,13 @@ function goPage(p: number) {
         <input v-model="search" class="input" placeholder="搜索密钥 / 中转站…" @input="resetPage" />
       </div>
       <div class="toolbar-filters">
-        <select v-model="modelFilter" class="select" style="width: 170px" @change="resetPage">
+        <select v-model="modelFilter" class="select" style="width: 150px" @change="resetPage">
           <option value="all">全部模型</option>
           <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
+        </select>
+        <select v-model="keyFilter" class="select" style="width: 150px" @change="resetPage">
+          <option value="all">全部 API Key</option>
+          <option v-for="k in keys" :key="k.key" :value="k.key">{{ k.name }}</option>
         </select>
         <select v-model="statusFilter" class="select" style="width: 130px" @change="resetPage">
           <option value="all">全部</option>
@@ -169,22 +173,6 @@ function goPage(p: number) {
         </div>
       </div>
     </section>
-
-    <!-- hints -->
-    <section class="hint-row">
-      <div class="hint-card">
-        <AlertCircle :size="15" class="hint-ico warning" />
-        <div><strong>失败诊断</strong><span>点击日志行的状态徽章可查看失败堆栈与重试建议。</span></div>
-      </div>
-      <div class="hint-card">
-        <Ban :size="15" class="hint-ico info" />
-        <div><strong>限流处理</strong><span>限流请求自动排队重试，最多 3 次，间隔指数退避。</span></div>
-      </div>
-      <div class="hint-card">
-        <Coins :size="15" class="hint-ico success" />
-        <div><strong>费用统计</strong><span>费用按各供应商实时单价核算，可导出对账。</span></div>
-      </div>
-    </section>
   </div>
 </template>
 
@@ -234,19 +222,4 @@ function goPage(p: number) {
 .page-num:hover { background: var(--surface-2); color: var(--text); }
 .page-num.on { background: var(--grad); color: #fff; box-shadow: 0 2px 14px rgba(139,92,246,0.4); }
 
-.hint-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
-.hint-card {
-  display: flex; gap: 11px; align-items: flex-start;
-  background: var(--surface); border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md); padding: 14px 16px;
-}
-.hint-ico { flex: none; margin-top: 2px; }
-.hint-ico.warning { color: var(--warning); }
-.hint-ico.info { color: var(--info); }
-.hint-ico.success { color: var(--success); }
-.hint-card div { display: flex; flex-direction: column; }
-.hint-card strong { font-size: 12.5px; font-weight: 600; }
-.hint-card span { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
-
-@media (max-width: 900px) { .hint-row { grid-template-columns: 1fr; } }
 </style>
