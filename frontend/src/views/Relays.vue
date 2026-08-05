@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   Plus,
   Search,
@@ -15,17 +15,236 @@ import {
   CircleStop,
   CirclePlay,
   ChevronDown,
-  ArrowRight
+  ArrowRight,
+  AlertTriangle,
+  LoaderCircle,
+  RefreshCw,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
-import { store, proxyName } from '../store'
-import { MODEL_CATALOG, PLATFORMS } from '../data/mock'
+import { MODEL_CATALOG } from '../data/mock'
 import { toast } from '../composables/toast'
-import type { Relay, RelayKey, PlatformType } from '../types'
+import {
+  ApiError,
+  createBackend,
+  deleteBackend,
+  listBackends,
+  listSocksProxies,
+  recordBackendSyncSummary,
+  syncBackend,
+  updateBackend,
+  type BackendApiKey,
+  type BackendResponse,
+  type BackendType,
+  type SocksProxyResponse
+} from '../api/backends'
+import type { Relay, RelayKey, RelayModel, PlatformType } from '../types'
 
 const search = ref('')
-const platformFilter = ref<'all' | PlatformType>('all')
-const statusFilter = ref<'all' | 'active' | 'disabled'>('all')
+const platformFilter = ref<'all' | BackendType>('all')
+type ModelFamily = 'gpt' | 'claude' | 'grok' | 'deepseek' | 'kimi'
+const modelFilter = ref<'all' | ModelFamily>('all')
+const page = ref(1)
+const pageSize = 10
+const backendTypes: BackendType[] = ['new-api', 'sub2api']
+const modelFamilies: Array<{ value: ModelFamily; keywords: string[] }> = [
+  { value: 'gpt', keywords: ['gpt'] },
+  { value: 'claude', keywords: ['claude'] },
+  { value: 'grok', keywords: ['grok'] },
+  { value: 'deepseek', keywords: ['deepseek'] },
+  { value: 'kimi', keywords: ['kimi', 'moonshot'] }
+]
+
+type RelayStatusView = 'active' | 'disabled' | 'abnormal'
+type RelayView = Omit<Relay, 'status'> & {
+  status: RelayStatusView
+  protocol: 'openai' | 'anthropic' | 'both'
+  backendType: BackendType
+  consoleUrl: string
+  consoleSyncSupported: boolean
+  raw: BackendResponse
+}
+
+const relays = ref<RelayView[]>([])
+const proxyOptions = ref<SocksProxyResponse[]>([])
+const loading = ref(true)
+const loadError = ref('')
+const saving = ref(false)
+const syncingAll = ref(false)
+const busyIds = ref<Set<string>>(new Set())
+
+function setBusy(id: string, busy: boolean) {
+  const next = new Set(busyIds.value)
+  busy ? next.add(id) : next.delete(id)
+  busyIds.value = next
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof ApiError) return error.message
+  return error instanceof Error ? error.message : '请求失败，请稍后重试'
+}
+
+function parseObject(raw: string | undefined): Record<string, any> {
+  if (!raw) return {}
+  try {
+    const value = JSON.parse(raw)
+    return value && typeof value === 'object' ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function numberValue(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function quotaToCurrency(value: unknown, account: Record<string, any>) {
+  const amount = numberValue(value)
+  const unit = numberValue(account.quota_per_unit) || 500000
+  const exchangeRate = numberValue(account.custom_currency_exchange_rate) || 1
+  return (amount / unit) * exchangeRate
+}
+
+function accountValues(backend: BackendResponse, keys: BackendApiKey[]) {
+  const account = parseObject(backend.console_account_json)
+  const directBalance = account.balance
+  const balance = directBalance !== undefined
+    ? numberValue(directBalance)
+    : quotaToCurrency(account.quota, account)
+  const directUsed = account.total_actual_cost
+  const used = directUsed !== undefined
+    ? numberValue(directUsed)
+    : account.used_quota !== undefined
+      ? quotaToCurrency(account.used_quota, account)
+      : 0
+  const keyUsed = keys.reduce((sum, key) => sum + numberValue(key.used_quota), 0)
+  return {
+    balance,
+    used: directUsed !== undefined || account.used_quota !== undefined ? used : quotaToCurrency(keyUsed, account),
+    username: String(account.username || account.email || account.id || backend.console_username || ''),
+    checkinAt: String(account.last_checkin_at || '')
+  }
+}
+
+function protocolOf(value: string) {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'anthropic') return 'anthropic' as const
+  if (normalized === 'both') return 'both' as const
+  return 'openai' as const
+}
+
+function platformOf(backend: BackendResponse): PlatformType {
+  const value = `${backend.name} ${backend.base_url}`.toLowerCase()
+  if (backend.protocol.toLowerCase() === 'anthropic' || value.includes('claude') || value.includes('anthropic')) return 'Anthropic'
+  if (value.includes('gemini') || value.includes('google')) return 'Gemini'
+  if (value.includes('azure')) return 'Azure'
+  if (value.includes('deepseek')) return 'DeepSeek'
+  if (value.includes('openai')) return 'OpenAI'
+  return 'Custom'
+}
+
+function pricingByModel(backend: BackendResponse) {
+  const result = new Map<string, { input: number; output: number }>()
+  const pricing = parseObject(backend.console_pricing_json)
+  const records = Array.isArray(pricing.data) ? pricing.data : []
+  for (const item of records) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, any>
+    const name = String(record.model_name || record.model || '').trim()
+    if (!name) continue
+    const input = numberValue(record.input_price ?? record.prompt_price ?? record.model_price ?? record.input_cost)
+    const output = numberValue(record.output_price ?? record.completion_price ?? record.output_cost)
+    result.set(name, { input, output })
+  }
+  return result
+}
+
+function modelInfo(name: string, group: string, pricing: Map<string, { input: number; output: number }>): RelayModel {
+  const known = MODEL_CATALOG.find((model) => model.name === name)
+  const price = pricing.get(name)
+  return {
+    id: `model-${name}`,
+    name,
+    group: known?.group || group,
+    priceIn: price?.input || known?.priceIn || 0,
+    priceOut: price?.output || known?.priceOut || 0
+  }
+}
+
+function mapBackend(backend: BackendResponse): RelayView {
+  const keys = Array.isArray(backend.api_keys) ? backend.api_keys : []
+  const pricing = pricingByModel(backend)
+  const modelNames = new Set<string>()
+  const relayKeys: RelayKey[] = keys.map((key, index) => {
+    const models = Array.isArray(key.models) ? key.models.filter(Boolean) : []
+    models.forEach((model) => modelNames.add(model))
+    Object.keys(key.model_mapping || {}).forEach((model) => modelNames.add(model))
+    return {
+      id: `${backend.id}-key-${index}`,
+      name: key.group || `Key ${index + 1}`,
+      username: '',
+      key: key.api_key,
+      models,
+      modelMap: key.model_mapping || {},
+      usedTokens: numberValue(key.used_quota)
+    }
+  })
+  const account = accountValues(backend, keys)
+  const group = platformOf(backend)
+  const models = [...modelNames].map((name) => modelInfo(name, group, pricing))
+  const status: RelayStatusView = backend.status === 'normal' ? 'active' : backend.status
+  return {
+    id: String(backend.id),
+    name: backend.name,
+    url: backend.base_url,
+    platform: platformOf(backend),
+    status,
+    balance: account.balance,
+    used: account.used,
+    username: account.username,
+    checkinAt: account.checkinAt,
+    proxyId: backend.proxy_id ? String(backend.proxy_id) : '',
+    models,
+    keys: relayKeys,
+    protocol: protocolOf(backend.protocol),
+    backendType: backend.backend_type === 'sub2api' ? 'sub2api' : 'new-api',
+    consoleUrl: backend.console_url || '',
+    consoleSyncSupported: backend.backend_type === 'new-api' || backend.backend_type === 'sub2api',
+    raw: backend
+  }
+}
+
+function proxyName(id: string) {
+  return proxyOptions.value.find((proxy) => String(proxy.id) === id)?.name || `代理 #${id}`
+}
+
+function formatDate(value: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function isToday(value: string) {
+  if (!value) return false
+  const date = new Date(value)
+  const now = new Date()
+  return !Number.isNaN(date.getTime()) && date.toDateString() === now.toDateString()
+}
+
+const modelOptions = computed(() => {
+  const names = new Set(MODEL_CATALOG.map((model) => model.name))
+  relays.value.forEach((relay) => relay.models.forEach((model) => names.add(model.name)))
+  form.value.keys.forEach((key) => key.models.forEach((model) => names.add(model)))
+  return [...names].map((name) => MODEL_CATALOG.find((model) => model.name === name) || {
+    id: `model-${name}`,
+    name,
+    group: '自定义',
+    priceIn: 0,
+    priceOut: 0
+  })
+})
 
 const platformColor: Record<string, string> = {
   OpenAI: 'cyan',
@@ -38,13 +257,39 @@ const platformColor: Record<string, string> = {
 }
 
 const filtered = computed(() =>
-  store.relays.filter((r) => {
-    const okSearch = r.name.toLowerCase().includes(search.value.toLowerCase()) || r.url.includes(search.value) || r.username.toLowerCase().includes(search.value.toLowerCase())
-    const okPlat = platformFilter.value === 'all' || r.platform === platformFilter.value
-    const okStatus = statusFilter.value === 'all' || r.status === statusFilter.value
-    return okSearch && okPlat && okStatus
-  })
+  relays.value
+    .filter((r) => {
+      const okSearch = r.name.toLowerCase().includes(search.value.toLowerCase()) || r.url.includes(search.value) || r.username.toLowerCase().includes(search.value.toLowerCase())
+      const okPlat = platformFilter.value === 'all' || r.backendType === platformFilter.value
+      const selectedFamily = modelFamilies.find((family) => family.value === modelFilter.value)
+      const okModel = !selectedFamily || r.models.some((model) => {
+        const name = model.name.toLowerCase()
+        return selectedFamily.keywords.some((keyword) => name.includes(keyword))
+      })
+      return okSearch && okPlat && okModel
+    })
+    .sort((a, b) => numberValue(b.raw.weight) - numberValue(a.raw.weight))
 )
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
+const pageItems = computed(() => {
+  const start = (page.value - 1) * pageSize
+  return filtered.value.slice(start, start + pageSize)
+})
+
+function resetPage() {
+  page.value = 1
+}
+
+function goPage(nextPage: number) {
+  page.value = Math.min(Math.max(1, nextPage), totalPages.value)
+  expandedId.value = null
+}
+
+watch([search, platformFilter, modelFilter], resetPage)
+watch(totalPages, (pages) => {
+  if (page.value > pages) page.value = pages
+})
 
 const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -63,47 +308,77 @@ function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
 }
 
-function toggleStatus(r: Relay) {
-  const next = r.status === 'active' ? 'disabled' : 'active'
-  store.updateRelay(r.id, { status: next })
-  toast(next === 'active' ? '中转站已启用' : '中转站已停用', r.name, next === 'active' ? 'success' : 'warning')
+async function toggleStatus(r: RelayView) {
+  const next = r.status === 'active' ? 'disabled' : 'normal'
+  setBusy(r.id, true)
+  try {
+    const backend = await updateBackend(Number(r.id), { status: next })
+    upsertRelay(backend)
+    toast(next === 'normal' ? '中转站已启用' : '中转站已停用', r.name, next === 'normal' ? 'success' : 'warning')
+  } catch (error) {
+    toast('状态更新失败', errorMessage(error), 'danger')
+  } finally {
+    setBusy(r.id, false)
+  }
 }
 
-function checkin(r: Relay) {
-  if (r.checkinAt) {
-    toast('今日已签到', `${r.name} · ${r.checkinAt}`, 'info')
+async function syncRelay(r: RelayView, quiet = false, audit = true) {
+  if (!r.consoleUrl) {
+    if (!quiet) toast('缺少控制台地址', '请先在编辑中转站中填写 Console URL', 'warning')
+    return false
+  }
+  if (!r.consoleSyncSupported) {
+    if (!quiet) toast('暂不支持控制台同步', '该后端未配置 backend_type，请先编辑并选择 new-api 或 sub2api', 'warning')
+    return false
+  }
+  setBusy(r.id, true)
+  try {
+    const response = await syncBackend(Number(r.id), audit)
+    upsertRelay(response.backend)
+    if (!quiet) toast('中转站同步完成', `${r.name} · 账户与 API Key 已刷新`, 'success')
+    return true
+  } catch (error) {
+    if (!quiet) toast('中转站同步失败', errorMessage(error), 'danger')
+    return false
+  } finally {
+    setBusy(r.id, false)
+  }
+}
+
+async function checkin(r: RelayView) {
+  if (isToday(r.checkinAt)) {
+    toast('今日已同步', `${r.name} · ${formatDate(r.checkinAt)}`, 'info')
+  }
+  await syncRelay(r)
+}
+
+async function checkinAll() {
+  const todo = relays.value.filter((relay) => relay.consoleUrl && relay.consoleSyncSupported && !isToday(relay.checkinAt))
+  if (!todo.length) {
+    toast('今日无需同步', '没有待签到且配置了控制台地址的中转站', 'info')
     return
   }
-  const now = '2026-08-02 ' + new Date().toTimeString().slice(0, 5)
-  store.updateRelay(r.id, { checkinAt: now })
-  toast('签到成功', `${r.name} · ${now}`, 'success')
+  syncingAll.value = true
+  const results = await Promise.all(todo.map((relay) => syncRelay(relay, true, false)))
+  const successCount = results.filter(Boolean).length
+  try {
+    await recordBackendSyncSummary(todo.length, successCount, todo.length - successCount)
+  } catch {
+    // The individual sync results are already persisted; summary auditing is best effort.
+  }
+  syncingAll.value = false
+  toast(successCount ? '批量同步完成' : '批量同步失败', `成功 ${successCount} 个，失败 ${todo.length - successCount} 个`, successCount === todo.length ? 'success' : successCount ? 'warning' : 'danger')
 }
 
-function checkinAll() {
-  const now = '2026-08-02 ' + new Date().toTimeString().slice(0, 5)
-  const todo = store.relays.filter((r) => !r.checkinAt)
-  todo.forEach((r) => store.updateRelay(r.id, { checkinAt: now }))
-  toast(todo.length ? '批量签到完成' : '今日均已签到', todo.length ? `已为 ${todo.length} 个账户完成今日签到` : '无需签到', todo.length ? 'success' : 'info')
-}
+const relayToDelete = ref<RelayView | null>(null)
 
-const relayToDelete = ref<Relay | null>(null)
-
-function askRemove(r: Relay) {
+function askRemove(r: RelayView) {
   relayToDelete.value = r
-}
-
-function confirmRemove() {
-  const r = relayToDelete.value
-  if (!r) return
-  store.removeRelay(r.id)
-  relayToDelete.value = null
-  toast('中转站已删除', r.name, 'danger')
 }
 
 /* ---- form ---- */
 interface KeyFormItem {
   name: string
-  username: string
   key: string
   models: string[]
   modelMap: Record<string, string>
@@ -113,22 +388,32 @@ interface KeyFormItem {
 const form = ref<{
   name: string
   url: string
-  platform: PlatformType
+  protocol: 'openai' | 'anthropic' | 'both'
+  backendType: BackendType
+  consoleUrl: string
   username: string
-  balance: number
-  used: number
+  password: string
+  newApiRefresh: string
+  consoleAuthorization: string
+  consoleCheckinPath: string
+  channelUrl: string
+  notes: string
   proxyId: string
-  models: string[]
   keys: KeyFormItem[]
 }>({
   name: '',
   url: '',
-  platform: 'OpenAI',
+  protocol: 'openai',
+  backendType: 'new-api',
+  consoleUrl: '',
   username: '',
-  balance: 100,
-  used: 0,
+  password: '',
+  newApiRefresh: '',
+  consoleAuthorization: '',
+  consoleCheckinPath: '',
+  channelUrl: '',
+  notes: '',
   proxyId: '',
-  models: [],
   keys: []
 })
 
@@ -137,7 +422,10 @@ const editingId = ref<string | null>(null)
 const isEditing = computed(() => editingId.value !== null)
 
 function resetForm() {
-  form.value = { name: '', url: '', platform: 'OpenAI', username: '', balance: 100, used: 0, proxyId: '', models: [], keys: [] }
+  form.value = {
+    name: '', url: '', protocol: 'openai', backendType: 'new-api', consoleUrl: '', username: '', password: '',
+    newApiRefresh: '', consoleAuthorization: '', consoleCheckinPath: '', channelUrl: '', notes: '', proxyId: '', keys: []
+  }
 }
 
 function openCreate() {
@@ -146,25 +434,29 @@ function openCreate() {
   showForm.value = true
 }
 
-function openEditRelay(r: Relay) {
+function openEditRelay(r: RelayView) {
   editingId.value = r.id
   form.value = {
     name: r.name,
     url: r.url,
-    platform: r.platform,
-    username: r.username,
-    balance: r.balance,
-    used: r.used,
+    protocol: r.protocol,
+    backendType: r.backendType,
+    consoleUrl: r.raw.console_url || '',
+    username: r.raw.console_username || '',
+    password: r.raw.console_password || '',
+    newApiRefresh: r.raw.new_api_refresh || '',
+    consoleAuthorization: r.raw.console_authorization || '',
+    consoleCheckinPath: r.raw.console_checkin_path || '',
+    channelUrl: r.raw.channel_url || '',
+    notes: r.raw.notes || '',
     proxyId: r.proxyId,
-    models: r.models.map((m) => m.name),
-    keys: r.keys.map((k) => ({ ...k, models: [...k.models], modelMap: { ...k.modelMap }, usedTokens: k.usedTokens }))
+    keys: r.keys.map((key) => ({ name: key.name, key: key.key, models: [...key.models], modelMap: { ...key.modelMap }, usedTokens: key.usedTokens }))
   }
   showForm.value = true
 }
 
 function addKeyRow() {
-  if (form.value.keys.length >= 2) return
-  form.value.keys.push({ name: '', username: '', key: '', models: [], modelMap: {}, usedTokens: 0 })
+  form.value.keys.push({ name: '', key: '', models: [], modelMap: {}, usedTokens: 0 })
 }
 function removeKeyRow(i: number) {
   form.value.keys.splice(i, 1)
@@ -176,60 +468,108 @@ function toggleKeyModel(i: number, m: string) {
     item.models.splice(idx, 1)
     delete item.modelMap[m]
   } else {
-    if (item.models.length >= 2) return
     item.models.push(m)
-    item.modelMap[m] = m
   }
 }
 
-function saveRelay() {
+function buildPayload() {
+  const apiKeys: BackendApiKey[] = form.value.keys.map((key, index) => {
+    const modelMapping: Record<string, string> = {}
+    for (const model of key.models) {
+      const upstream = (key.modelMap[model] || '').trim()
+      if (upstream && upstream !== model) modelMapping[model] = upstream
+    }
+    return {
+      api_key: key.key.trim(),
+      group: key.name.trim() || `key-${index + 1}`,
+      models: key.models,
+      model_mapping: modelMapping,
+      used_quota: Math.max(0, Math.round(key.usedTokens || 0))
+    }
+  })
+  return {
+    name: form.value.name.trim(),
+    protocol: form.value.protocol,
+    backend_type: form.value.backendType,
+    base_url: form.value.url.trim(),
+    api_keys: apiKeys,
+    console_url: form.value.consoleUrl.trim(),
+    console_username: form.value.username.trim(),
+    console_password: form.value.password,
+    new_api_refresh: form.value.newApiRefresh.trim(),
+    console_authorization: form.value.consoleAuthorization.trim(),
+    console_checkin_path: form.value.consoleCheckinPath.trim(),
+    channel_url: form.value.channelUrl.trim(),
+    notes: form.value.notes.trim(),
+    proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0
+  }
+}
+
+async function saveRelay() {
   if (!form.value.name || !form.value.url) {
     toast('请填写名称与 URL', '', 'warning')
     return
   }
-  const keys: RelayKey[] = form.value.keys.map((k) => {
-    const modelMap: Record<string, string> = {}
-    for (const m of k.models) {
-      const to = (k.modelMap[m] || '').trim()
-      if (to && to !== m) modelMap[m] = to
-    }
-    return {
-      id: k.name || 'rk' + Date.now(),
-      name: k.name || '未命名 Key',
-      username: k.username,
-      key: k.key,
-      models: k.models,
-      modelMap,
-      usedTokens: k.usedTokens || 0
-    }
-  })
-  const patch = {
-    name: form.value.name,
-    url: form.value.url,
-    platform: form.value.platform,
-    username: form.value.username,
-    balance: form.value.balance,
-    used: form.value.used,
-    proxyId: form.value.proxyId || store.proxies[0]?.id || '',
-    models: MODEL_CATALOG.filter((m) => form.value.models.includes(m.name)),
-    keys
+  if (!form.value.keys.length || form.value.keys.some((key) => !key.key.trim() || !key.models.length)) {
+    toast('请至少配置一个 API Key', '每个 Key 都需要密钥和至少一个模型', 'warning')
+    return
   }
-  if (isEditing.value && editingId.value) {
-    store.updateRelay(editingId.value, patch)
-    toast('中转站已更新', patch.name, 'success')
-  } else {
-    store.addRelay({
-      id: 'r' + Date.now(),
-      ...patch,
-      status: 'active',
-      checkinAt: ''
-    })
-    toast('中转站已创建', '账户信息已接入路由池', 'success')
+  saving.value = true
+  try {
+    const payload = buildPayload()
+    const backend = isEditing.value && editingId.value
+      ? await updateBackend(Number(editingId.value), payload)
+      : await createBackend(payload)
+    upsertRelay(backend)
+    toast(isEditing.value ? '中转站已更新' : '中转站已创建', backend.name, 'success')
+    showForm.value = false
+    resetForm()
+    editingId.value = null
+  } catch (error) {
+    toast(isEditing.value ? '中转站更新失败' : '中转站创建失败', errorMessage(error), 'danger')
+  } finally {
+    saving.value = false
   }
-  showForm.value = false
-  resetForm()
-  editingId.value = null
 }
+
+async function confirmRemove() {
+  const relay = relayToDelete.value
+  if (!relay) return
+  setBusy(relay.id, true)
+  try {
+    await deleteBackend(Number(relay.id))
+    relays.value = relays.value.filter((item) => item.id !== relay.id)
+    relayToDelete.value = null
+    toast('中转站已删除', relay.name, 'danger')
+  } catch (error) {
+    toast('中转站删除失败', errorMessage(error), 'danger')
+  } finally {
+    setBusy(relay.id, false)
+  }
+}
+
+function upsertRelay(backend: BackendResponse) {
+  const relay = mapBackend(backend)
+  const index = relays.value.findIndex((item) => item.id === relay.id)
+  if (index < 0) relays.value = [relay, ...relays.value]
+  else relays.value.splice(index, 1, relay)
+}
+
+async function loadData() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const [backendPage, proxyPage] = await Promise.all([listBackends(), listSocksProxies()])
+    relays.value = backendPage.items.map(mapBackend)
+    proxyOptions.value = proxyPage.items
+  } catch (error) {
+    loadError.value = errorMessage(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(loadData)
 </script>
 
 <template>
@@ -242,16 +582,18 @@ function saveRelay() {
       </div>
       <div class="filter-group">
         <button class="filter-chip" :class="{ on: platformFilter === 'all' }" @click="platformFilter = 'all'">全部平台</button>
-        <button v-for="p in PLATFORMS" :key="p" class="filter-chip" :class="{ on: platformFilter === p }" @click="platformFilter = p">{{ p }}</button>
+        <button v-for="type in backendTypes" :key="type" class="filter-chip" :class="{ on: platformFilter === type }" @click="platformFilter = type">{{ type }}</button>
       </div>
       <div class="spacer"></div>
       <div class="filter-group">
-        <button class="filter-chip" :class="{ on: statusFilter === 'all' }" @click="statusFilter = 'all'">全部</button>
-        <button class="filter-chip" :class="{ on: statusFilter === 'active' }" @click="statusFilter = 'active'">启用</button>
-        <button class="filter-chip" :class="{ on: statusFilter === 'disabled' }" @click="statusFilter = 'disabled'">停用</button>
+        <button class="filter-chip" :class="{ on: modelFilter === 'all' }" @click="modelFilter = 'all'">全部模型</button>
+        <button v-for="family in modelFamilies" :key="family.value" class="filter-chip" :class="{ on: modelFilter === family.value }" @click="modelFilter = family.value">{{ family.value }}</button>
       </div>
-      <button class="btn btn-ghost btn-sm" @click="checkinAll"><CalendarCheck :size="14" /> 批量签到</button>
-      <button class="btn btn-primary btn-sm" @click="openCreate"><Plus :size="14" /> 添加中转站</button>
+      <button class="btn btn-ghost btn-sm" :disabled="syncingAll" @click="checkinAll">
+        <LoaderCircle v-if="syncingAll" :size="14" class="spin" />
+        <CalendarCheck v-else :size="14" /> 批量签到
+      </button>
+      <button class="btn btn-primary btn-sm" :disabled="loading" @click="openCreate"><Plus :size="14" /> 添加中转站</button>
     </section>
 
     <!-- relay list -->
@@ -259,22 +601,30 @@ function saveRelay() {
       <div class="rl-head">
         <span class="rl-th name">名称</span>
         <span class="rl-th">域名</span>
-        <span class="rl-th">使用模型</span>
-        <span class="rl-th">平台</span>
-        <span class="rl-th">余额 / 用额</span>
-        <span class="rl-th">用户名 / ID</span>
+        <span class="rl-th">模型</span>
+        <span class="rl-th">额度</span>
+        <span class="rl-th">权重</span>
         <span class="rl-th op"></span>
       </div>
 
-      <TransitionGroup name="rl">
-        <div v-for="r in filtered" :key="r.id" class="rl-row" :class="{ open: expandedId === r.id, off: r.status === 'disabled' }">
+      <div v-if="loading" class="relay-state"><LoaderCircle :size="20" class="spin" /><span>正在从后端加载中转站…</span></div>
+      <div v-else-if="loadError" class="relay-state error">
+        <AlertTriangle :size="20" />
+        <span>{{ loadError }}</span>
+        <button class="btn btn-ghost btn-sm" @click="loadData"><RefreshCw :size="14" /> 重试</button>
+      </div>
+      <div v-else-if="!filtered.length" class="relay-state"><Server :size="20" /><span>{{ relays.length ? '没有匹配的中转站' : '还没有配置中转站' }}</span></div>
+
+      <TransitionGroup v-else name="rl">
+        <div v-for="r in pageItems" :key="r.id" class="rl-row" :class="{ open: expandedId === r.id, off: r.status !== 'active', abnormal: r.status === 'abnormal' }">
           <div class="rl-main" @click="toggleExpand(r.id)">
             <div class="rl-cell name">
               <span class="rl-avatar" :class="r.platform.toLowerCase()"><Server :size="14" /></span>
               <div class="rl-names">
                 <div class="rl-name-row">
-                  <strong :class="{ struck: r.status === 'disabled' }">{{ r.name }}</strong>
+                  <strong :class="{ struck: r.status !== 'active' }">{{ r.name }}</strong>
                   <span v-if="r.status === 'disabled'" class="tag neutral">已停用</span>
+                  <span v-else-if="r.status === 'abnormal'" class="tag danger">异常</span>
                 </div>
                 <span class="rl-sub mono">{{ r.keys.length }} Keys · {{ r.models.length }} 模型</span>
               </div>
@@ -284,18 +634,18 @@ function saveRelay() {
               <span v-for="m in r.models.slice(0, 3)" :key="m.id" class="tag">{{ m.name }}</span>
               <span v-if="r.models.length > 3" class="tag neutral">+{{ r.models.length - 3 }}</span>
             </div>
-            <div class="rl-cell"><span class="tag" :class="platformColor[r.platform] || 'neutral'">{{ r.platform }}</span></div>
             <div class="rl-cell money">
               <span class="mono rl-bal" :class="{ low: r.balance < 20 }">{{ fmtUsd(r.balance) }}</span>
               <span class="mono rl-used">{{ fmtUsd(r.used) }}</span>
             </div>
-            <div class="rl-cell"><span class="mono rl-user" :title="r.username">{{ r.username || '—' }}</span></div>
+            <div class="rl-cell weight"><span class="mono rl-weight">{{ r.raw.weight }}</span></div>
             <div class="rl-cell op">
-              <button class="icon-btn checkin-btn" :class="{ done: !!r.checkinAt }" :title="r.checkinAt ? '已签到 ' + r.checkinAt.slice(11) + ' · 点击重新签到' : '签到'" @click.stop="checkin(r)">
-                <CalendarCheck :size="14" />
+              <button class="icon-btn checkin-btn" :class="{ done: isToday(r.checkinAt) }" :disabled="busyIds.has(r.id)" :title="r.checkinAt ? '已同步 ' + formatDate(r.checkinAt) + ' · 点击重新同步' : '签到并同步'" @click.stop="checkin(r)">
+                <LoaderCircle v-if="busyIds.has(r.id)" :size="14" class="spin" />
+                <CalendarCheck v-else :size="14" />
               </button>
               <button class="icon-btn primary" title="编辑" @click.stop="openEditRelay(r)"><Pencil :size="14" /></button>
-              <button class="icon-btn" :title="r.status === 'active' ? '停用' : '启用'" @click.stop="toggleStatus(r)">
+              <button class="icon-btn" :disabled="busyIds.has(r.id)" :title="r.status === 'active' ? '停用' : '启用'" @click.stop="toggleStatus(r)">
                 <CircleStop v-if="r.status === 'active'" :size="14" class="ico-on" />
                 <CirclePlay v-else :size="14" class="ico-off" />
               </button>
@@ -335,7 +685,7 @@ function saveRelay() {
                     <div class="ri-row">
                       <CalendarCheck :size="13" />
                       <span class="ri-label">签到时间</span>
-                      <span class="ri-val mono" :class="{ faint: !r.checkinAt }">{{ r.checkinAt || '未签到' }}</span>
+                      <span class="ri-val mono" :class="{ faint: !r.checkinAt }">{{ r.checkinAt ? formatDate(r.checkinAt) : '未签到' }}</span>
                     </div>
                     <div class="ri-row">
                       <Globe :size="13" />
@@ -356,7 +706,7 @@ function saveRelay() {
                       </div>
                       <div class="rk-key mono">{{ k.key }}</div>
                       <div class="rk-bottom">
-                        <span class="rk-user mono">{{ k.username || '—' }}</span>
+                        <span class="rk-user mono">{{ k.name }}</span>
                         <span class="spacer"></span>
                         <span v-for="m in k.models" :key="m" class="rk-model" :class="{ mapped: k.modelMap[m] }">
                           {{ m }}<template v-if="k.modelMap[m]"><ArrowRight :size="11" /><em class="mono">{{ k.modelMap[m] }}</em></template>
@@ -382,19 +732,36 @@ function saveRelay() {
           </Transition>
         </div>
       </TransitionGroup>
+
+      <div v-if="!loading && !loadError" class="pagination">
+        <span class="page-info mono">{{ filtered.length }} 条记录 · 第 {{ page }}/{{ totalPages }} 页</span>
+        <div class="page-btns">
+          <button class="icon-btn" :disabled="page <= 1" @click="goPage(page - 1)" aria-label="上一页"><ChevronLeft :size="15" /></button>
+          <button
+            v-for="i in totalPages"
+            :key="i"
+            class="page-num mono"
+            :class="{ on: i === page }"
+            @click="goPage(i)"
+          >{{ i }}</button>
+          <button class="icon-btn" :disabled="page >= totalPages" @click="goPage(page + 1)" aria-label="下一页"><ChevronRight :size="15" /></button>
+        </div>
+      </div>
     </section>
 
     <!-- add / edit modal -->
-    <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改供应商账户配置，保存后立即生效' : '接入模型供应商账户，配置余额、签到与 API Key'" :icon="Server" @close="showForm = false">
+    <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改后端账户配置，保存后立即生效' : '接入后端账户并配置 API Key 与控制台同步'" :icon="Server" @close="showForm = false">
       <div class="form-grid-2">
         <div class="field">
           <label class="field-label">中转站名称 <span class="req">*</span></label>
           <input v-model="form.name" class="input" placeholder="例如：官方中转 · OpenAI" />
         </div>
         <div class="field">
-          <label class="field-label">平台类型</label>
-          <select v-model="form.platform" class="select">
-            <option v-for="p in PLATFORMS" :key="p" :value="p">{{ p }}</option>
+          <label class="field-label">API 协议</label>
+          <select v-model="form.protocol" class="select">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="both">OpenAI + Anthropic</option>
           </select>
         </div>
       </div>
@@ -402,41 +769,59 @@ function saveRelay() {
         <label class="field-label">Base URL <span class="req">*</span></label>
         <input v-model="form.url" class="input mono" placeholder="https://api.openai.com/v1" />
       </div>
+      <div class="form-grid-2">
+        <div class="field">
+          <label class="field-label">后端类型</label>
+          <select v-model="form.backendType" class="select">
+            <option value="new-api">new-api</option>
+            <option value="sub2api">sub2api</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label">控制台用户名 / ID</label>
+          <input v-model="form.username" class="input mono" placeholder="console-user" />
+        </div>
+      </div>
       <div class="field">
-        <label class="field-label">用户名 / ID</label>
-        <input v-model="form.username" class="input mono" placeholder="openai-master@nexus" />
+        <label class="field-label">Console URL</label>
+        <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
       </div>
       <div class="form-grid-2">
         <div class="field">
-          <label class="field-label">账户余额（USD）</label>
-          <input v-model.number="form.balance" class="input mono" type="number" min="0" step="0.1" />
+          <label class="field-label">控制台密码</label>
+          <input v-model="form.password" class="input mono" type="password" placeholder="new-api 登录密码" />
         </div>
         <div class="field">
-          <label class="field-label">累计用额（USD）</label>
-          <input v-model.number="form.used" class="input mono" type="number" min="0" step="0.1" />
+          <label class="field-label">new-api Refresh Token</label>
+          <input v-model="form.newApiRefresh" class="input mono" type="password" placeholder="可选" />
         </div>
+      </div>
+      <div v-if="form.backendType === 'sub2api'" class="form-grid-2">
+        <div class="field">
+          <label class="field-label">sub2api Authorization</label>
+          <input v-model="form.consoleAuthorization" class="input mono" type="password" placeholder="必填" />
+        </div>
+        <div class="field">
+          <label class="field-label">签到路径</label>
+          <input v-model="form.consoleCheckinPath" class="input mono" placeholder="/api/user/checkin" />
+        </div>
+      </div>
+      <div v-if="form.backendType === 'sub2api'" class="field">
+        <label class="field-label">渠道 / 定价路径</label>
+        <input v-model="form.channelUrl" class="input mono" placeholder="/api/channel" />
       </div>
       <div class="field">
         <label class="field-label">连接代理</label>
         <select v-model="form.proxyId" class="select">
           <option value="">直连</option>
-          <option v-for="p in store.proxies.filter((x) => x.status === 'active')" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.address }}</option>
         </select>
-      </div>
-      <div class="field">
-        <label class="field-label">可用模型</label>
-        <div class="model-picker">
-          <label v-for="m in MODEL_CATALOG" :key="m.id" class="model-chip" :class="{ on: form.models.includes(m.name) }">
-            <input v-model="form.models" type="checkbox" :value="m.name" />
-            <span class="tag">{{ m.name }}</span>
-          </label>
-        </div>
       </div>
 
       <div class="keys-editor">
         <div class="ke-head">
-          <span class="field-label">已配置 API Key <em class="ke-hint">1–2 个，每个绑定 1–2 个模型</em></span>
-          <button class="btn btn-ghost btn-sm" :disabled="form.keys.length >= 2" @click="addKeyRow"><Plus :size="13" /> 添加 Key</button>
+          <span class="field-label">已配置 API Key <em class="ke-hint">每个 Key 至少绑定一个模型</em></span>
+          <button class="btn btn-ghost btn-sm" @click="addKeyRow"><Plus :size="13" /> 添加 Key</button>
         </div>
         <div v-for="(k, i) in form.keys" :key="i" class="ke-card">
           <div class="ke-top">
@@ -446,25 +831,19 @@ function saveRelay() {
             </div>
             <button class="icon-btn danger" title="移除" @click="removeKeyRow(i)"><Trash2 :size="14" /></button>
           </div>
-          <div class="form-grid-2">
-            <div class="field">
-              <label class="field-label">用户名</label>
-              <input v-model="k.username" class="input mono" placeholder="sk-proj-****" />
-            </div>
-            <div class="field">
-              <label class="field-label">API Key <em class="ke-hint">将完整显示，长度 10–30 位</em></label>
-              <input v-model="k.key" class="input mono" placeholder="sk-proj-xxxx…" />
-            </div>
+          <div class="field">
+            <label class="field-label">API Key <em class="ke-hint">保存到后端路由池</em></label>
+            <input v-model="k.key" class="input mono" placeholder="sk-proj-xxxx…" />
           </div>
           <div class="form-grid-2">
             <div class="field">
-              <label class="field-label">已用额度（M tokens）</label>
+              <label class="field-label">已用额度（tokens）</label>
               <input v-model.number="k.usedTokens" class="input mono" type="number" min="0" step="0.1" />
             </div>
             <div class="field">
-              <label class="field-label">绑定模型（1–2 个）</label>
+              <label class="field-label">绑定模型</label>
               <div class="model-picker compact">
-                <label v-for="m in MODEL_CATALOG" :key="m.id" class="model-chip" :class="{ on: k.models.includes(m.name) }" @click.prevent="toggleKeyModel(i, m.name)">
+                <label v-for="m in modelOptions" :key="m.id" class="model-chip" :class="{ on: k.models.includes(m.name) }" @click.prevent="toggleKeyModel(i, m.name)">
                   <span class="tag">{{ m.name }}</span>
                 </label>
               </div>
@@ -486,9 +865,10 @@ function saveRelay() {
 
       <template #footer>
         <button class="btn btn-ghost" @click="showForm = false">取消</button>
-        <button class="btn btn-primary" @click="saveRelay">
-          <Pencil v-if="isEditing" :size="15" />
-          <Plus v-else :size="15" />
+        <button class="btn btn-primary" :disabled="saving" @click="saveRelay">
+          <LoaderCircle v-if="saving" :size="15" class="spin" />
+          <Pencil v-if="!saving && isEditing" :size="15" />
+          <Plus v-else-if="!saving" :size="15" />
           {{ isEditing ? '保存修改' : '添加中转站' }}
         </button>
       </template>
@@ -535,6 +915,35 @@ function saveRelay() {
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-danger:hover { background: color-mix(in srgb, var(--danger) 82%, #000); }
 .btn-danger:active { transform: translateY(0) scale(0.98); }
+.spin { animation: relay-spin 0.9s linear infinite; }
+@keyframes relay-spin { to { transform: rotate(360deg); } }
+.relay-state {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.relay-state.error { color: var(--danger); flex-wrap: wrap; }
+.relay-state.error .btn { color: var(--text-soft); }
+.pagination {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-top: 1px solid var(--border-soft);
+  flex-wrap: wrap; gap: 10px;
+}
+.page-info { font-size: 12px; color: var(--text-muted); }
+.page-btns { display: flex; align-items: center; gap: 4px; }
+.page-num {
+  min-width: 32px; height: 32px; padding: 0 8px;
+  border-radius: 9px; border: 1px solid transparent;
+  background: transparent; color: var(--text-muted);
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: all 0.2s ease;
+}
+.page-num:hover { background: var(--surface-2); color: var(--text); }
+.page-num.on { background: var(--grad); color: #fff; box-shadow: 0 2px 14px rgba(139,92,246,0.4); }
 .checkin-btn.done { color: var(--success); }
 .checkin-btn.done:hover { color: color-mix(in srgb, var(--success) 75%, #000); background: color-mix(in srgb, var(--success) 10%, transparent); }
 .confirm-body { display: flex; flex-direction: column; gap: 8px; }
@@ -571,7 +980,7 @@ function saveRelay() {
 .relay-list { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
 .rl-head {
   display: grid;
-  grid-template-columns: minmax(210px, 1.5fr) minmax(120px, 1fr) minmax(170px, 1.4fr) 84px 130px minmax(110px, 0.9fr) 104px 96px;
+  grid-template-columns: minmax(200px, 1.35fr) minmax(140px, 1fr) minmax(220px, 1.7fr) minmax(115px, 0.75fr) 64px 170px;
   gap: 14px;
   align-items: center;
   padding: 12px 18px;
@@ -593,7 +1002,7 @@ function saveRelay() {
 
 .rl-main {
   display: grid;
-  grid-template-columns: minmax(210px, 1.5fr) minmax(120px, 1fr) minmax(170px, 1.4fr) 84px 130px minmax(110px, 0.9fr) 104px 96px;
+  grid-template-columns: minmax(200px, 1.35fr) minmax(140px, 1fr) minmax(220px, 1.7fr) minmax(115px, 0.75fr) 64px 170px;
   gap: 14px;
   align-items: center;
   padding: 13px 18px;
@@ -628,7 +1037,8 @@ function saveRelay() {
 .rl-bal { font-size: 13px; font-weight: 700; color: var(--text); }
 .rl-bal.low { color: var(--danger); }
 .rl-used { font-size: 11px; color: var(--text-faint); }
-.rl-user { font-size: 12px; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rl-cell.weight { display: flex; align-items: center; }
+.rl-weight { font-size: 13px; font-weight: 700; color: var(--text-soft); }
 
 .rl-cell.checkin { display: flex; }
 .rl-cell.checkin .pill { font-size: 11px; }
