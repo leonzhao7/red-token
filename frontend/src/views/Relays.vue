@@ -12,8 +12,8 @@ import {
   Wallet,
   Coins,
   User,
-  CircleStop,
   CirclePlay,
+  CirclePause,
   ChevronDown,
   ArrowRight,
   AlertTriangle,
@@ -298,9 +298,17 @@ function pricingByModel(backend: BackendResponse) {
     const record = item as Record<string, any>
     const name = String(record.model_name || record.model || '').trim()
     if (!name) continue
-    const input = numberValue(record.input_price ?? record.prompt_price ?? record.model_price ?? record.input_cost)
-    const output = numberValue(record.output_price ?? record.completion_price ?? record.output_cost)
-    result.set(name, { input, output })
+    const directInput = numberValue(record.input_price ?? record.prompt_price ?? record.input_cost)
+    const directOutput = numberValue(record.output_price ?? record.completion_price ?? record.output_cost)
+    if (directInput || directOutput) {
+      result.set(name, { input: directInput, output: directOutput || directInput })
+    } else {
+      const ratio = numberValue(record.model_ratio ?? record.model_price)
+      if (ratio) {
+        const completionRatio = numberValue(record.completion_ratio) || 1
+        result.set(name, { input: ratio * 2, output: ratio * completionRatio * 2 })
+      }
+    }
   }
   return result
 }
@@ -424,8 +432,23 @@ watch(totalPages, (pages) => {
 
 const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const fmtPrice = (n: number) => '$' + n.toFixed(2)
+const fmtPrice = (n: number) => {
+  if (n === 0) return '$0'
+  if (n >= 1) return '$' + n.toFixed(2)
+  if (n >= 0.01) return '$' + n.toFixed(3)
+  return '$' + n.toPrecision(3)
+}
+const fmtQuota = (n: number) => fmtUsd(n / 500000)
 const fmtTokens = (n: number) => (n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : (n / 1e6).toFixed(1) + 'M')
+
+function cheapestGroup(modelName: string, keys: RelayKey[]) {
+  const groups = keys.filter(k => k.models.includes(modelName)).map(k => k.name)
+  return groups.length ? groups[0] : '-'
+}
+function cheapestGroupForModel(modelName: string, keys: RelayKey[]): string {
+  const groups = keys.filter(k => k.models.includes(modelName)).map(k => k.name)
+  return groups.length ? groups[0] : '-'
+}
 const hostOf = (url: string) => {
   try {
     return new URL(url).host
@@ -467,7 +490,7 @@ async function syncRelay(r: RelayView, quiet = false, audit = true) {
   try {
     const response = await syncBackendStream(Number(r.id), (req) => {
       appendLogRow(req, r.name)
-    }, audit)
+    }, { audit })
     upsertRelay(response.backend)
     if (!quiet) toast('中转站同步完成', `${r.name} · 账户与 API Key 已刷新`, 'success')
     return true
@@ -758,11 +781,11 @@ onMounted(loadData)
         <button class="filter-chip" :class="{ on: modelFilter === 'all' }" @click="modelFilter = 'all'">全部模型</button>
         <button v-for="family in modelFamilies" :key="family.value" class="filter-chip" :class="{ on: modelFilter === family.value }" @click="modelFilter = family.value">{{ family.value }}</button>
       </div>
-      <button class="btn btn-ghost btn-sm" :disabled="syncingAll" @click="checkinAll">
+      <button class="btn btn-ghost btn-sm btn-purple" :disabled="syncingAll" @click="checkinAll">
         <LoaderCircle v-if="syncingAll" :size="14" class="spin" />
-        <CalendarCheck v-else :size="14" /> 批量签到
+        <CalendarCheck v-else :size="14" /> 签到
       </button>
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="openCreate"><Plus :size="14" /> 添加中转站</button>
+      <button class="btn btn-primary btn-sm" :disabled="loading" @click="openCreate"><Plus :size="14" /> 添加</button>
     </section>
 
     <!-- relay list -->
@@ -788,20 +811,19 @@ onMounted(loadData)
         <div v-for="r in pageItems" :key="r.id" class="rl-row" :class="{ open: expandedId === r.id, off: r.status !== 'active', abnormal: r.status === 'abnormal' }">
           <div class="rl-main" @click="toggleExpand(r.id)">
             <div class="rl-cell name">
-              <span class="rl-avatar" :class="r.platform.toLowerCase()"><Server :size="14" /></span>
+              <span class="rl-avatar" :class="r.backendType || 'generic'"><Server :size="14" /></span>
               <div class="rl-names">
                 <div class="rl-name-row">
-                  <strong :class="{ struck: r.status !== 'active' }">{{ r.name }}</strong>
-                  <span v-if="r.status === 'disabled'" class="tag neutral">已停用</span>
-                  <span v-else-if="r.status === 'abnormal'" class="tag danger">异常</span>
+                  <strong>{{ r.name }}</strong>
                 </div>
               </div>
             </div>
             <div class="rl-cell">
-              <a :href="r.url" target="_blank" rel="noopener noreferrer" class="mono rl-host" :title="r.url" @click.stop>
-                <span>{{ hostOf(r.url) }}</span>
+              <a v-if="r.consoleUrl" :href="r.consoleUrl" target="_blank" rel="noopener noreferrer" class="mono rl-host" :title="r.consoleUrl" @click.stop>
+                <span>{{ r.consoleUrl }}</span>
                 <ExternalLink :size="12" />
               </a>
+              <span v-else class="mono rl-host faint">{{ r.url || '-' }}</span>
             </div>
             <div class="rl-cell models">
               <span v-for="m in r.models.slice(0, 3)" :key="m.id" class="tag">{{ m.name }}</span>
@@ -814,10 +836,17 @@ onMounted(loadData)
             <div class="rl-cell weight"><span class="mono rl-weight">{{ r.raw.weight }}</span></div>
             <div class="rl-cell op">
               <button class="icon-btn op-toggle" :disabled="busyIds.has(r.id)" :title="r.status === 'active' ? '停用' : '启用'" @click.stop="toggleStatus(r)">
-                <CircleStop v-if="r.status === 'active'" :size="14" class="ico-on" />
-                <CirclePlay v-else :size="14" class="ico-off" />
+                <CirclePlay v-if="r.status === 'active'" :size="14" class="ico-on" />
+                <AlertTriangle v-else-if="r.status === 'abnormal'" :size="14" class="ico-abnormal" />
+                <CirclePause v-else :size="14" class="ico-off" />
               </button>
-              <button class="icon-btn checkin-btn" :class="{ done: isToday(r.checkinAt) }" :disabled="busyIds.has(r.id)" :title="r.checkinAt ? '已同步 ' + formatDate(r.checkinAt) + ' · 点击重新同步' : '签到并同步'" @click.stop="checkin(r)">
+              <button
+                class="icon-btn checkin-btn"
+                :class="{ done: r.consoleSyncSupported && isToday(r.checkinAt), pending: r.consoleSyncSupported && !isToday(r.checkinAt) }"
+                :disabled="!r.consoleSyncSupported || busyIds.has(r.id)"
+                :title="!r.consoleSyncSupported ? '通用类型，无需签到' : r.checkinAt ? '已同步 ' + formatDate(r.checkinAt) + ' · 点击重新同步' : '签到并同步'"
+                @click.stop="checkin(r)"
+              >
                 <LoaderCircle v-if="busyIds.has(r.id)" :size="14" class="spin" />
                 <CalendarCheck v-else :size="14" />
               </button>
@@ -858,7 +887,7 @@ onMounted(loadData)
                     <div class="ri-row">
                       <User :size="13" />
                       <span class="ri-label">用户信息</span>
-                      <span class="ri-val mono">{{ r.username || '-' }}</span>
+                      <span class="ri-val mono">{{ r.username ? r.username + (consoleUserIdOf(r.raw) && consoleUserIdOf(r.raw) !== r.username ? ' / ' + consoleUserIdOf(r.raw) : '') : consoleUserIdOf(r.raw) || '-' }}</span>
                     </div>
                     <div class="ri-row">
                       <CalendarCheck :size="13" />
@@ -880,7 +909,8 @@ onMounted(loadData)
                     <div v-for="k in r.keys" :key="k.id" class="rk-item">
                       <div class="rk-top">
                         <span class="rk-name"><KeyRound :size="12" />{{ k.name }}</span>
-                        <span class="rk-flag" title="已用额度"><Coins :size="11" />{{ fmtTokens(k.usedTokens) }} tokens</span>
+                        <span class="rk-group">{{ k.name }}</span>
+                        <span class="rk-used mono"><Coins :size="11" />{{ fmtUsd(k.usedTokens / 500000) }}</span>
                       </div>
                       <div class="rk-key mono">{{ k.key }}</div>
                       <div class="rk-bottom">
@@ -900,7 +930,7 @@ onMounted(loadData)
                   <div class="rm-list">
                     <div v-for="m in r.models" :key="m.id" class="rm-item">
                       <span class="tag rm-tag">{{ m.name }}</span>
-                      <span class="rm-group">{{ m.group }}</span>
+                      <span class="rm-group">{{ cheapestGroup(m.name, r.keys) }}</span>
                       <span class="rm-price mono">in {{ fmtPrice(m.priceIn) }} / out {{ fmtPrice(m.priceOut) }}</span>
                     </div>
                   </div>
@@ -911,7 +941,7 @@ onMounted(loadData)
         </div>
       </TransitionGroup>
 
-      <div v-if="!loading && !loadError" class="pagination">
+      <div v-show="!loading && !loadError" class="pagination">
         <span class="page-info mono">{{ filtered.length }} 条记录 · 第 {{ page }}/{{ totalPages }} 页</span>
         <div class="page-btns">
           <button class="icon-btn" :disabled="page <= 1" @click="goPage(page - 1)" aria-label="上一页"><ChevronLeft :size="15" /></button>
@@ -1196,6 +1226,8 @@ onMounted(loadData)
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-danger:hover { background: color-mix(in srgb, var(--danger) 82%, #000); }
 .btn-danger:active { transform: translateY(0) scale(0.98); }
+.btn-purple { color: #8b5cf6; }
+.btn-purple:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.12); }
 .spin { animation: relay-spin 0.9s linear infinite; }
 @keyframes relay-spin { to { transform: rotate(360deg); } }
 .relay-state {
@@ -1225,13 +1257,29 @@ onMounted(loadData)
 }
 .page-num:hover { background: var(--surface-2); color: var(--text); }
 .page-num.on { background: var(--grad); color: #fff; box-shadow: 0 2px 14px rgba(139,92,246,0.4); }
-.checkin-btn.done { color: var(--success); }
-.checkin-btn.done:hover { color: color-mix(in srgb, var(--success) 75%, #000); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.checkin-btn.done { color: #8b5cf6; }
+.checkin-btn.done:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.12); }
+.checkin-btn.pending { position: relative; }
+.checkin-btn.pending::after {
+  content: '!';
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 6px;
+  font-weight: 700;
+  line-height: 8px;
+  text-align: center;
+  pointer-events: none;
+}
 
-.rl-cell.op .checkin-btn { color: #8b5cf6; }
-.rl-cell.op .checkin-btn:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.12); }
+.rl-cell.op .checkin-btn { color: var(--info); }
+.rl-cell.op .checkin-btn:hover { color: var(--info); background: color-mix(in srgb, var(--info) 10%, transparent); }
 .rl-cell.op .checkin-btn.done { color: #8b5cf6; }
 .rl-cell.op .checkin-btn.done:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.12); }
+.rl-cell.op .checkin-btn:disabled { color: var(--text-faint); opacity: 0.5; cursor: not-allowed; }
 
 .confirm-body { display: flex; flex-direction: column; gap: 8px; }
 .cf-row {
@@ -1284,7 +1332,7 @@ onMounted(loadData)
 .rl-row.off { opacity: 0.6; }
 .rl-row.off:hover { opacity: 1; }
 .rl-row.off .rl-avatar { filter: grayscale(0.9); opacity: 0.6; }
-.rl-row.off strong { color: var(--text-faint); text-decoration: line-through; }
+.rl-row.off strong { color: var(--text-faint); }
 .rl-row.open { background: var(--surface-2); }
 
 .rl-main {
@@ -1304,11 +1352,9 @@ onMounted(loadData)
   border: 1px solid var(--border);
   flex: none;
 }
-.rl-avatar.openai { background: rgba(34,211,238,0.12); color: var(--c1); }
-.rl-avatar.anthropic { background: rgba(232,121,249,0.12); color: var(--c3); }
-.rl-avatar.gemini { background: rgba(56,189,248,0.12); color: var(--c7); }
-.rl-avatar.deepseek { background: rgba(139,92,246,0.12); color: var(--c2); }
-.rl-avatar.custom { background: rgba(251,191,36,0.12); color: var(--c5); }
+.rl-avatar.generic { background: rgba(251,191,36,0.12); color: #f59e0b; }
+.rl-avatar.new-api { background: rgba(34,211,238,0.12); color: var(--c1); }
+.rl-avatar.sub2api { background: rgba(139,92,246,0.12); color: var(--c2); }
 
 .rl-cell.name { display: flex; align-items: center; gap: 10px; }
 .rl-names { min-width: 0; display: flex; flex-direction: column; }
@@ -1339,9 +1385,10 @@ onMounted(loadData)
 
 .rl-cell.op { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .rl-cell.op .ico-on { color: var(--success); }
-.rl-cell.op .ico-off { color: var(--info); }
-.rl-cell.op .op-toggle { color: var(--info); }
-.rl-cell.op .op-toggle:hover { color: var(--info); background: rgba(56, 189, 248, 0.12); }
+.rl-cell.op .ico-off { color: var(--text-faint); }
+.rl-cell.op .ico-abnormal { color: var(--warning); }
+.rl-cell.op .op-toggle { color: var(--text-muted); }
+.rl-cell.op .op-toggle:hover { background: var(--surface-2); }
 .rl-cell.op .op-edit { color: #fbbf24; }
 .rl-cell.op .op-edit:hover { color: #fbbf24; background: rgba(251, 191, 36, 0.14); }
 .rl-cell.op .op-del { color: var(--danger); }
@@ -1415,10 +1462,11 @@ onMounted(loadData)
   border: 1px solid var(--border-soft);
 }
 .rk-top { display: flex; align-items: center; gap: 8px; }
-.rk-name { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-soft); }
-.rk-name svg { color: var(--primary); }
-.rk-flag { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 10.5px; font-weight: 600; color: var(--text-faint); }
-.rk-flag svg { color: var(--text-faint); }
+.rk-name { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-soft); min-width: 0; }
+.rk-name svg { color: var(--primary); flex: none; }
+.rk-group { font-size: 11px; color: var(--text-muted); background: var(--surface-3); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.rk-used { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-soft); white-space: nowrap; }
+.rk-used svg { color: var(--text-faint); }
 .rk-key {
   font-size: 12px;
   color: var(--text-soft);
