@@ -1312,7 +1312,7 @@ onMounted(loadData)
 .filter-chip.on { border-color: var(--primary); color: var(--primary); background: rgba(34,211,238,0.1); box-shadow: 0 0 0 3px rgba(34,211,238,0.08); }
 
 /* ---------- list ---------- */
-.relay-list { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.relay-list { display: flex; flex-direction: column; overflow: hidden; padding: 0; position: relative; }
 .rl-head {
   display: grid;
   grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 170px;
@@ -1510,7 +1510,8 @@ onMounted(loadData)
 .ke-top .field { flex: 1; }
 .ke-empty { font-size: 12px; color: var(--text-faint); text-align: center; padding: 14px 0; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); }
 
-.rl-enter-active, .rl-leave-active { transition: all 0.3s var(--ease-out); }
+.rl-enter-active { transition: all 0.3s var(--ease-out); }
+.rl-leave-active { transition: all 0.3s var(--ease-out); position: absolute; width: 100%; pointer-events: none; }
 .rl-enter-from, .rl-leave-to { opacity: 0; transform: translateY(-8px); }
 .detail-enter-active, .detail-leave-active { transition: all 0.3s var(--ease-out); }
 .detail-enter-from, .detail-leave-to { opacity: 0; transform: translateY(-6px); }
