@@ -84,20 +84,27 @@ interface PagedResponse<T> {
   limit: number
 }
 
+export interface BackendConsoleRequestLog {
+  time: string
+  method?: string
+  path: string
+  status_code: number
+  body: string
+}
+
 export interface BackendSyncResponse {
   backend: BackendResponse
   status?: Record<string, unknown>
   checkin?: Record<string, unknown> | null
   account?: Record<string, unknown>
   pricing?: Record<string, unknown>
-  requests: Array<{
-    time: string
-    method: string
-    path: string
-    status_code: number
-    body: string
-  }>
+  requests: BackendConsoleRequestLog[]
 }
+
+export type BackendConsoleStreamEvent =
+  | { type: 'request'; request: BackendConsoleRequestLog }
+  | { type: 'complete'; response: BackendSyncResponse }
+  | { type: 'error'; status?: number; message?: string; requests?: BackendConsoleRequestLog[] }
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
@@ -164,6 +171,86 @@ export function deleteBackend(id: number) {
 export function syncBackend(id: number, audit = true) {
   const query = audit ? '' : '?audit=0'
   return request<BackendSyncResponse>(`/admin/api/backends/${id}/console/sync${query}`, { method: 'POST' })
+}
+
+export async function syncBackendStream(
+  id: number,
+  onRequest: (request: BackendConsoleRequestLog) => void,
+  options: { audit?: boolean } = {}
+): Promise<BackendSyncResponse> {
+  const audit = options.audit !== false
+  const params = new URLSearchParams({ stream: '1' })
+  if (!audit) params.set('audit', '0')
+
+  const response = await fetch(`${apiBase}/admin/api/backends/${id}/console/sync?${params}`, {
+    method: 'POST',
+    headers: { Accept: 'application/x-ndjson' }
+  })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    let message = response.statusText || `请求失败（${response.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json?.error?.message) message = json.error.message
+      else if (json?.error) message = String(json.error)
+    } catch {}
+    throw new ApiError(message, response.status)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) throw new ApiError('Stream not available', 0)
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalResponse: BackendSyncResponse | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (value) buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const event: BackendConsoleStreamEvent = JSON.parse(trimmed)
+        if (event.type === 'request') {
+          onRequest(event.request)
+        } else if (event.type === 'complete') {
+          finalResponse = event.response
+        } else if (event.type === 'error') {
+          const err = new ApiError(event.message || 'Console sync failed', event.status || 0)
+          ;(err as any).requests = event.requests
+          throw err
+        }
+      } catch (e) {
+        if (e instanceof ApiError) throw e
+      }
+    }
+
+    if (done) break
+  }
+
+  if (buffer.trim()) {
+    try {
+      const event: BackendConsoleStreamEvent = JSON.parse(buffer.trim())
+      if (event.type === 'request') onRequest(event.request)
+      else if (event.type === 'complete') finalResponse = event.response
+      else if (event.type === 'error') {
+        const err = new ApiError(event.message || 'Console sync failed', event.status || 0)
+        ;(err as any).requests = event.requests
+        throw err
+      }
+    } catch (e) {
+      if (e instanceof ApiError) throw e
+    }
+  }
+
+  if (!finalResponse) throw new ApiError('Stream ended without response', 0)
+  return finalResponse
 }
 
 export function recordBackendSyncSummary(total: number, successCount: number, failureCount: number) {

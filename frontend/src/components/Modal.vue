@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { X } from 'lucide-vue-next'
+import { X } from 'lucide-vue-next'
 
 const props = withDefaults(
   defineProps<{
@@ -36,7 +36,7 @@ function onKey(e: KeyboardEvent) {
                 <p v-if="subtitle" class="modal-sub">{{ subtitle }}</p>
               </div>
             </div>
-            <button class="icon-btn" @click="emit('close')" aria-label="关闭">
+            <button class="icon-btn modal-close" @click="emit('close')" aria-label="关闭">
               <X :size="16" />
             </button>
           </header>
@@ -93,6 +93,8 @@ function onKey(e: KeyboardEvent) {
   justify-content: space-between;
   padding: 22px 24px 0;
   gap: 16px;
+  position: relative;
+  z-index: 1;
 }
 .modal-title-wrap { display: flex; align-items: center; gap: 13px; }
 .modal-icon {
@@ -117,6 +119,14 @@ function onKey(e: KeyboardEvent) {
   padding: 16px 24px 20px;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+
+.modal-close {
+  color: var(--text);
+}
+.modal-close:hover {
+  color: var(--text);
+  background: var(--surface-3);
 }
 
 .modal-enter-active, .modal-leave-active { transition: opacity 0.25s ease; }
