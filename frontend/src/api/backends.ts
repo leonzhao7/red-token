@@ -19,6 +19,22 @@ export interface SocksProxyResponse {
   enabled: boolean
 }
 
+export interface SocksProxyListItem extends SocksProxyResponse {
+  bound_backend_count: number
+  request_count?: number
+  traffic_bytes?: number
+  avg_latency_ms?: number
+  last_used_at?: string
+}
+
+export interface SocksProxyWrite {
+  name: string
+  address: string
+  username: string
+  password: string
+  enabled: boolean
+}
+
 export interface BackendResponse {
   id: number
   name: string
@@ -147,7 +163,25 @@ export function listBackends() {
 }
 
 export function listSocksProxies() {
-  return request<PagedResponse<SocksProxyResponse>>('/admin/api/socks-proxies?page=1&limit=10000')
+  return request<PagedResponse<SocksProxyListItem>>('/admin/api/socks-proxies?page=1&limit=10000')
+}
+
+export function createSocksProxy(payload: SocksProxyWrite) {
+  return request<SocksProxyResponse>('/admin/api/socks-proxies', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function updateSocksProxy(id: number, payload: SocksProxyWrite) {
+  return request<SocksProxyResponse>(`/admin/api/socks-proxies/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function deleteSocksProxy(id: number) {
+  return request<{ deleted: number }>(`/admin/api/socks-proxies/${id}`, { method: 'DELETE' })
 }
 
 export function createBackend(payload: BackendWritePayload) {
