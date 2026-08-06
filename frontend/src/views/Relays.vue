@@ -731,16 +731,16 @@ onMounted(loadData)
             </div>
             <div class="rl-cell weight"><span class="mono rl-weight">{{ r.raw.weight }}</span></div>
             <div class="rl-cell op">
+              <button class="icon-btn op-toggle" :disabled="busyIds.has(r.id)" :title="r.status === 'active' ? '停用' : '启用'" @click.stop="toggleStatus(r)">
+                <CircleStop v-if="r.status === 'active'" :size="14" class="ico-on" />
+                <CirclePlay v-else :size="14" class="ico-off" />
+              </button>
               <button class="icon-btn checkin-btn" :class="{ done: isToday(r.checkinAt) }" :disabled="busyIds.has(r.id)" :title="r.checkinAt ? '已同步 ' + formatDate(r.checkinAt) + ' · 点击重新同步' : '签到并同步'" @click.stop="checkin(r)">
                 <LoaderCircle v-if="busyIds.has(r.id)" :size="14" class="spin" />
                 <CalendarCheck v-else :size="14" />
               </button>
-              <button class="icon-btn primary" title="编辑" @click.stop="openEditRelay(r)"><Pencil :size="14" /></button>
-              <button class="icon-btn" :disabled="busyIds.has(r.id)" :title="r.status === 'active' ? '停用' : '启用'" @click.stop="toggleStatus(r)">
-                <CircleStop v-if="r.status === 'active'" :size="14" class="ico-on" />
-                <CirclePlay v-else :size="14" class="ico-off" />
-              </button>
-              <button class="icon-btn danger" title="删除" @click.stop="askRemove(r)"><Trash2 :size="14" /></button>
+              <button class="icon-btn op-edit" title="编辑" @click.stop="openEditRelay(r)"><Pencil :size="14" /></button>
+              <button class="icon-btn op-del" title="删除" @click.stop="askRemove(r)"><Trash2 :size="14" /></button>
               <ChevronDown :size="16" class="rl-chev" :class="{ on: expandedId === r.id }" />
             </div>
           </div>
@@ -769,19 +769,24 @@ onMounted(loadData)
                   </div>
                   <div class="r-info">
                     <div class="ri-row">
+                      <Server :size="13" />
+                      <span class="ri-label">平台类型</span>
+                      <span class="ri-val mono">{{ r.backendType || '-' }}</span>
+                    </div>
+                    <div class="ri-row">
                       <User :size="13" />
-                      <span class="ri-label">用户名 / ID</span>
-                      <span class="ri-val mono">{{ r.username || '—' }}</span>
+                      <span class="ri-label">用户信息</span>
+                      <span class="ri-val mono">{{ r.username || '-' }}</span>
                     </div>
                     <div class="ri-row">
                       <CalendarCheck :size="13" />
                       <span class="ri-label">签到时间</span>
-                      <span class="ri-val mono" :class="{ faint: !r.checkinAt }">{{ r.checkinAt ? formatDate(r.checkinAt) : '未签到' }}</span>
+                      <span class="ri-val mono" :class="{ faint: !r.checkinAt }">{{ r.checkinAt ? formatDate(r.checkinAt) : '-' }}</span>
                     </div>
                     <div class="ri-row">
                       <Globe :size="13" />
-                      <span class="ri-label">代理服务器</span>
-                      <span class="ri-val">{{ r.proxyId ? proxyName(r.proxyId) : '直连' }}</span>
+                      <span class="ri-label">代理服务</span>
+                      <span class="ri-val">{{ r.proxyId ? proxyName(r.proxyId) : '-' }}</span>
                     </div>
                   </div>
                 </div>
@@ -1065,6 +1070,12 @@ onMounted(loadData)
 .page-num.on { background: var(--grad); color: #fff; box-shadow: 0 2px 14px rgba(139,92,246,0.4); }
 .checkin-btn.done { color: var(--success); }
 .checkin-btn.done:hover { color: color-mix(in srgb, var(--success) 75%, #000); background: color-mix(in srgb, var(--success) 10%, transparent); }
+
+.rl-cell.op .checkin-btn { color: #8b5cf6; }
+.rl-cell.op .checkin-btn:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.12); }
+.rl-cell.op .checkin-btn.done { color: #8b5cf6; }
+.rl-cell.op .checkin-btn.done:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.12); }
+
 .confirm-body { display: flex; flex-direction: column; gap: 8px; }
 .cf-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -1145,7 +1156,7 @@ onMounted(loadData)
 .rl-cell.name { display: flex; align-items: center; gap: 10px; }
 .rl-names { min-width: 0; display: flex; flex-direction: column; }
 .rl-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.rl-names strong { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rl-names strong { font-size: 15.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rl-host {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   font-size: 12px; color: var(--text-muted); text-decoration: none;
@@ -1172,6 +1183,12 @@ onMounted(loadData)
 .rl-cell.op { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .rl-cell.op .ico-on { color: var(--success); }
 .rl-cell.op .ico-off { color: var(--info); }
+.rl-cell.op .op-toggle { color: var(--info); }
+.rl-cell.op .op-toggle:hover { color: var(--info); background: rgba(56, 189, 248, 0.12); }
+.rl-cell.op .op-edit { color: #fbbf24; }
+.rl-cell.op .op-edit:hover { color: #fbbf24; background: rgba(251, 191, 36, 0.14); }
+.rl-cell.op .op-del { color: var(--danger); }
+.rl-cell.op .op-del:hover { color: var(--danger); background: var(--danger-soft); }
 .rl-chev { color: var(--text-faint); transition: transform 0.25s var(--ease-out); }
 .rl-chev.on { transform: rotate(180deg); color: var(--primary); }
 
@@ -1198,6 +1215,7 @@ onMounted(loadData)
 .ra-ico { width: 30px; height: 30px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex: none; }
 .ra-ico.cyan { background: rgba(34,211,238,0.12); color: var(--c1); }
 .ra-ico.violet { background: rgba(139,92,246,0.12); color: var(--c2); }
+.ra-body { display: flex; flex-direction: column; }
 .ra-label { font-size: 10.5px; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em; }
 .ra-val { font-size: 16px; font-weight: 700; color: var(--text); }
 .ra-val.low { color: var(--danger); }
@@ -1215,11 +1233,21 @@ onMounted(loadData)
 .ri-val { flex: 1; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ri-val.faint { color: var(--text-faint); }
 
-.rm-list { display: flex; flex-direction: column; gap: 5px; max-height: 200px; overflow-y: auto; padding-right: 2px; }
-.rm-item { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
-.rm-tag { font-size: 11px; }
-.rm-group { font-size: 11px; color: var(--text-faint); width: 72px; flex: none; }
-.rm-price { font-size: 11px; color: var(--text-muted); margin-left: auto; flex: none; }
+.rm-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; padding-right: 2px; }
+.rm-item {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1.5fr;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+}
+.rm-tag { font-size: 11px; justify-self: start; }
+.rm-group { font-size: 11px; color: var(--text-muted); }
+.rm-price { font-size: 11px; color: var(--text-muted); text-align: right; justify-self: end; }
 
 .rld-keys { display: flex; flex-direction: column; gap: 10px; }
 .rk-item {
