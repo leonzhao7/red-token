@@ -4,6 +4,7 @@ export type BackendStatus = 'normal' | 'abnormal' | 'disabled'
 
 export interface BackendApiKey {
   api_key: string
+  name: string
   group: string
   models: string[]
   model_mapping: Record<string, string>
@@ -210,11 +211,12 @@ export function syncBackend(id: number, audit = true) {
 export async function syncBackendStream(
   id: number,
   onRequest: (request: BackendConsoleRequestLog) => void,
-  options: { audit?: boolean } = {}
+  options: { audit?: boolean; checkin?: boolean } = {}
 ): Promise<BackendSyncResponse> {
   const audit = options.audit !== false
   const params = new URLSearchParams({ stream: '1' })
   if (!audit) params.set('audit', '0')
+  if (options.checkin) params.set('checkin', '1')
 
   const response = await fetch(`${apiBase}/admin/api/backends/${id}/console/sync?${params}`, {
     method: 'POST',

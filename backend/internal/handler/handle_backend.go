@@ -835,7 +835,7 @@ func (h *BackendHandler) handleNewAPIConsoleSync(w http.ResponseWriter, r *http.
 
 	lastCheckinAt, checkedInToday := consoleLastCheckinStatus(backend, time.Now().UTC())
 	checkinEnabled := service.NewAPIStatusCheckinEnabled(statusResult.Payload)
-	recordSyncCompletionAsCheckin := !checkinEnabled
+	recordSyncCompletionAsCheckin := !checkinEnabled || recordsConsoleCheckin(r)
 	var selfResult newAPIConsoleResult
 	var checkinPayload map[string]any
 	if checkedInToday || !checkinEnabled {
@@ -933,7 +933,9 @@ func (h *BackendHandler) handleNewAPIConsoleSync(w http.ResponseWriter, r *http.
 }
 
 func (h *BackendHandler) handleSub2APIConsoleSync(w http.ResponseWriter, r *http.Request, backend domain.Backend, recorder *newAPIConsoleRequestRecorder, stream *consoleSyncStream) {
-	result, err := h.sub2APIPlatform().Sync(r.Context(), backend, recorder)
+	result, err := h.sub2APIPlatform().Sync(r.Context(), backend, recorder, service.Sub2APISyncOptions{
+		RecordCompletionAsCheckin: recordsConsoleCheckin(r),
+	})
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrSub2APIConsoleAuthorizationRequired) {
@@ -1318,6 +1320,10 @@ func wantsConsoleSyncStream(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "application/x-ndjson")
 }
 
+func recordsConsoleCheckin(r *http.Request) bool {
+	return r.URL.Query().Get("checkin") == "1"
+}
+
 func (s *consoleSyncStream) write(event map[string]any) {
 	if s == nil {
 		return
@@ -1484,6 +1490,7 @@ func validateBackendAPIKeys(values []domain.BackendAPIKey, legacyAPIKey string, 
 	normalized := make([]domain.BackendAPIKey, 0, len(values))
 	for index, value := range values {
 		value.APIKey = strings.TrimSpace(value.APIKey)
+		value.Name = strings.TrimSpace(value.Name)
 		value.Group = strings.TrimSpace(value.Group)
 		if value.APIKey == "" {
 			return nil, fmt.Errorf("api_keys[%d].api_key is required", index)
@@ -2122,17 +2129,10 @@ func consoleCheckinLocation(now time.Time) *time.Location {
 }
 
 func sameConsoleDate(value, now time.Time) bool {
-	for _, location := range []*time.Location{consoleCheckinLocation(now), value.Location(), now.Location(), time.UTC} {
-		if location == nil {
-			continue
-		}
-		valueInLocation := value.In(location)
-		nowInLocation := now.In(location)
-		if valueInLocation.Year() == nowInLocation.Year() && valueInLocation.YearDay() == nowInLocation.YearDay() {
-			return true
-		}
-	}
-	return false
+	location := consoleCheckinLocation(now)
+	valueInLocation := value.In(location)
+	nowInLocation := now.In(location)
+	return valueInLocation.Year() == nowInLocation.Year() && valueInLocation.YearDay() == nowInLocation.YearDay()
 }
 
 func filterConsolePricingPayload(payload map[string]any, focusPatterns string) map[string]any {

@@ -52,6 +52,7 @@ export interface RelayModel {
 export interface RelayKey {
   id: string
   name: string
+  group?: string
   username: string
   key: string
   models: string[]

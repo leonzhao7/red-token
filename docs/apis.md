@@ -110,6 +110,7 @@ X-Api-Key: tg-xxxxxxxx
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `api_key` | string | 上游 API Key |
+| `name` | string | Key 名称；可以为空，前端显示时回退为“未知” |
 | `group` | string | Key 分组，必填 |
 | `models` | string[] | 支持的模型；支持 `*`、`?` 通配模式，至少一项 |
 | `model_mapping` | object<string,string> | 客户端模型名到上游模型名的映射 |
@@ -120,6 +121,7 @@ X-Api-Key: tg-xxxxxxxx
 ```json
 {
   "api_key": "sk-upstream",
+  "name": "production-key",
   "group": "default",
   "models": ["gpt-5", "gpt-4.*"],
   "model_mapping": {
@@ -712,6 +714,7 @@ X-Api-Key: tg-xxxxxxxx
   "api_keys": [
     {
       "api_key": "sk-upstream",
+      "name": "production-key",
       "group": "default",
       "models": ["gpt-5", "gpt-4.*"],
       "model_mapping": {"gpt-5-client": "gpt-5"},

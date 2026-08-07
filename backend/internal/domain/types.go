@@ -40,6 +40,7 @@ type ClientKey struct {
 
 type BackendAPIKey struct {
 	APIKey       string            `json:"api_key"`
+	Name         string            `json:"name"`
 	Group        string            `json:"group"`
 	Models       []string          `json:"models"`
 	ModelMapping map[string]string `json:"model_mapping"`

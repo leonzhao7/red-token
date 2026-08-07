@@ -93,7 +93,11 @@ type Sub2APISyncResult struct {
 	Pricing map[string]any
 }
 
-func (p *PlatformSub2API) Sync(ctx context.Context, backend domain.Backend, recorder ConsoleRequestRecorder) (Sub2APISyncResult, error) {
+type Sub2APISyncOptions struct {
+	RecordCompletionAsCheckin bool
+}
+
+func (p *PlatformSub2API) Sync(ctx context.Context, backend domain.Backend, recorder ConsoleRequestRecorder, options Sub2APISyncOptions) (Sub2APISyncResult, error) {
 	if strings.TrimSpace(backend.ConsoleAuthorization) == "" {
 		return Sub2APISyncResult{}, ErrSub2APIConsoleAuthorizationRequired
 	}
@@ -104,7 +108,7 @@ func (p *PlatformSub2API) Sync(ctx context.Context, backend domain.Backend, reco
 		checkinPayload map[string]any
 		pricingPayload map[string]any
 	)
-	recordSyncCompletionAsCheckin := normalizeSub2APIPath(backend.ConsoleCheckinPath) == ""
+	recordSyncCompletionAsCheckin := normalizeSub2APIPath(backend.ConsoleCheckinPath) == "" || options.RecordCompletionAsCheckin
 	if checkinPath := normalizeSub2APIPath(backend.ConsoleCheckinPath); checkinPath != "" && !checkedInToday {
 		checkinResult, err := p.Checkin(ctx, backend, checkinPath, recorder)
 		if err != nil {

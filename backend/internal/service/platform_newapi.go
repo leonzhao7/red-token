@@ -210,6 +210,7 @@ func (p *PlatformNewAPI) SyncTokens(ctx context.Context, backend domain.Backend,
 		}
 		tokens = append(tokens, newAPIToken{
 			APIKey:    apiKey,
+			Name:      item.Name,
 			Group:     item.Group,
 			UsedQuota: item.UsedQuota,
 		})
@@ -389,12 +390,14 @@ func newAPIResultAttrs(result NewAPIResult) []slog.Attr {
 type newAPITokenMetadata struct {
 	ID        int64
 	Key       string
+	Name      string
 	Group     string
 	UsedQuota int64
 }
 
 type newAPIToken struct {
 	APIKey    string
+	Name      string
 	Group     string
 	UsedQuota int64
 }
@@ -422,6 +425,7 @@ func newAPITokenMetadataItems(payload map[string]any) ([]newAPITokenMetadata, er
 		if !ok {
 			return nil, fmt.Errorf("new-api token list item %d has invalid used_quota", index)
 		}
+		name, _ := item["name"].(string)
 		group := strings.TrimSpace(fmt.Sprint(item["group"]))
 		if group == "" || group == "<nil>" {
 			group = "default"
@@ -430,6 +434,7 @@ func newAPITokenMetadataItems(payload map[string]any) ([]newAPITokenMetadata, er
 		items = append(items, newAPITokenMetadata{
 			ID:        id,
 			Key:       strings.TrimSpace(key),
+			Name:      strings.TrimSpace(name),
 			Group:     group,
 			UsedQuota: usedQuota,
 		})
@@ -497,6 +502,7 @@ func mergeNewAPITokens(existing []domain.BackendAPIKey, tokens []newAPIToken) []
 	for _, token := range tokens {
 		apiKey := strings.TrimSpace(token.APIKey)
 		if index, ok := indexByKey[apiKey]; ok {
+			merged[index].Name = token.Name
 			merged[index].Group = token.Group
 			merged[index].UsedQuota = token.UsedQuota
 			continue
@@ -504,6 +510,7 @@ func mergeNewAPITokens(existing []domain.BackendAPIKey, tokens []newAPIToken) []
 		indexByKey[apiKey] = len(merged)
 		merged = append(merged, domain.BackendAPIKey{
 			APIKey:       apiKey,
+			Name:         token.Name,
 			Group:        token.Group,
 			Models:       []string{},
 			ModelMapping: map[string]string{},

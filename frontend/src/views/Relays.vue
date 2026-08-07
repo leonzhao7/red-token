@@ -28,6 +28,7 @@ import {
 import Modal from '../components/Modal.vue'
 import { MODEL_CATALOG } from '../data/mock'
 import { toast } from '../composables/toast'
+import { tieredExpressionPricing } from '../utils/tieredPricing'
 import {
   ApiError,
   createBackend,
@@ -294,8 +295,37 @@ function platformOf(backend: BackendResponse): PlatformType {
   return 'Custom'
 }
 
+type ModelPricing = { input: number; output: number; group: string }
+
+function enabledPricingGroups(record: Record<string, any>): string[] {
+  const raw = record.enable_groups
+  const groups = Array.isArray(raw)
+    ? raw.map((group) => String(group).trim())
+    : typeof raw === 'string'
+      ? raw.split(',').map((group) => group.trim())
+      : []
+  return [...new Set(groups.filter(Boolean))]
+}
+
+function cheapestPricingGroup(record: Record<string, any>, ratios: Record<string, unknown> | null) {
+  const groups = enabledPricingGroups(record)
+  if (!groups.length) return { name: '', ratio: 1 }
+
+  let cheapest = { name: groups[0], ratio: 1 }
+  let foundRatio = false
+  for (const name of groups) {
+    const ratio = Number(ratios?.[name])
+    if (!Number.isFinite(ratio) || ratio < 0) continue
+    if (!foundRatio || ratio < cheapest.ratio) {
+      cheapest = { name, ratio }
+      foundRatio = true
+    }
+  }
+  return cheapest
+}
+
 function pricingByModel(backend: BackendResponse) {
-  const result = new Map<string, { input: number; output: number }>()
+  const result = new Map<string, ModelPricing>()
   const account = parseObject(backend.console_account_json)
   const unit = numberValue(account.quota_per_unit) || 500000
   const exchangeRate = numberValue(account.custom_currency_exchange_rate) || 1
@@ -309,43 +339,38 @@ function pricingByModel(backend: BackendResponse) {
     const record = item as Record<string, any>
     const name = String(record.model_name || record.model || '').trim()
     if (!name) continue
+    const cheapestGroup = cheapestPricingGroup(record, groupRatio)
     const directInput = numberValue(record.input_price ?? record.prompt_price ?? record.input_cost)
     const directOutput = numberValue(record.output_price ?? record.completion_price ?? record.output_cost)
     if (directInput || directOutput) {
-      result.set(name, { input: directInput, output: directOutput || directInput })
+      result.set(name, { input: directInput, output: directOutput || directInput, group: cheapestGroup.name })
     } else {
       const ratio = numberValue(record.model_ratio ?? record.model_price)
+      const tieredPricing = tieredExpressionPricing(record, cheapestGroup.ratio, exchangeRate)
+      if (tieredPricing) {
+        result.set(name, { ...tieredPricing, group: cheapestGroup.name })
+        continue
+      }
       if (ratio) {
         const completionRatio = numberValue(record.completion_ratio) || 1
-        // Compute group multiplier from the lowest group ratio among enabled groups
-        let gMultiplier = 1
-        if (groupRatio) {
-          const enableGroups: string[] = Array.isArray(record.enable_groups) ? record.enable_groups
-            : typeof record.enable_groups === 'string' ? record.enable_groups.split(',').map((s: string) => s.trim()).filter(Boolean)
-            : []
-          if (enableGroups.length > 0) {
-            const ratios = enableGroups.map(g => numberValue(groupRatio[g])).filter(r => r > 0)
-            if (ratios.length > 0) gMultiplier = Math.min(...ratios)
-          }
-        }
-        const inputPrice = ratio * 1_000_000 / unit * exchangeRate * gMultiplier
+        const inputPrice = ratio * 1_000_000 / unit * exchangeRate * cheapestGroup.ratio
         const outputPrice = inputPrice * completionRatio
-        result.set(name, { input: inputPrice, output: outputPrice })
+        result.set(name, { input: inputPrice, output: outputPrice, group: cheapestGroup.name })
       }
     }
   }
   return result
 }
 
-function modelInfo(name: string, group: string, pricing: Map<string, { input: number; output: number }>): RelayModel {
+function modelInfo(name: string, group: string, pricing: Map<string, ModelPricing>): RelayModel {
   const known = MODEL_CATALOG.find((model) => model.name === name)
   const price = pricing.get(name)
   return {
     id: `model-${name}`,
     name,
-    group: known?.group || group,
-    priceIn: price?.input || known?.priceIn || 0,
-    priceOut: price?.output || known?.priceOut || 0
+    group: price?.group || known?.group || group,
+    priceIn: price ? price.input : known?.priceIn || 0,
+    priceOut: price ? price.output : known?.priceOut || 0
   }
 }
 
@@ -356,7 +381,8 @@ function mapBackend(backend: BackendResponse): RelayView {
     const models = Array.isArray(key.models) ? key.models.filter(Boolean) : []
     return {
       id: `${backend.id}-key-${index}`,
-      name: key.group || `Key ${index + 1}`,
+      name: key.name || '',
+      group: key.group || 'default',
       username: '',
       key: key.api_key,
       models,
@@ -464,21 +490,13 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
 
 const fmtPrice = (n: number) => {
   if (n === 0) return '$0'
-  if (n >= 1) return '$' + n.toFixed(2)
-  if (n >= 0.01) return '$' + n.toFixed(3)
+  if (n >= 1) return '$' + Number(n.toFixed(2))
+  if (n >= 0.01) return '$' + Number(n.toFixed(3))
   return '$' + n.toPrecision(3)
 }
 const fmtQuota = (n: number) => fmtUsd(n / 500000)
 const fmtTokens = (n: number) => (n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : (n / 1e6).toFixed(1) + 'M')
 
-function cheapestGroup(modelName: string, keys: RelayKey[]) {
-  const groups = keys.filter(k => k.models.includes(modelName)).map(k => k.name)
-  return groups.length ? groups[0] : '-'
-}
-function cheapestGroupForModel(modelName: string, keys: RelayKey[]): string {
-  const groups = keys.filter(k => k.models.includes(modelName)).map(k => k.name)
-  return groups.length ? groups[0] : '-'
-}
 const hostOf = (url: string) => {
   try {
     return new URL(url).host
@@ -506,7 +524,11 @@ async function toggleStatus(r: RelayView) {
   }
 }
 
-async function syncRelay(r: RelayView, quiet = false, audit = true) {
+async function syncRelay(
+  r: RelayView,
+  options: { quiet?: boolean; audit?: boolean; checkin?: boolean } = {}
+) {
+  const { quiet = false, audit = true, checkin = false } = options
   if (!r.consoleUrl) {
     if (!quiet) toast('缺少控制台地址', '请先在编辑中转站中填写 Console URL', 'warning')
     return false
@@ -520,7 +542,7 @@ async function syncRelay(r: RelayView, quiet = false, audit = true) {
   try {
     const response = await syncBackendStream(Number(r.id), (req) => {
       appendLogRow(req, r.name)
-    }, { audit })
+    }, { audit, checkin })
     upsertRelay(response.backend)
     if (!quiet) toast('中转站同步完成', `${r.name} · 账户与 API Key 已刷新`, 'success')
     return true
@@ -536,7 +558,7 @@ async function checkin(r: RelayView) {
   if (isToday(r.checkinAt)) {
     toast('今日已同步', `${r.name} · ${formatDate(r.checkinAt)}`, 'info')
   }
-  await syncRelay(r)
+  await syncRelay(r, { checkin: true })
 }
 
 async function checkinAll() {
@@ -559,7 +581,7 @@ async function checkinAll() {
     consoleLogRows.value = []
     expandedLogRowIds.value = new Set()
 
-    const ok = await syncRelay(relay, true, false)
+    const ok = await syncRelay(relay, { quiet: true, audit: false })
     if (ok) {
       successCount++
     } else {
@@ -599,6 +621,7 @@ function askRemove(r: RelayView) {
 
 /* ---- form ---- */
 interface KeyFormItem {
+  readonly name: string
   readonly serverGroup: string
   key: string
   keyVisible: boolean
@@ -608,7 +631,7 @@ interface KeyFormItem {
 }
 
 function defaultKeyFormItem(): KeyFormItem {
-  return { serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
+  return { name: '', serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
 }
 
 const form = ref<{
@@ -704,7 +727,8 @@ function openEditRelay(r: RelayView) {
     weight: numberValue(r.raw.weight) || 10,
     keys: r.keys.length
       ? r.keys.map((key) => ({
-          serverGroup: key.name,
+          name: key.name,
+          serverGroup: key.group || 'default',
           key: key.key,
           keyVisible: false,
           modelsInput: key.models.join(', '),
@@ -727,6 +751,7 @@ function buildPayload() {
   const apiKeys: BackendApiKey[] = form.value.keys.map((key) => {
     return {
       api_key: key.key.trim(),
+      name: key.name,
       group: key.serverGroup,
       models: parseModelList(key.modelsInput),
       model_mapping: parseModelMapping(key.modelMappingInput),
@@ -974,8 +999,8 @@ onMounted(loadData)
                   <div class="rld-keys">
                     <div v-for="k in r.keys" :key="k.id" class="rk-item">
                       <div class="rk-top">
-                        <span class="rk-name"><KeyRound :size="12" />{{ k.name }}</span>
-                        <span class="rk-group">{{ k.name }}</span>
+                        <span class="rk-name"><KeyRound :size="12" />{{ k.name || '未知' }}</span>
+                        <span class="rk-group">{{ k.group || 'default' }}</span>
                         <span class="rk-used mono"><Coins :size="11" />{{ fmtUsd(k.usedTokens / 500000) }}</span>
                       </div>
                       <div class="rk-key mono">{{ k.key }}</div>
@@ -994,7 +1019,7 @@ onMounted(loadData)
                   <div class="rm-list">
                     <div v-for="m in r.pricingModels" :key="m.id" class="rm-item">
                       <span class="tag rm-tag">{{ m.name }}</span>
-                      <span class="rm-group">{{ cheapestGroup(m.name, r.keys) }}</span>
+                      <span class="rm-group">{{ m.group || '-' }}</span>
                       <span class="rm-price mono">in {{ fmtPrice(m.priceIn) }} / out {{ fmtPrice(m.priceOut) }}</span>
                     </div>
                   </div>
