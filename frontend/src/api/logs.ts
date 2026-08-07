@@ -21,7 +21,9 @@ export interface UsageLog {
   method?: string
   client_ip?: string
   user_agent?: string
-  error?: string
+  error_message?: string
+  request_body_preview?: string
+  response_body_preview?: string
 }
 
 export interface LogOptions {

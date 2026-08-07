@@ -9,7 +9,9 @@ import {
   ChevronRight,
   Timer,
   LoaderCircle,
-  SlidersHorizontal
+  SlidersHorizontal,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-vue-next'
 import { toast } from '../composables/toast'
 import { listLogs, getLogOptions, clearLogs } from '../api/logs'
@@ -156,7 +158,17 @@ function openColMenu() {
   }, 0)
 }
 
-const totalCols = computed(() => 8 + colKeys.filter(k => visibleCols.value[k]).length)
+const expandedRows = ref<Set<number>>(new Set())
+
+function toggleRow(id: number) {
+  if (expandedRows.value.has(id)) {
+    expandedRows.value.delete(id)
+  } else {
+    expandedRows.value.add(id)
+  }
+}
+
+const totalCols = computed(() => 8 + colKeys.filter(k => visibleCols.value[k]).length + 1)
 
 onMounted(() => {
   loadOptions()
@@ -226,6 +238,7 @@ onMounted(() => {
               <th v-if="visibleCols.client_addr">客户端</th>
               <th v-if="visibleCols.request_id">请求 ID</th>
               <th v-if="visibleCols.ua">User-Agent</th>
+              <th style="width: 40px"></th>
             </tr>
           </thead>
           <tbody>
@@ -234,33 +247,69 @@ onMounted(() => {
                 <div class="empty"><LoaderCircle :size="18" class="spin" /><span>加载中…</span></div>
               </td>
             </tr>
-            <tr v-for="l in logs" :key="l.id">
-              <td class="mono td-time">{{ fmtTime(l.created_at) }}</td>
-              <td class="td-key">{{ l.client_name || '—' }}</td>
-              <td><span class="tag">{{ l.model }}</span></td>
-              <td class="td-relay">{{ l.backend_name || '—' }}</td>
-              <td>
-                <span class="status-code" :class="statusColor(l)">{{ l.status_code || '—' }}</span>
-              </td>
-              <td>
-                <span v-if="l.duration_ms != null" class="mono latency" :class="l.duration_ms > 60000 ? 'slow' : ''">
-                  <Timer :size="12" /> {{ (l.duration_ms / 1000).toFixed(2) }}s
-                </span>
-                <span v-else class="text-faint">—</span>
-              </td>
-              <td class="mono">
-                <div class="cell-l1">输入 {{ (l.input_tokens || 0).toLocaleString() }}</div>
-                <div class="cell-l2">缓存 {{ (l.input_cache_tokens || 0).toLocaleString() }} · 输出 {{ (l.output_tokens || 0).toLocaleString() }}</div>
-              </td>
-              <td class="mono">
-                <div class="cell-l1">{{ fmtBytes((l.request_bytes || 0) + (l.response_bytes || 0)) }}</div>
-                <div class="cell-l2">请求 {{ fmtBytes(l.request_bytes) }} · 响应 {{ fmtBytes(l.response_bytes) }}</div>
-              </td>
-              <td v-if="visibleCols.path" class="td-path" :title="l.path || ''">{{ l.path || '—' }}</td>
-              <td v-if="visibleCols.client_addr" class="td-addr">{{ l.client_ip || '—' }}</td>
-              <td v-if="visibleCols.request_id" class="mono td-reqid">{{ l.request_id || '—' }}</td>
-              <td v-if="visibleCols.ua" class="td-ua" :title="l.user_agent || ''">{{ l.user_agent || '—' }}</td>
-            </tr>
+            <template v-for="l in logs" :key="l.id">
+              <tr class="log-row" :class="{ expanded: expandedRows.has(l.id) }" @click="toggleRow(l.id)">
+                <td class="mono td-time">{{ fmtTime(l.created_at) }}</td>
+                <td class="td-key">{{ l.client_name || '—' }}</td>
+                <td><span class="tag">{{ l.model }}</span></td>
+                <td class="td-relay">{{ l.backend_name || '—' }}</td>
+                <td>
+                  <span class="status-code" :class="statusColor(l)">{{ l.status_code || '—' }}</span>
+                </td>
+                <td>
+                  <span v-if="l.duration_ms != null" class="mono latency" :class="l.duration_ms > 60000 ? 'slow' : ''">
+                    <Timer :size="12" /> {{ (l.duration_ms / 1000).toFixed(2) }}s
+                  </span>
+                  <span v-else class="text-faint">—</span>
+                </td>
+                <td class="mono">
+                  <div class="cell-l1">输入 {{ (l.input_tokens || 0).toLocaleString() }}</div>
+                  <div class="cell-l2">缓存 {{ (l.input_cache_tokens || 0).toLocaleString() }} · 输出 {{ (l.output_tokens || 0).toLocaleString() }}</div>
+                </td>
+                <td class="mono">
+                  <div class="cell-l1">{{ fmtBytes((l.request_bytes || 0) + (l.response_bytes || 0)) }}</div>
+                  <div class="cell-l2">请求 {{ fmtBytes(l.request_bytes) }} · 响应 {{ fmtBytes(l.response_bytes) }}</div>
+                </td>
+                <td v-if="visibleCols.path" class="td-path" :title="l.path || ''">{{ l.path || '—' }}</td>
+                <td v-if="visibleCols.client_addr" class="td-addr">{{ l.client_ip || '—' }}</td>
+                <td v-if="visibleCols.request_id" class="mono td-reqid">{{ l.request_id || '—' }}</td>
+                <td v-if="visibleCols.ua" class="td-ua" :title="l.user_agent || ''">{{ l.user_agent || '—' }}</td>
+                <td class="td-expand">
+                  <ChevronDown v-if="!expandedRows.has(l.id)" :size="16" />
+                  <ChevronUp v-else :size="16" />
+                </td>
+              </tr>
+              <tr v-if="expandedRows.has(l.id)" class="log-detail">
+                <td :colspan="totalCols + 1">
+                  <div class="detail-panel">
+                    <div class="detail-row">
+                      <span class="detail-label">请求 ID</span>
+                      <span class="detail-value mono">{{ l.request_id || '—' }}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">路径</span>
+                      <span class="detail-value mono">{{ l.path || '—' }}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">客户端地址</span>
+                      <span class="detail-value">{{ l.client_ip || '—' }}</span>
+                    </div>
+                    <div class="detail-row">
+                      <span class="detail-label">User-Agent</span>
+                      <span class="detail-value">{{ l.user_agent || '—' }}</span>
+                    </div>
+                    <div v-if="l.status_code && l.status_code !== 200 && l.response_body_preview" class="detail-row detail-error">
+                      <span class="detail-label">响应 Body</span>
+                      <pre class="detail-value error-body">{{ l.response_body_preview }}</pre>
+                    </div>
+                    <div v-if="l.error_message" class="detail-row detail-error">
+                      <span class="detail-label">错误信息</span>
+                      <pre class="detail-value error-body">{{ l.error_message }}</pre>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
             <tr v-if="!loading && !logs.length">
               <td :colspan="totalCols">
                 <div class="empty">
@@ -325,6 +374,76 @@ onMounted(() => {
 .td-addr { font-size: 12px; color: var(--text-soft); white-space: nowrap; }
 .td-reqid { font-size: 11.5px; color: var(--text-faint); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-ua { font-size: 11.5px; color: var(--text-faint); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-expand {
+  color: var(--text-muted);
+  text-align: center;
+  width: 40px;
+  cursor: pointer;
+}
+
+.log-row {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.log-row:hover {
+  background: var(--surface) !important;
+}
+.log-row.expanded {
+  background: var(--surface-2);
+}
+
+.log-detail td {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+}
+
+.detail-panel {
+  padding: 16px 20px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.detail-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-value {
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.detail-error {
+  grid-template-columns: 120px 1fr;
+}
+
+.error-body {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
 
 .status-code {
   font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums;
