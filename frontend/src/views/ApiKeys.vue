@@ -27,6 +27,7 @@ import type { ClientKeyListItem } from '../api/clientKeys'
 const loading = ref(true)
 const loadError = ref('')
 const keys = ref<ClientKeyListItem[]>([])
+const deleteTarget = ref<ClientKeyListItem | null>(null)
 
 const search = ref('')
 const statusFilter = ref<'all' | 'enabled' | 'disabled'>('all')
@@ -85,7 +86,10 @@ async function toggleStatus(k: ClientKeyListItem) {
   }
 }
 
-async function removeKey(k: ClientKeyListItem) {
+async function confirmRemoveKey() {
+  const k = deleteTarget.value
+  if (!k) return
+  deleteTarget.value = null
   try {
     await deleteClientKey(k.id)
     keys.value = keys.value.filter(x => x.id !== k.id)
@@ -261,7 +265,7 @@ onMounted(loadData)
                 <ShieldOff v-if="k.enabled" :size="14" />
                 <ShieldCheck v-else :size="14" />
               </button>
-              <button class="icon-btn danger" title="删除" @click="removeKey(k)"><Trash2 :size="14" /></button>
+              <button class="icon-btn danger" title="删除" @click="deleteTarget = k"><Trash2 :size="14" /></button>
             </div>
           </div>
         </article>
@@ -308,6 +312,14 @@ onMounted(loadData)
           <Plus v-else :size="15" />
           {{ isEditing ? '保存修改' : '创建密钥' }}
         </button>
+      </template>
+    </Modal>
+
+    <Modal :open="deleteTarget !== null" title="删除 API Key" :icon="Trash2" @close="deleteTarget = null">
+      <p class="confirm-text">确定要删除 API Key <strong>{{ deleteTarget?.name }}</strong> 吗？此操作不可撤销。</p>
+      <template #footer>
+        <button class="btn btn-ghost" @click="deleteTarget = null">取消</button>
+        <button class="btn btn-danger" @click="confirmRemoveKey"><Trash2 :size="14" /> 确认删除</button>
       </template>
     </Modal>
   </div>
@@ -408,6 +420,7 @@ onMounted(loadData)
 .model-empty { font-size: 12px; color: var(--text-faint); }
 
 .toggle-label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.confirm-text { font-size: 13.5px; color: var(--text-soft); line-height: 1.6; }
 
 .list-enter-active, .list-leave-active { transition: all 0.35s var(--ease-out); }
 .list-enter-from, .list-leave-to { opacity: 0; transform: translateY(14px) scale(0.98); }

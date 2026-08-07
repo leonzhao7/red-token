@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Moon, Sun, Search, Command, ChevronDown, Menu } from 'lucide-vue-next'
+import { Moon, Sun, ChevronDown, Menu } from 'lucide-vue-next'
 import { useTheme } from '../composables/useTheme'
 
 const { theme, toggle } = useTheme()
@@ -37,12 +37,6 @@ const date = computed(() =>
     </div>
 
     <div class="header-right">
-      <div class="search-box header-search">
-        <Search :size="15" />
-        <input class="input" placeholder="搜索模型、中转站、密钥…" />
-        <kbd class="kbd"><Command :size="10" /> K</kbd>
-      </div>
-
       <div class="clock mono">
         <span class="clock-time">{{ clock }}</span>
         <span class="clock-date">{{ date }}</span>
@@ -85,19 +79,6 @@ const date = computed(() =>
 .crumb-sub { font-size: 11px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 520px; }
 
 .header-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
-.header-search { width: 280px; }
-.header-search .input { padding: 8px 13px; font-size: 12.5px; }
-.header-search .kbd {
-  position: absolute;
-  right: 9px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  pointer-events: none;
-  font-size: 10px;
-}
 
 .clock { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.25; padding: 0 6px; }
 .clock-time { font-size: 15px; font-weight: 700; color: var(--text); }
@@ -121,10 +102,8 @@ const date = computed(() =>
 
 @media (max-width: 1100px) {
   .clock { display: none; }
-  .header-search { width: 200px; }
 }
 @media (max-width: 860px) {
-  .header-search { display: none; }
   .burger { display: inline-flex; }
 }
 </style>

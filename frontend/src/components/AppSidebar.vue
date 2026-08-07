@@ -49,7 +49,7 @@ const healthPct = computed(() => {
 
 <template>
   <aside class="sidebar" :class="{ collapsed }">
-    <div class="brand" @click="router.push('/')" :title="collapsed ? 'NEXUS RELAY' : ''">
+    <div class="brand" @click="router.push('/')" :title="collapsed ? 'RED TOKEN' : ''">
       <div class="brand-mark">
         <svg viewBox="0 0 32 32" width="26" height="26">
           <rect width="32" height="32" rx="8" fill="url(#brandGrad)" />
@@ -71,7 +71,7 @@ const healthPct = computed(() => {
         </svg>
       </div>
       <div class="brand-text">
-        <span class="brand-name">NEXUS<span class="accent">RELAY</span></span>
+        <span class="brand-name">RED<span class="accent">TOKEN</span></span>
         <span class="brand-sub">AI Gateway Console</span>
       </div>
     </div>
