@@ -144,7 +144,7 @@ const colLabels: Record<ColKey, string> = {
   ua: 'User-Agent'
 }
 const visibleCols = ref<Record<ColKey, boolean>>({
-  path: true,
+  path: false,
   client_addr: false,
   request_id: false,
   ua: false
