@@ -45,6 +45,14 @@ type StatusFamilyCount struct {
 }
 
 func (s *Store) AppendUsageLog(ctx context.Context, log domain.UsageLog) error {
+	return s.appendUsageLog(ctx, log, false)
+}
+
+func (s *Store) AppendFinalUsageLog(ctx context.Context, log domain.UsageLog) error {
+	return s.appendUsageLog(ctx, log, true)
+}
+
+func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordClientStats bool) error {
 	createdAt := log.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -111,6 +119,11 @@ func (s *Store) AppendUsageLog(ctx context.Context, log domain.UsageLog) error {
 
 	if err = upsertBackendHourlyModelStats(ctx, tx, log, createdAt); err != nil {
 		return err
+	}
+	if recordClientStats {
+		if err = incrementClientKeyUsage(ctx, tx, log); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()

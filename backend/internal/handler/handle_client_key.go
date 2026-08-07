@@ -22,8 +22,12 @@ func NewClientKeyHandler(st *store.Store) *ClientKeyHandler {
 type clientKeyView struct {
 	domain.ClientKey
 	MaskedToken string     `json:"masked_token"`
-	UsageCount  int        `json:"usage_count"`
+	UsageCount  int64      `json:"usage_count"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	TokenInput  int64      `json:"token_input"`
+	TokenOutput int64      `json:"token_output"`
+	ReqSuccess  int64      `json:"req_success"`
+	ReqFail     int64      `json:"req_fail"`
 }
 
 func (a *ClientKeyHandler) HandleListClientKeys(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +56,10 @@ func (a *ClientKeyHandler) HandleListClientKeys(w http.ResponseWriter, r *http.R
 			MaskedToken: maskToken(client.Token),
 			UsageCount:  summary.UsageCount,
 			LastUsedAt:  optionalTime(summary.LastUsedAt),
+			TokenInput:  summary.InputTokensTotal,
+			TokenOutput: summary.OutputTokensTotal,
+			ReqSuccess:  summary.RequestSuccesses,
+			ReqFail:     summary.RequestFailures,
 		})
 	}
 	writeJSON(w, http.StatusOK, pagedResponse(ensureClientKeyViews(response), total, page, limit))
@@ -195,6 +203,10 @@ func (a *ClientKeyHandler) HandleClientKeyDetail(w http.ResponseWriter, r *http.
 			detailEntry("enabled", "Enabled", detail.Client.Enabled),
 			detailEntry("token_prefix", "Token Prefix", detail.Client.TokenPrefix),
 			detailEntry("usage_count", "Usage Count", summary.UsageCount),
+			detailEntry("request_success_count", "Request Success Count", summary.RequestSuccesses),
+			detailEntry("request_failure_count", "Request Failure Count", summary.RequestFailures),
+			detailEntry("input_tokens", "Input Tokens", summary.InputTokensTotal),
+			detailEntry("output_tokens", "Output Tokens", summary.OutputTokensTotal),
 			detailEntry("last_used_at", "Last Used At", optionalTime(summary.LastUsedAt)),
 		},
 		Configuration: []resourceDetailEntry{

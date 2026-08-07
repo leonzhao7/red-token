@@ -1098,9 +1098,15 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 {
   "masked_token": "tg-xxxxx...abcd",
   "usage_count": 120,
+  "req_success": 115,
+  "req_fail": 5,
+  "token_input": 320000,
+  "token_output": 96000,
   "last_used_at": "2026-08-05T08:30:00Z"
 }
 ```
+
+`usage_count` 等于 `req_success + req_fail`。请求次数和 Token 只按每个客户端请求的最终结果累计一次，不包含中间重试；累计值存储在客户端密钥记录中，清空使用日志不会重置。
 
 注意：除 `masked_token` 外，嵌入的 `ClientKey.token` 仍可能包含完整 Token。
 
@@ -1112,7 +1118,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 响应 `200`：资源详情格式。
 
-- `overview`：名称、启用状态、Token 前缀、使用次数、最后使用时间。
+- `overview`：名称、启用状态、Token 前缀、累计成功/失败次数、累计输入/输出 Token、使用次数和最后使用时间。
 - `configuration`：包含完整 Token。
 - `raw`：完整 `ClientKey`。
 - `activity.usage` 与 `activity.usage_logs`：最近 10 条相关用量日志。

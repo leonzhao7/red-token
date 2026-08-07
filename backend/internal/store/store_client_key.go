@@ -2,9 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -13,8 +13,12 @@ import (
 )
 
 type ClientKeyUsageSummary struct {
-	UsageCount int
-	LastUsedAt time.Time
+	UsageCount        int64
+	RequestSuccesses  int64
+	RequestFailures   int64
+	InputTokensTotal  int64
+	OutputTokensTotal int64
+	LastUsedAt        time.Time
 }
 
 type ClientKeyDetailData struct {
@@ -155,7 +159,6 @@ func (s *Store) DeleteClientKey(ctx context.Context, id int64) error {
 	return err
 }
 
-
 func (s *Store) ClientKeyDetail(ctx context.Context, id int64, limit int) (ClientKeyDetailData, error) {
 	client, err := s.GetClientKey(ctx, id)
 	if err != nil {
@@ -188,10 +191,19 @@ func (s *Store) ClientKeyUsageSummaryByIDs(ctx context.Context, ids []int64) (ma
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT client_id, COUNT(*), MAX(created_at)
-		FROM usage_logs
-		WHERE client_id IN (`+placeholders+`)
-		GROUP BY client_id
+		SELECT
+			id,
+			request_success_count,
+			request_failure_count,
+			input_tokens_total,
+			output_tokens_total,
+			COALESCE((
+				SELECT MAX(created_at)
+				FROM usage_logs
+				WHERE usage_logs.client_id = client_keys.id
+			), '')
+		FROM client_keys
+		WHERE id IN (`+placeholders+`)
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -202,18 +214,58 @@ func (s *Store) ClientKeyUsageSummaryByIDs(ctx context.Context, ids []int64) (ma
 	for rows.Next() {
 		var (
 			clientID int64
-			count    int
 			lastUsed string
 			summary  ClientKeyUsageSummary
 		)
-		if err := rows.Scan(&clientID, &count, &lastUsed); err != nil {
+		if err := rows.Scan(
+			&clientID,
+			&summary.RequestSuccesses,
+			&summary.RequestFailures,
+			&summary.InputTokensTotal,
+			&summary.OutputTokensTotal,
+			&lastUsed,
+		); err != nil {
 			return nil, err
 		}
-		summary.UsageCount = count
+		summary.UsageCount = summary.RequestSuccesses + summary.RequestFailures
 		summary.LastUsedAt = parseTime(lastUsed)
 		out[clientID] = summary
 	}
 	return out, rows.Err()
+}
+
+type clientKeyStatsExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (s *Store) RecordClientKeyUsage(ctx context.Context, log domain.UsageLog) error {
+	return incrementClientKeyUsage(ctx, s.db, log)
+}
+
+func incrementClientKeyUsage(ctx context.Context, exec clientKeyStatsExecer, log domain.UsageLog) error {
+	if log.ClientID <= 0 {
+		return nil
+	}
+
+	successes := 0
+	failures := 1
+	if isSuccessStatus(log.StatusCode) {
+		successes = 1
+		failures = 0
+	}
+	inputTokens := max(log.InputTokens, 0)
+	outputTokens := max(log.OutputTokens, 0)
+
+	_, err := exec.ExecContext(ctx, `
+		UPDATE client_keys
+		SET
+			request_success_count = request_success_count + ?,
+			request_failure_count = request_failure_count + ?,
+			input_tokens_total = input_tokens_total + ?,
+			output_tokens_total = output_tokens_total + ?
+		WHERE id = ?
+	`, successes, failures, inputTokens, outputTokens, log.ClientID)
+	return err
 }
 
 func scanClientKey(s scanner) (domain.ClientKey, error) {

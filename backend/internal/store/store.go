@@ -63,6 +63,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			token_prefix TEXT NOT NULL,
 			allowed_models TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			request_success_count INTEGER NOT NULL DEFAULT 0,
+			request_failure_count INTEGER NOT NULL DEFAULT 0,
+			input_tokens_total INTEGER NOT NULL DEFAULT 0,
+			output_tokens_total INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
@@ -205,6 +209,20 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureColumn(ctx, db, "client_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate client_keys allowed_models: %w", err)
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "request_success_count", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "request_failure_count", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "input_tokens_total", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "output_tokens_total", definition: "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := ensureColumn(ctx, db, "client_keys", column.name, column.definition); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate client_keys %s: %w", column.name, err)
+		}
 	}
 	if err := ensureColumn(ctx, db, "backends", "proxy_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		_ = db.Close()
