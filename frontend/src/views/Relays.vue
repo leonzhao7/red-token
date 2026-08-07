@@ -69,6 +69,7 @@ type RelayView = Omit<Relay, 'status'> & {
   backendType: BackendType
   consoleUrl: string
   consoleSyncSupported: boolean
+  pricingModels: RelayModel[]
   raw: BackendResponse
 }
 
@@ -295,7 +296,13 @@ function platformOf(backend: BackendResponse): PlatformType {
 
 function pricingByModel(backend: BackendResponse) {
   const result = new Map<string, { input: number; output: number }>()
+  const account = parseObject(backend.console_account_json)
+  const unit = numberValue(account.quota_per_unit) || 500000
+  const exchangeRate = numberValue(account.custom_currency_exchange_rate) || 1
   const pricing = parseObject(backend.console_pricing_json)
+  const groupRatio = pricing.group_ratio && typeof pricing.group_ratio === 'object'
+    ? pricing.group_ratio as Record<string, unknown>
+    : null
   const records = Array.isArray(pricing.data) ? pricing.data : []
   for (const item of records) {
     if (!item || typeof item !== 'object') continue
@@ -310,7 +317,20 @@ function pricingByModel(backend: BackendResponse) {
       const ratio = numberValue(record.model_ratio ?? record.model_price)
       if (ratio) {
         const completionRatio = numberValue(record.completion_ratio) || 1
-        result.set(name, { input: ratio * 2, output: ratio * completionRatio * 2 })
+        // Compute group multiplier from the lowest group ratio among enabled groups
+        let gMultiplier = 1
+        if (groupRatio) {
+          const enableGroups: string[] = Array.isArray(record.enable_groups) ? record.enable_groups
+            : typeof record.enable_groups === 'string' ? record.enable_groups.split(',').map((s: string) => s.trim()).filter(Boolean)
+            : []
+          if (enableGroups.length > 0) {
+            const ratios = enableGroups.map(g => numberValue(groupRatio[g])).filter(r => r > 0)
+            if (ratios.length > 0) gMultiplier = Math.min(...ratios)
+          }
+        }
+        const inputPrice = ratio * 1_000_000 / unit * exchangeRate * gMultiplier
+        const outputPrice = inputPrice * completionRatio
+        result.set(name, { input: inputPrice, output: outputPrice })
       }
     }
   }
@@ -332,11 +352,8 @@ function modelInfo(name: string, group: string, pricing: Map<string, { input: nu
 function mapBackend(backend: BackendResponse): RelayView {
   const keys = Array.isArray(backend.api_keys) ? backend.api_keys : []
   const pricing = pricingByModel(backend)
-  const modelNames = new Set<string>()
   const relayKeys: RelayKey[] = keys.map((key, index) => {
     const models = Array.isArray(key.models) ? key.models.filter(Boolean) : []
-    models.forEach((model) => modelNames.add(model))
-    Object.keys(key.model_mapping || {}).forEach((model) => modelNames.add(model))
     return {
       id: `${backend.id}-key-${index}`,
       name: key.group || `Key ${index + 1}`,
@@ -349,7 +366,15 @@ function mapBackend(backend: BackendResponse): RelayView {
   })
   const account = accountValues(backend, keys)
   const group = platformOf(backend)
-  const models = [...modelNames].map((name) => modelInfo(name, group, pricing))
+  // models: from API Key configured models (for card display)
+  const keyModelNames = new Set<string>()
+  relayKeys.forEach((k) => {
+    k.models.forEach((m) => keyModelNames.add(m))
+    Object.keys(k.modelMap).forEach((m) => keyModelNames.add(m))
+  })
+  const models = [...keyModelNames].map((name) => modelInfo(name, group, pricing))
+  // pricingModels: from pricing data (for expanded available models list)
+  const pricingModels = [...pricing.keys()].map((name) => modelInfo(name, group, pricing))
   const status: RelayStatusView = backend.status === 'normal' ? 'active' : backend.status
   return {
     id: String(backend.id),
@@ -363,6 +388,7 @@ function mapBackend(backend: BackendResponse): RelayView {
     checkinAt: account.checkinAt,
     proxyId: backend.proxy_id ? String(backend.proxy_id) : '',
     models,
+    pricingModels,
     keys: relayKeys,
     protocol: protocolOf(backend.protocol),
     backendType: backend.backend_type === 'sub2api' || backend.backend_type === 'new-api' ? backend.backend_type : '',
@@ -954,8 +980,6 @@ onMounted(loadData)
                       </div>
                       <div class="rk-key mono">{{ k.key }}</div>
                       <div class="rk-bottom">
-                        <span class="rk-user mono">{{ k.name }}</span>
-                        <span class="spacer"></span>
                         <span v-for="m in k.models" :key="m" class="rk-model" :class="{ mapped: k.modelMap[m] }">
                           {{ m }}<template v-if="k.modelMap[m]"><ArrowRight :size="11" /><em class="mono">{{ k.modelMap[m] }}</em></template>
                         </span>
@@ -965,10 +989,10 @@ onMounted(loadData)
                 </div>
 
                 <!-- models -->
-                <div class="rld-col">
-                  <div class="rld-title">可用模型 · {{ r.models.length }}</div>
+                <div v-if="r.pricingModels.length" class="rld-col">
+                  <div class="rld-title">可用模型 · {{ r.pricingModels.length }}</div>
                   <div class="rm-list">
-                    <div v-for="m in r.models" :key="m.id" class="rm-item">
+                    <div v-for="m in r.pricingModels" :key="m.id" class="rm-item">
                       <span class="tag rm-tag">{{ m.name }}</span>
                       <span class="rm-group">{{ cheapestGroup(m.name, r.keys) }}</span>
                       <span class="rm-price mono">in {{ fmtPrice(m.priceIn) }} / out {{ fmtPrice(m.priceOut) }}</span>
@@ -1520,7 +1544,7 @@ onMounted(loadData)
   border-radius: 6px;
   border: 1px solid var(--border-soft);
 }
-.rk-bottom { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rk-bottom { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .rk-user { font-size: 11px; color: var(--text-muted); }
 .rk-model {
   display: inline-flex; align-items: center; gap: 5px;
