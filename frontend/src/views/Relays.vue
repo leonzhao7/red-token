@@ -21,7 +21,9 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight,
-  ExternalLink
+  ExternalLink,
+  Eye,
+  EyeOff
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
 import { MODEL_CATALOG } from '../data/mock'
@@ -571,15 +573,16 @@ function askRemove(r: RelayView) {
 
 /* ---- form ---- */
 interface KeyFormItem {
-  name: string
+  readonly serverGroup: string
   key: string
+  keyVisible: boolean
   modelsInput: string
   modelMappingInput: string
   usedTokens: number
 }
 
 function defaultKeyFormItem(): KeyFormItem {
-  return { name: 'default', key: '', modelsInput: '', modelMappingInput: '', usedTokens: 0 }
+  return { serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
 }
 
 const form = ref<{
@@ -675,8 +678,9 @@ function openEditRelay(r: RelayView) {
     weight: numberValue(r.raw.weight) || 10,
     keys: r.keys.length
       ? r.keys.map((key) => ({
-          name: key.name,
+          serverGroup: key.name,
           key: key.key,
+          keyVisible: false,
           modelsInput: key.models.join(', '),
           modelMappingInput: formatModelMapping(key.modelMap),
           usedTokens: key.usedTokens
@@ -694,10 +698,10 @@ function removeKeyRow(i: number) {
 }
 
 function buildPayload() {
-  const apiKeys: BackendApiKey[] = form.value.keys.map((key, index) => {
+  const apiKeys: BackendApiKey[] = form.value.keys.map((key) => {
     return {
       api_key: key.key.trim(),
-      group: key.name.trim() || `key-${index + 1}`,
+      group: key.serverGroup,
       models: parseModelList(key.modelsInput),
       model_mapping: parseModelMapping(key.modelMappingInput),
       used_quota: Math.max(0, Math.round(key.usedTokens || 0))
@@ -729,8 +733,8 @@ async function saveRelay() {
     toast('请填写名称与 URL', '', 'warning')
     return
   }
-  if (form.value.keys.some((key) => !key.key.trim() || !key.name.trim() || !parseModelList(key.modelsInput).length)) {
-    toast('API Key 配置不完整', '已添加的每个 Key 都需要密钥、Group 和至少一个模型', 'warning')
+  if (form.value.keys.some((key) => !key.key.trim() || !parseModelList(key.modelsInput).length)) {
+    toast('API Key 配置不完整', '已添加的每个 Key 都需要密钥和至少一个模型', 'warning')
     return
   }
   const modelMappingError = modelMappingErrors.value.find(Boolean)
@@ -1024,9 +1028,8 @@ onMounted(loadData)
 
           <div class="form-grid-2">
             <div class="field">
-              <label class="field-label">权重</label>
+              <label class="field-label">权重 <em class="ke-hint">调度优先级 1-100</em></label>
               <input v-model.number="form.weight" class="input mono" type="number" min="1" max="100" />
-              <em class="ke-hint">负载均衡权重 1-100</em>
             </div>
             <div class="field">
               <label class="field-label">代理</label>
@@ -1092,33 +1095,37 @@ onMounted(loadData)
           <div class="keys-editor">
             <div class="ke-head">
               <span class="field-label">API Keys <em class="ke-hint">可选；添加后每个 Key 至少绑定一个模型</em></span>
-              <button class="btn btn-ghost btn-sm" @click="addKeyRow"><Plus :size="13" /> 添加 Key</button>
+              <button class="btn btn-ghost btn-sm" @click="addKeyRow"><Plus :size="13" /> Key</button>
             </div>
             <div v-for="(k, i) in form.keys" :key="i" class="ke-card">
               <div class="ke-head">
                 <span class="field-label">Key {{ i + 1 }}</span>
                 <button class="icon-btn danger" title="移除" @click="removeKeyRow(i)"><Trash2 :size="14" /></button>
               </div>
-              <div class="form-grid-2">
-                <div class="field">
-                  <label class="field-label">API Key <span class="req">*</span></label>
-                  <input v-model="k.key" class="input mono" type="password" placeholder="sk-..." />
-                </div>
-                <div class="field">
-                  <label class="field-label">Group <span class="req">*</span></label>
-                  <input v-model="k.name" class="input mono" placeholder="default" />
+              <div class="field">
+                <label class="field-label">API Key <span class="req">*</span></label>
+                <div class="secret-input">
+                  <input v-model="k.key" class="input mono" :type="k.keyVisible ? 'text' : 'password'" placeholder="sk-..." />
+                  <button
+                    type="button"
+                    class="secret-toggle"
+                    :title="k.keyVisible ? '隐藏 API Key' : '显示 API Key'"
+                    :aria-label="k.keyVisible ? '隐藏 API Key' : '显示 API Key'"
+                    @click="k.keyVisible = !k.keyVisible"
+                  >
+                    <EyeOff v-if="k.keyVisible" :size="15" />
+                    <Eye v-else :size="15" />
+                  </button>
                 </div>
               </div>
               <div class="field">
-                <label class="field-label">Models <span class="req">*</span></label>
+                <label class="field-label">Model <span class="req">*</span><em class="ke-hint">多个模型使用英文逗号分隔</em></label>
                 <input v-model="k.modelsInput" class="input mono" placeholder="gpt-4o, claude-3-5-sonnet, deepseek-chat" />
-                <em class="ke-hint">多个模型使用英文逗号分隔</em>
               </div>
               <div class="field">
                 <label class="field-label">Model Mapping <em class="ke-hint">客户端模型名 → 上游模型名</em></label>
                 <input v-model="k.modelMappingInput" class="input mono" placeholder='{ "gpt-4o": "azure-gpt-4o" }' />
                 <em v-if="modelMappingErrors[i]" class="ke-hint">{{ modelMappingErrors[i] }}</em>
-                <em v-else class="ke-hint">JSON 对象，留空表示不转换</em>
               </div>
             </div>
             <div v-if="!form.keys.length" class="ke-empty">无需 API Key 时可直接保存，也可以点击右上角添加。</div>
@@ -1141,7 +1148,7 @@ onMounted(loadData)
           <LoaderCircle v-if="saving" :size="15" class="spin" />
           <Pencil v-if="!saving && isEditing" :size="15" />
           <Plus v-else-if="!saving" :size="15" />
-          {{ isEditing ? '保存修改' : '添加中转站' }}
+          {{ isEditing ? '保存' : '添加' }}
         </button>
       </template>
     </Modal>
@@ -1532,6 +1539,18 @@ onMounted(loadData)
 .relay-form-section { display: flex; flex-direction: column; gap: 7px; }
 .relay-form .field { gap: 4px; margin-bottom: 0; }
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.secret-input { position: relative; }
+.secret-input .input { width: 100%; padding-right: 38px; }
+.secret-toggle {
+  position: absolute; top: 50%; right: 7px; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 0; border-radius: 7px; background: transparent;
+  color: var(--text-faint); cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.secret-toggle:hover { color: var(--text); background: var(--surface-3); }
+.secret-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .keys-editor { display: flex; flex-direction: column; gap: 6px; }
 .ke-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .ke-hint { font-style: normal; font-size: 11px; color: var(--text-faint); font-weight: 500; margin-left: 6px; }
