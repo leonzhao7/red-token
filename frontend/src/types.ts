@@ -47,6 +47,7 @@ export interface RelayModel {
   group: string
   priceIn: number
   priceOut: number
+  billingType?: 'token' | 'fixed'
 }
 
 export interface RelayKey {

@@ -28,7 +28,7 @@ import {
 import Modal from '../components/Modal.vue'
 import { MODEL_CATALOG } from '../data/mock'
 import { toast } from '../composables/toast'
-import { tieredExpressionPricing } from '../utils/tieredPricing'
+import { fixedRequestPricing, tieredExpressionPricing } from '../utils/tieredPricing'
 import {
   ApiError,
   createBackend,
@@ -295,7 +295,7 @@ function platformOf(backend: BackendResponse): PlatformType {
   return 'Custom'
 }
 
-type ModelPricing = { input: number; output: number; group: string }
+type ModelPricing = { input: number; output: number; group: string; billingType: 'token' | 'fixed' }
 
 function enabledPricingGroups(record: Record<string, any>): string[] {
   const raw = record.enable_groups
@@ -340,22 +340,35 @@ function pricingByModel(backend: BackendResponse) {
     const name = String(record.model_name || record.model || '').trim()
     if (!name) continue
     const cheapestGroup = cheapestPricingGroup(record, groupRatio)
+    if (numberValue(record.quota_type) === 1) {
+      const fixedPrice = fixedRequestPricing(
+        numberValue(record.model_price),
+        cheapestGroup.ratio
+      )
+      result.set(name, {
+        input: fixedPrice,
+        output: fixedPrice,
+        group: cheapestGroup.name,
+        billingType: 'fixed'
+      })
+      continue
+    }
     const directInput = numberValue(record.input_price ?? record.prompt_price ?? record.input_cost)
     const directOutput = numberValue(record.output_price ?? record.completion_price ?? record.output_cost)
     if (directInput || directOutput) {
-      result.set(name, { input: directInput, output: directOutput || directInput, group: cheapestGroup.name })
+      result.set(name, { input: directInput, output: directOutput || directInput, group: cheapestGroup.name, billingType: 'token' })
     } else {
       const ratio = numberValue(record.model_ratio ?? record.model_price)
       const tieredPricing = tieredExpressionPricing(record, cheapestGroup.ratio, exchangeRate)
       if (tieredPricing) {
-        result.set(name, { ...tieredPricing, group: cheapestGroup.name })
+        result.set(name, { ...tieredPricing, group: cheapestGroup.name, billingType: 'token' })
         continue
       }
       if (ratio) {
         const completionRatio = numberValue(record.completion_ratio) || 1
         const inputPrice = ratio * 1_000_000 / unit * exchangeRate * cheapestGroup.ratio
         const outputPrice = inputPrice * completionRatio
-        result.set(name, { input: inputPrice, output: outputPrice, group: cheapestGroup.name })
+        result.set(name, { input: inputPrice, output: outputPrice, group: cheapestGroup.name, billingType: 'token' })
       }
     }
   }
@@ -370,7 +383,8 @@ function modelInfo(name: string, group: string, pricing: Map<string, ModelPricin
     name,
     group: price?.group || known?.group || group,
     priceIn: price ? price.input : known?.priceIn || 0,
-    priceOut: price ? price.output : known?.priceOut || 0
+    priceOut: price ? price.output : known?.priceOut || 0,
+    billingType: price?.billingType || 'token'
   }
 }
 
@@ -1020,7 +1034,8 @@ onMounted(loadData)
                     <div v-for="m in r.pricingModels" :key="m.id" class="rm-item">
                       <span class="tag rm-tag">{{ m.name }}</span>
                       <span class="rm-group">{{ m.group || '-' }}</span>
-                      <span class="rm-price mono">in {{ fmtPrice(m.priceIn) }} / out {{ fmtPrice(m.priceOut) }}</span>
+                      <span v-if="m.billingType === 'fixed'" class="rm-price mono">{{ fmtPrice(m.priceIn) }} / 次</span>
+                      <span v-else class="rm-price mono">in {{ fmtPrice(m.priceIn) }} / out {{ fmtPrice(m.priceOut) }}</span>
                     </div>
                   </div>
                 </div>

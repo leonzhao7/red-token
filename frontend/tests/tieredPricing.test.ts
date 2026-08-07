@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { tieredExpressionPricing } from '../src/utils/tieredPricing.ts'
+import { fixedRequestPricing, tieredExpressionPricing } from '../src/utils/tieredPricing.ts'
 
 function assertPrice(actual: { input: number; output: number } | null, input: number, output: number) {
   assert.ok(actual)
@@ -24,4 +24,8 @@ test('uses the first tier when no short tier exists', () => {
   }, 0.8, 1)
 
   assertPrice(pricing, 1.6, 4.8)
+})
+
+test('converts fixed quota pricing to a per-request price', () => {
+  assert.equal(fixedRequestPricing(3200, 0.6), 1920)
 })

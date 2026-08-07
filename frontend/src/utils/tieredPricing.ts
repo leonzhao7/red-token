@@ -28,3 +28,12 @@ export function tieredExpressionPricing(
     output: groupRatio * outputCoefficient * exchangeRate
   }
 }
+
+export function fixedRequestPricing(
+  modelPrice: number,
+  groupRatio: number
+): number {
+  if (!Number.isFinite(modelPrice) || modelPrice < 0) return 0
+  if (!Number.isFinite(groupRatio) || groupRatio < 0) return 0
+  return modelPrice * groupRatio
+}
