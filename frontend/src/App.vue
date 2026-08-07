@@ -19,11 +19,7 @@ const collapsed = ref(false)
   <div class="shell" :class="{ rail: collapsed }">
     <AppHeader @toggle-sidebar="collapsed = !collapsed" />
     <main class="main">
-      <RouterView v-slot="{ Component }">
-        <Transition name="page" mode="out-in">
-          <component :is="Component" />
-        </Transition>
-      </RouterView>
+      <RouterView />
     </main>
   </div>
 
