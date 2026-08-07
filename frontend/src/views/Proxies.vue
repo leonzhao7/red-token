@@ -49,6 +49,8 @@ function toggleReveal(id: number) {
   revealed.value = s
 }
 
+const confirmTarget = ref<SocksProxyListItem | null>(null)
+
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const isEditing = computed(() => editingId.value !== null)
@@ -92,7 +94,10 @@ async function save() {
   }
 }
 
-async function remove(p: SocksProxyListItem) {
+async function confirmRemove() {
+  const p = confirmTarget.value
+  if (!p) return
+  confirmTarget.value = null
   try {
     await deleteSocksProxy(p.id)
     proxies.value = proxies.value.filter(x => x.id !== p.id)
@@ -202,7 +207,7 @@ onMounted(loadData)
           <button class="icon-btn" :title="p.enabled ? '停用' : '启用'" @click="toggleEnabled(p)">
             <span class="toggle-dot" :class="{ on: p.enabled }"></span>
           </button>
-          <button class="icon-btn danger" title="删除" @click="remove(p)"><Trash2 :size="14" /></button>
+          <button class="icon-btn danger" title="删除" @click="confirmTarget = p"><Trash2 :size="14" /></button>
         </footer>
       </article>
 
@@ -221,7 +226,6 @@ onMounted(loadData)
         <div class="field">
           <label class="field-label">地址 <span class="req">*</span></label>
           <input v-model="form.address" class="input mono" placeholder="127.0.0.1:1080" />
-          <span class="field-hint">host:port 格式</span>
         </div>
       </div>
       <div class="form-grid-2">
@@ -232,7 +236,6 @@ onMounted(loadData)
         <div class="field">
           <label class="field-label">密码</label>
           <input v-model="form.password" class="input mono" type="password" placeholder="留空表示无密码" />
-          <span v-if="isEditing" class="field-hint">留空则清除原密码</span>
         </div>
       </div>
       <div class="field">
@@ -248,6 +251,14 @@ onMounted(loadData)
           <Plus v-else :size="15" />
           {{ isEditing ? '保存修改' : '添加代理' }}
         </button>
+      </template>
+    </Modal>
+
+    <Modal :open="confirmTarget !== null" title="删除代理" :icon="Trash2" @close="confirmTarget = null">
+      <p class="confirm-text">确定要删除代理 <strong>{{ confirmTarget?.name }}</strong> 吗？此操作不可撤销。</p>
+      <template #footer>
+        <button class="btn btn-ghost" @click="confirmTarget = null">取消</button>
+        <button class="btn btn-danger" @click="confirmRemove"><Trash2 :size="14" /> 确认删除</button>
       </template>
     </Modal>
   </div>
@@ -331,6 +342,8 @@ onMounted(loadData)
   color: var(--text-faint); font-size: 13.5px; font-weight: 600; cursor: pointer;
 }
 .add-tile:hover { color: var(--primary); border-color: var(--primary); background: rgba(34,211,238,0.04); }
+
+.confirm-text { font-size: 13.5px; color: var(--text-soft); line-height: 1.6; }
 
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
