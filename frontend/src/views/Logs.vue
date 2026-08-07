@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-vue-next'
+import Modal from '../components/Modal.vue'
 import { toast } from '../composables/toast'
 import { listLogs, getLogOptions, clearLogs } from '../api/logs'
 import type { UsageLog, LogOptions } from '../api/logs'
@@ -30,6 +31,7 @@ const search = ref('')
 const modelFilter = ref('')
 const keyFilter = ref('')
 const statusFilter = ref('')
+const showClearConfirm = ref(false)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 
@@ -73,6 +75,7 @@ async function refresh() {
 }
 
 async function doClear() {
+  showClearConfirm.value = false
   try {
     const res = await clearLogs()
     logs.value = []
@@ -217,7 +220,7 @@ onMounted(() => {
         <RefreshCw v-else :size="15" />
         刷新
       </button>
-      <button class="btn btn-danger" @click="doClear"><Trash2 :size="15" /> 清空</button>
+      <button class="btn btn-danger" @click="showClearConfirm = true"><Trash2 :size="15" /> 清空</button>
     </section>
 
     <!-- table -->
@@ -295,16 +298,16 @@ onMounted(() => {
                       <span class="detail-value">{{ l.client_ip || '—' }}</span>
                     </div>
                     <div class="detail-row">
-                      <span class="detail-label">User-Agent</span>
+                      <span class="detail-label">终端</span>
                       <span class="detail-value">{{ l.user_agent || '—' }}</span>
                     </div>
-                    <div v-if="l.status_code && l.status_code !== 200 && l.response_body_preview" class="detail-row detail-error">
-                      <span class="detail-label">响应 Body</span>
-                      <pre class="detail-value error-body">{{ l.response_body_preview }}</pre>
-                    </div>
                     <div v-if="l.error_message" class="detail-row detail-error">
-                      <span class="detail-label">错误信息</span>
+                      <span class="detail-label">错误状态</span>
                       <pre class="detail-value error-body">{{ l.error_message }}</pre>
+                    </div>
+                    <div v-if="l.response_body_preview && (l.status_code !== 200 || (!l.input_tokens && !l.output_tokens))" class="detail-row detail-error">
+                      <span class="detail-label">错误描述</span>
+                      <pre class="detail-value error-body">{{ l.response_body_preview }}</pre>
                     </div>
                   </div>
                 </td>
@@ -335,6 +338,14 @@ onMounted(() => {
       </div>
     </section>
   </div>
+
+  <Modal :open="showClearConfirm" title="清空日志" :icon="Trash2" @close="showClearConfirm = false">
+    <p class="confirm-text">确定要清空所有日志吗？此操作不可恢复。</p>
+    <template #footer>
+      <button class="btn btn-ghost" @click="showClearConfirm = false">取消</button>
+      <button class="btn btn-danger" @click="doClear"><Trash2 :size="14" /> 确认清空</button>
+    </template>
+  </Modal>
 </template>
 
 <style scoped>
@@ -431,10 +442,10 @@ onMounted(() => {
 }
 
 .error-body {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--danger);
@@ -443,6 +454,8 @@ onMounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+  width: 100%;
+  min-width: 0;
 }
 
 .status-code {
@@ -484,4 +497,5 @@ onMounted(() => {
 .page-num:hover { background: var(--surface-2); color: var(--text); }
 .page-num.on { background: var(--grad); color: #fff; box-shadow: 0 2px 14px rgba(139,92,246,0.4); }
 .page-ellipsis { padding: 0 4px; color: var(--text-faint); font-size: 13px; }
+.confirm-text { font-size: 13.5px; color: var(--text-soft); line-height: 1.6; }
 </style>
