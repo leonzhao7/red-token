@@ -22,7 +22,7 @@ const groups = [
     label: '运营',
     items: [
       { to: '/', label: '总览', icon: LayoutDashboard },
-      { to: '/relays', label: '中转站', icon: ServerCog, badge: () => store.relays.filter((r) => r.status === 'active').length },
+      { to: '/relays', label: '中转站', icon: ServerCog },
       { to: '/keys', label: 'API Keys', icon: KeyRound }
     ]
   },

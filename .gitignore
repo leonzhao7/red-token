@@ -58,3 +58,4 @@ frontend/.env.local
 # Misc
 # ======================
 tmp/
+.gocache/

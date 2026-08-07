@@ -99,12 +99,14 @@ const showConsoleLogModal = ref(false)
 const consoleLogTitle = ref('')
 const consoleLogRows = ref<ConsoleRequestLogRow[]>([])
 const expandedLogRowIds = ref<Set<string>>(new Set())
+const consoleLogShowName = ref(false)
 let nextLogRowId = 0
 
 function openConsoleLog(name: string) {
   consoleLogTitle.value = `${name} · 同步`
   consoleLogRows.value = []
   expandedLogRowIds.value = new Set()
+  consoleLogShowName.value = false
   showConsoleLogModal.value = true
 }
 
@@ -516,8 +518,42 @@ async function checkinAll() {
     return
   }
   syncingAll.value = true
-  const results = await Promise.all(todo.map((relay) => syncRelay(relay, true, false)))
-  const successCount = results.filter(Boolean).length
+  consoleLogShowName.value = false
+  consoleLogRows.value = []
+  expandedLogRowIds.value = new Set()
+  showConsoleLogModal.value = true
+
+  const failedRows: ConsoleRequestLogRow[] = []
+  let successCount = 0
+
+  for (const relay of todo) {
+    consoleLogTitle.value = `批量签到 · ${relay.name}`
+    consoleLogRows.value = []
+    expandedLogRowIds.value = new Set()
+
+    const ok = await syncRelay(relay, true, false)
+    if (ok) {
+      successCount++
+    } else {
+      // Collect failed requests (status >= 400 or no response) from this relay
+      for (const row of consoleLogRows.value) {
+        if (!row.statusCode || row.statusCode >= 400) {
+          failedRows.push(row)
+        }
+      }
+    }
+  }
+
+  // Show failed requests summary
+  if (failedRows.length) {
+    consoleLogTitle.value = '批量签到 · 失败请求'
+    consoleLogShowName.value = true
+    consoleLogRows.value = failedRows
+    expandedLogRowIds.value = new Set()
+  } else {
+    showConsoleLogModal.value = false
+  }
+
   try {
     await recordBackendSyncSummary(todo.length, successCount, todo.length - successCount)
   } catch {
@@ -1173,7 +1209,7 @@ onMounted(loadData)
             </colgroup>
             <thead>
               <tr>
-                <th>时间</th>
+                <th>{{ consoleLogShowName ? '中转站' : '时间' }}</th>
                 <th>请求</th>
                 <th>状态</th>
                 <th>响应</th>
@@ -1185,7 +1221,7 @@ onMounted(loadData)
               </tr>
               <template v-for="row in consoleLogRows" :key="row.id">
                 <tr class="console-log-row" @click="toggleLogRow(row.id)">
-                  <td class="console-log-time">{{ row.time }}</td>
+                  <td class="console-log-time">{{ consoleLogShowName ? row.backendName : row.time }}</td>
                   <td class="console-log-path">
                     <span v-if="row.method" class="console-log-method">{{ row.method }}</span>
                     <span>{{ row.path }}</span>
