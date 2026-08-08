@@ -144,7 +144,7 @@ const colLabels: Record<ColKey, string> = {
   path: '路径',
   client_addr: '客户端地址',
   request_id: '请求 ID',
-  ua: 'User-Agent'
+  ua: '终端'
 }
 const visibleCols = ref<Record<ColKey, boolean>>({
   path: false,
@@ -236,11 +236,11 @@ onMounted(() => {
               <th>状态</th>
               <th>延迟</th>
               <th>Tokens</th>
-              <th>Bytes</th>
+              <th>流量</th>
               <th v-if="visibleCols.path">路径</th>
               <th v-if="visibleCols.client_addr">客户端</th>
               <th v-if="visibleCols.request_id">请求 ID</th>
-              <th v-if="visibleCols.ua">User-Agent</th>
+              <th v-if="visibleCols.ua">终端</th>
               <th style="width: 40px"></th>
             </tr>
           </thead>

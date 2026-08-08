@@ -51,9 +51,9 @@ echo "⏳ Waiting for backend to start..."
 sleep 3
 
 # Start frontend dev server
-echo "🎨 Starting frontend dev server on :6173..."
+echo "🎨 Starting frontend dev server on :6174..."
 cd "$FRONTEND_DIR"
-npm run dev -- --port 6173 &
+npm run dev -- --port 6174 &
 FRONTEND_PID=$!
 
 cd "$PROJECT_ROOT"
@@ -61,7 +61,7 @@ cd "$PROJECT_ROOT"
 echo ""
 echo "✅ Services running:"
 echo "   - Backend:  http://localhost:4000"
-echo "   - Frontend: http://localhost:6173"
+echo "   - Frontend: http://localhost:6174"
 echo ""
 echo "Press Ctrl+C to stop all services"
 

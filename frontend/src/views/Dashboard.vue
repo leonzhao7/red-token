@@ -1,21 +1,15 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Sparkles,
-  Plus,
-  KeyRound,
   Activity,
-  Server,
-  Bot,
   Coins,
-  TrendingUp,
   Wifi,
   ArrowUpRight,
   Cpu,
   ShieldCheck,
   Zap,
-  CalendarCheck,
   ChevronRight
 } from 'lucide-vue-next'
 import StatCard from '../components/StatCard.vue'
@@ -23,6 +17,8 @@ import BaseChart from '../components/BaseChart.vue'
 import { useChartColors } from '../composables/useChartColors'
 import { store } from '../store'
 import { toast } from '../composables/toast'
+import { getHourlyModelStats } from '../api/dashboard'
+import type { HourlyModelStatsResponse } from '../api/dashboard'
 import type { Relay } from '../types'
 
 const router = useRouter()
@@ -30,82 +26,322 @@ const { c, axisStyle, tooltipStyle } = useChartColors()
 
 const range = ref<'24h' | '7d' | '30d'>('24h')
 
-/* ---------------- mock series ---------------- */
-const hours = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`)
-const days7 = ['07-27', '07-28', '07-29', '07-30', '07-31', '08-01', '08-02']
-const days30 = Array.from({ length: 30 }, (_, i) => `0${Math.floor(i / 10) || ''}${i % 10 === 0 ? i / 10 : ''}`.slice(-2))
+/* ---------------- API data ---------------- */
+const modelStats = ref<HourlyModelStatsResponse | null>(null)
+const loading = ref(false)
 
-function genSeries(base: number, n: number, vol = 0.3, seed = 0) {
-  const out: number[] = []
-  let v = base
-  for (let i = 0; i < n; i++) {
-    const wave = Math.sin(i / 3 + seed) * base * vol
-    const noise = (Math.random() - 0.5) * base * vol * 2
-    v = Math.max(base * 0.2, v + wave * 0.25 + noise)
-    out.push(Math.round(v))
-  }
-  return out
+function getTimeRange(r: '24h' | '7d' | '30d') {
+  const now = new Date()
+  now.setMinutes(0, 0, 0)
+  const end = now.toISOString()
+  const start = new Date(now)
+  if (r === '24h') start.setHours(start.getHours() - 24)
+  else if (r === '7d') start.setDate(start.getDate() - 7)
+  else start.setDate(start.getDate() - 30)
+  return { start_hour: start.toISOString(), end_hour: end }
 }
 
-const tokenData = computed(() => {
-  if (range.value === '24h') return genSeries(8_200_000, 24, 0.35, 1)
-  if (range.value === '7d') return genSeries(11_500_000, 7, 0.4, 2)
-  return genSeries(9_800_000, 30, 0.45, 3)
+async function fetchDashboard() {
+  loading.value = true
+  try {
+    const tr = getTimeRange(range.value)
+    modelStats.value = await getHourlyModelStats(tr.start_hour, tr.end_hour)
+  } catch (e: any) {
+    toast('数据加载失败', e.message || '无法获取仪表盘数据', 'danger')
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(fetchDashboard)
+watch(range, fetchDashboard)
+
+/* ---------------- computed stats ---------------- */
+// Token stats from model-level hourly data (real token counts)
+const totalInputTokens = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.input_tokens || 0), 0)
+})
+const totalOutputTokens = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.output_tokens || 0), 0)
+})
+const totalTokens = computed(() => totalInputTokens.value + totalOutputTokens.value)
+const totalCacheTokens = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.input_cache_tokens || 0), 0)
 })
 
-const tokenAxis = computed(() => (range.value === '24h' ? hours : range.value === '7d' ? days7 : days30))
+// Request stats from model stats
+const totalRequests = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.requests || 0), 0)
+})
+const successRequests = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.successes || 0), 0)
+})
+const failedRequests = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.failures || 0), 0)
+})
 
-const requestData = genSeries(420, 24, 0.4, 5)
+// Latency (weighted average of success_avg_duration_ms by successes)
+const avgLatency = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return 0
+  let totalDuration = 0
+  let totalSucc = 0
+  for (const it of items) {
+    const s = it.successes || 0
+    totalDuration += (it.success_avg_duration_ms || 0) * s
+    totalSucc += s
+  }
+  return totalSucc > 0 ? Math.round(totalDuration / totalSucc) : 0
+})
+
+// Traffic bytes (request + response)
+const totalRequestBytes = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.success_request_bytes || 0), 0)
+})
+const totalResponseBytes = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return 0
+  return items.reduce((sum, it) => sum + (it.success_response_bytes || 0), 0)
+})
+const totalTrafficBytes = computed(() => totalRequestBytes.value + totalResponseBytes.value)
+
+const successRate = computed(() =>
+  totalRequests.value > 0 ? +((successRequests.value / totalRequests.value) * 100).toFixed(1) : 0
+)
+
+const cacheRate = computed(() =>
+  totalInputTokens.value > 0 ? +((totalCacheTokens.value / totalInputTokens.value) * 100).toFixed(1) : 0
+)
+
+// Token sparkline from model stats (per-hour total tokens)
+const tokenSpark = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+  const hourMap = new Map<string, number>()
+  for (const it of items) {
+    const total = (it.input_tokens || 0) + (it.output_tokens || 0)
+    const key = it.hour
+    hourMap.set(key, (hourMap.get(key) || 0) + total)
+  }
+  return [...hourMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, v]) => v)
+    .slice(-20)
+})
+
+
+/* ---------------- format helpers ---------------- */
+function fmtNum(n: number): string {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(n)
+}
+
+function fmtBytes(b: number): string {
+  if (b >= 1e9) return (b / 1e9).toFixed(2) + 'GB'
+  if (b >= 1e6) return (b / 1e6).toFixed(2) + 'MB'
+  if (b >= 1e3) return (b / 1e3).toFixed(1) + 'KB'
+  return b + 'B'
+}
+
+function fmtMs(ms: number): string {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + 's'
+  return ms + 'ms'
+}
+
+/* request sparkline from model stats (per-hour total requests) */
+const requestSpark = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+  const hourMap = new Map<string, number>()
+  for (const it of items) {
+    const key = it.hour
+    hourMap.set(key, (hourMap.get(key) || 0) + (it.requests || 0))
+  }
+  return [...hourMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, v]) => v)
+    .slice(-20)
+})
+
+/* ---------------- per-model token series ---------------- */
+const MODEL_COLORS = ['#22d3ee', '#8b5cf6', '#e879f9', '#34d399', '#fbbf24', '#38bdf8', '#f87171']
+
+interface ModelSeries {
+  name: string
+  data: number[]
+  color: string
+}
+
+const modelTokenSeries = computed<ModelSeries[]>(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+
+  // collect all hours from the axis for alignment
+  const axis = tokenAxis.value
+  if (axis.length === 0) return []
+
+  // group items by model
+  const modelMap = new Map<string, Map<string, number>>()
+  for (const it of items) {
+    const total = (it.input_tokens || 0) + (it.output_tokens || 0)
+    if (total === 0) continue
+    if (!modelMap.has(it.model)) modelMap.set(it.model, new Map())
+    // Normalize hour label to match axis format
+    const hourLabel = formatHourLabel(it.hour, range.value)
+    const m = modelMap.get(it.model)!
+    m.set(hourLabel, (m.get(hourLabel) || 0) + total)
+  }
+
+  // Sort models by total tokens descending, take top 6
+  const ranked = [...modelMap.entries()]
+    .map(([name, hourMap]) => ({
+      name,
+      hourMap,
+      total: [...hourMap.values()].reduce((a, b) => a + b, 0)
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6)
+
+  return ranked.map((m, i) => ({
+    name: m.name,
+    data: axis.map(label => m.hourMap.get(label) || 0),
+    color: MODEL_COLORS[i % MODEL_COLORS.length]
+  }))
+})
+
+function formatHourLabel(isoHour: string, r: '24h' | '7d' | '30d'): string {
+  const d = new Date(isoHour)
+  if (r === '24h') {
+    return `${String(d.getHours()).padStart(2, '0')}:00`
+  }
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${mm}-${dd}`
+}
+
+/* ---------------- time axis & request series from model stats ---------------- */
+const tokenAxis = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+  const labels = new Set<string>()
+  for (const it of items) labels.add(formatHourLabel(it.hour, range.value))
+  return [...labels].sort()
+})
+
+const requestData = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+  const axis = tokenAxis.value
+  const hourMap = new Map<string, number>()
+  for (const it of items) {
+    const label = formatHourLabel(it.hour, range.value)
+    hourMap.set(label, (hourMap.get(label) || 0) + (it.requests || 0))
+  }
+  return axis.map(label => hourMap.get(label) || 0)
+})
+
+const successData = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+  const axis = tokenAxis.value
+  const hourMap = new Map<string, number>()
+  for (const it of items) {
+    const label = formatHourLabel(it.hour, range.value)
+    hourMap.set(label, (hourMap.get(label) || 0) + (it.successes || 0))
+  }
+  return axis.map(label => hourMap.get(label) || 0)
+})
+
+const failureData = computed(() => {
+  const items = modelStats.value?.items
+  if (!items || items.length === 0) return []
+  const axis = tokenAxis.value
+  const hourMap = new Map<string, number>()
+  for (const it of items) {
+    const label = formatHourLabel(it.hour, range.value)
+    hourMap.set(label, (hourMap.get(label) || 0) + (it.failures || 0))
+  }
+  return axis.map(label => hourMap.get(label) || 0)
+})
+
+const hours = tokenAxis
 
 /* ---------------- chart options ---------------- */
 const trendOption = computed<echarts.EChartsOption>(() => {
-  const data = tokenData.value
+  const models = modelTokenSeries.value
+  const axis = tokenAxis.value
+
+  /* total line (sum of all models per time bucket) */
+  const totalLine: number[] = axis.map((_: string, i: number) =>
+    models.reduce((sum: number, m: ModelSeries) => sum + (m.data[i] || 0), 0)
+  )
+
+  const series: any[] = [
+    {
+      name: '总 Token',
+      type: 'line',
+      data: totalLine,
+      smooth: true,
+      symbol: 'none',
+      lineStyle: { width: 2.5, color: c.value.c1 },
+      itemStyle: { color: c.value.c1 },
+      areaStyle: {
+        color: {
+          type: 'linear',
+          x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(34,211,238,0.25)' },
+            { offset: 1, color: 'rgba(34,211,238,0)' }
+          ]
+        }
+      },
+      emphasis: { focus: 'series' as const }
+    },
+    /* per-model lines */
+    ...models.map((m: ModelSeries) => ({
+      name: m.name,
+      type: 'line',
+      data: m.data,
+      smooth: true,
+      symbol: 'none',
+      lineStyle: { width: 1.5, color: m.color },
+      itemStyle: { color: m.color },
+      emphasis: { focus: 'series' as const }
+    }))
+  ]
+
   return {
     grid: { left: 8, right: 8, top: 30, bottom: 4, containLabel: true },
     tooltip: {
       ...tooltipStyle([]),
       trigger: 'axis' as const,
-      valueFormatter: (v: any) => (v / 1e6).toFixed(2) + ' M'
+      valueFormatter: (v: any) => fmtNum(Number(v))
     },
-    xAxis: { type: 'category', data: tokenAxis.value, boundaryGap: false, ...axisStyle(), axisLine: { show: false } },
+    legend: { show: false },
+    xAxis: { type: 'category', data: axis, boundaryGap: false, ...axisStyle(), axisLine: { show: false } },
     yAxis: {
       type: 'value',
       ...axisStyle(),
       splitNumber: 3,
-      axisLabel: { ...axisStyle().axisLabel, formatter: (v: number) => (v / 1e6).toFixed(0) + 'M' }
+      axisLabel: { ...axisStyle().axisLabel, formatter: (v: number) => fmtNum(v) }
     },
-    series: [
-      {
-        name: 'Token 用量',
-        type: 'line',
-        data,
-        smooth: true,
-        symbol: 'none',
-        lineStyle: { width: 2.5, color: c.value.c1 },
-        itemStyle: { color: c.value.c1 },
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(34,211,238,0.32)' },
-              { offset: 0.55, color: 'rgba(99,102,241,0.12)' },
-              { offset: 1, color: 'rgba(139,92,246,0)' }
-            ]
-          }
-        },
-        emphasis: { focus: 'series' as const }
-      },
-      {
-        name: '输入 Tokens',
-        type: 'line',
-        data: data.map((v) => Math.round(v * 0.62)),
-        smooth: true,
-        symbol: 'none',
-        lineStyle: { width: 1.5, color: c.value.c2, opacity: 0.7, type: 'dashed' as const },
-        itemStyle: { color: c.value.c2 }
-      }
-    ]
+    series
   }
 })
 
@@ -187,26 +423,65 @@ const relayBarOption = computed<echarts.EChartsOption>(() => {
   }
 })
 
-const trafficOption = computed<echarts.EChartsOption>(() => {
+const requestTrendOption = computed<echarts.EChartsOption>(() => {
+  const axis = tokenAxis.value
   return {
-    grid: { left: 8, right: 8, top: 30, bottom: 4, containLabel: true },
-    tooltip: { ...tooltipStyle([]), trigger: 'axis' as const },
-    xAxis: { type: 'category', data: hours, boundaryGap: false, ...axisStyle(), axisLine: { show: false }, axisLabel: { ...axisStyle().axisLabel, interval: 3 } },
-    yAxis: { type: 'value', ...axisStyle(), splitNumber: 3 },
+    grid: { left: 8, right: 16, top: 16, bottom: 4, containLabel: true },
+    tooltip: { ...tooltipStyle([]), trigger: 'axis' as const, valueFormatter: (v: any) => fmtNum(Number(v)) },
+    legend: { show: false },
+    xAxis: { type: 'category', data: axis, boundaryGap: false, ...axisStyle(), axisLine: { show: false } },
+    yAxis: { type: 'value', ...axisStyle(), splitNumber: 4, axisLabel: { ...axisStyle().axisLabel, formatter: (v: number) => fmtNum(v) } },
     series: [
       {
-        name: '请求量',
-        type: 'bar',
-        data: requestData,
-        barWidth: '55%',
-        itemStyle: {
-          borderRadius: [4, 4, 0, 0],
+        name: '总请求',
+        type: 'line',
+        data: requestData.value,
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 2.5, color: c.value.c2 },
+        areaStyle: {
           color: {
             type: 'linear',
             x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(139,92,246,0.85)' },
-              { offset: 1, color: 'rgba(139,92,246,0.15)' }
+              { offset: 0, color: 'rgba(139,92,246,0.2)' },
+              { offset: 1, color: 'rgba(139,92,246,0)' }
+            ]
+          }
+        }
+      },
+      {
+        name: '成功',
+        type: 'line',
+        data: successData.value,
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 2, color: '#34d399' },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(52,211,153,0.2)' },
+              { offset: 1, color: 'rgba(52,211,153,0)' }
+            ]
+          }
+        }
+      },
+      {
+        name: '失败',
+        type: 'line',
+        data: failureData.value,
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 2, color: '#f87171' },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(248,113,113,0.15)' },
+              { offset: 1, color: 'rgba(248,113,113,0)' }
             ]
           }
         }
@@ -224,26 +499,60 @@ const gaugeOption = computed<echarts.EChartsOption>(() => {
         endAngle: -30,
         min: 0,
         max: 100,
-        radius: '95%',
-        center: ['50%', '58%'],
-        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: c.value.c4 } },
+        radius: '88%',
+        center: ['50%', '56%'],
+        progress: { show: true, width: 10, roundCap: true, itemStyle: { color: c.value.c4 } },
         pointer: { show: false },
-        axisLine: { lineStyle: { width: 12, color: [[1, c.value.border]] } },
+        axisLine: { lineStyle: { width: 10, color: [[1, c.value.border]] } },
         axisTick: { show: false },
         splitLine: { show: false },
         axisLabel: { show: false },
         anchor: { show: false },
-        title: { show: true, offsetCenter: [0, '46%'], color: c.value.muted, fontSize: 11, fontFamily: 'Inter' },
+        title: { show: true, offsetCenter: [0, '52%'], color: c.value.muted, fontSize: 10, fontFamily: 'Inter' },
         detail: {
           valueAnimation: true,
-          offsetCenter: [0, '22%'],
+          offsetCenter: [0, '18%'],
           formatter: '{value}%',
           color: c.value.text,
-          fontSize: 30,
+          fontSize: 22,
           fontFamily: 'JetBrains Mono',
           fontWeight: 700
         },
-        data: [{ value: 98.4, name: '请求成功率' }]
+        data: [{ value: successRate.value, name: '成功率' }]
+      }
+    ]
+  }
+})
+
+const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
+  return {
+    series: [
+      {
+        type: 'gauge',
+        startAngle: 210,
+        endAngle: -30,
+        min: 0,
+        max: 100,
+        radius: '88%',
+        center: ['50%', '56%'],
+        progress: { show: true, width: 10, roundCap: true, itemStyle: { color: c.value.c1 } },
+        pointer: { show: false },
+        axisLine: { lineStyle: { width: 10, color: [[1, c.value.border]] } },
+        axisTick: { show: false },
+        splitLine: { show: false },
+        axisLabel: { show: false },
+        anchor: { show: false },
+        title: { show: true, offsetCenter: [0, '52%'], color: c.value.muted, fontSize: 10, fontFamily: 'Inter' },
+        detail: {
+          valueAnimation: true,
+          offsetCenter: [0, '18%'],
+          formatter: '{value}%',
+          color: c.value.text,
+          fontSize: 22,
+          fontFamily: 'JetBrains Mono',
+          fontWeight: 700
+        },
+        data: [{ value: cacheRate.value, name: '缓存率' }]
       }
     ]
   }
@@ -256,11 +565,6 @@ const relayStatusIcon = (s: Relay['status']) => (s === 'active' ? 'green' : 'ros
 
 const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const checkinAll = () => {
-  const todo = store.relays.filter((r) => !r.checkinAt)
-  todo.forEach((r) => store.updateRelay(r.id, { checkinAt: '2026-08-02 ' + new Date().toTimeString().slice(0, 5) }))
-  toast('批量签到完成', `已为 ${todo.length} 个账户完成今日签到`, 'success')
-}
 </script>
 
 <template>
@@ -274,48 +578,44 @@ const checkinAll = () => {
         <button :class="{ active: range === '30d' }" @click="range = '30d'">30D</button>
       </div>
       <div class="spacer"></div>
-      <button class="btn btn-ghost btn-sm" @click="checkinAll"><CalendarCheck :size="14" /> 批量签到</button>
-      <button class="btn btn-primary btn-sm" @click="router.push('/keys')"><Plus :size="14" /> 创建密钥</button>
     </section>
 
     <!-- stats -->
     <section class="stats-grid">
       <StatCard
-        label="Token 总消耗"
-        :value="'48.2M'"
-        :delta="12.6"
+        label="Token 消耗"
+        :value="fmtNum(totalTokens)"
         :icon="Coins"
         tone="cyan"
-        sub="较上周 · 输入 29.8M / 输出 18.4M"
-        :spark="genSeries(30, 20, 0.3, 1)"
-      />
+        :spark="tokenSpark"
+      >
+        <div class="req-gauge-float">
+          <BaseChart :option="cacheGaugeOption" height="120px" />
+        </div>
+        <div class="sm-row">
+          <span class="sm-chip cyan"><span class="sm-dot"></span>输入 <b class="mono">{{ fmtNum(totalInputTokens) }}</b></span>
+          <span class="sm-chip violet"><span class="sm-dot"></span>输出 <b class="mono">{{ fmtNum(totalOutputTokens) }}</b></span>
+          <span class="sm-chip green"><span class="sm-dot"></span>缓存 <b class="mono">{{ fmtNum(totalCacheTokens) }}</b></span>
+        </div>
+      </StatCard>
       <StatCard
-        label="今日请求"
-        :value="'1,024,839'"
-        :delta="8.2"
+        label="请求统计"
+        :value="fmtNum(totalRequests)"
         :icon="Activity"
         tone="violet"
-        sub="峰值 4,912 次/分 · 均值 712 次/分"
-        :spark="genSeries(400, 20, 0.4, 2)"
-      />
-      <StatCard
-        label="启用中转站"
-        :value="`${activeCount}/${store.relays.length}`"
-        :delta="4"
-        :icon="Server"
-        tone="green"
-        sub="接入供应商账户 · 余额自动巡检"
-        :spark="genSeries(5, 20, 0.12, 3)"
-      />
-      <StatCard
-        label="活跃模型"
-        :value="'14'"
-        :delta="-2.4"
-        :icon="Bot"
-        tone="pink"
-        sub="跨 6 家平台 · 今日调用 9 个"
-        :spark="genSeries(12, 20, 0.2, 4)"
-      />
+        :spark="requestSpark"
+      >
+        <div class="req-gauge-float">
+          <BaseChart :option="gaugeOption" height="120px" />
+        </div>
+        <div class="sm-row">
+          <span class="sm-chip success"><span class="sm-dot"></span>成功 <b class="mono">{{ fmtNum(successRequests) }}</b></span>
+          <span class="sm-chip danger"><span class="sm-dot"></span>失败 <b class="mono">{{ fmtNum(failedRequests) }}</b></span>
+          <span class="sm-chip muted"><span class="sm-dot"></span>延迟 <b class="mono">{{ fmtMs(avgLatency) }}</b></span>
+          <span class="sm-chip muted"><span class="sm-dot"></span>请求 <b class="mono">{{ fmtBytes(totalRequestBytes) }}</b></span>
+          <span class="sm-chip muted"><span class="sm-dot"></span>响应 <b class="mono">{{ fmtBytes(totalResponseBytes) }}</b></span>
+        </div>
+      </StatCard>
     </section>
 
     <!-- charts row 1 -->
@@ -324,16 +624,18 @@ const checkinAll = () => {
         <div class="panel-header">
           <div>
             <div class="panel-title"><Sparkles :size="16" /> Token 用量趋势</div>
-            <div class="panel-sub">输入 / 输出 token 随时间消耗曲线</div>
+            <div class="panel-sub">各模型 token 消耗趋势 · 按用量排名前 6</div>
           </div>
         </div>
         <div class="panel-body">
           <div class="token-summary">
-            <div class="token-big mono">48.24M</div>
-            <div class="token-delta"><TrendingUp :size="13" /> <span class="mono">+12.6%</span> 较上一周期</div>
+            <div class="token-big mono">{{ fmtNum(totalTokens) }}</div>
+            <div class="token-meta">输入 {{ fmtNum(totalInputTokens) }} · 输出 {{ fmtNum(totalOutputTokens) }}</div>
             <div class="token-legend">
               <span class="legend-item"><i class="lg lg-1"></i>总量</span>
-              <span class="legend-item"><i class="lg lg-2"></i>输入</span>
+              <span v-for="ms in modelTokenSeries" :key="ms.name" class="legend-item">
+                <i class="lg" :style="{ background: ms.color }"></i>{{ ms.name }}
+              </span>
             </div>
           </div>
           <BaseChart :option="trendOption" height="250px" />
@@ -370,6 +672,27 @@ const checkinAll = () => {
 
     <!-- charts row 2 -->
     <section class="charts-2">
+      <div class="panel request-trend-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title"><Activity :size="16" /> 请求趋势</div>
+            <div class="panel-sub">按时间统计请求次数</div>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="token-summary">
+            <div class="token-big mono">{{ fmtNum(totalRequests) }}</div>
+            <div class="token-meta">成功 {{ fmtNum(successRequests) }} · 失败 {{ fmtNum(failedRequests) }}</div>
+            <div class="token-legend">
+              <span class="legend-item"><i class="lg lg-2"></i>总请求</span>
+              <span class="legend-item"><i class="lg" style="background:#34d399"></i>成功</span>
+              <span class="legend-item"><i class="lg" style="background:#f87171"></i>失败</span>
+            </div>
+          </div>
+          <BaseChart :option="requestTrendOption" height="250px" />
+        </div>
+      </div>
+
       <div class="panel relay-panel">
         <div class="panel-header">
           <div>
@@ -380,43 +703,6 @@ const checkinAll = () => {
         </div>
         <div class="panel-body">
           <BaseChart :option="relayBarOption" height="280px" />
-        </div>
-      </div>
-
-      <div class="panel traffic-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title"><Activity :size="16" /> 请求流量</div>
-            <div class="panel-sub">24 小时请求量（次/时）</div>
-          </div>
-          <span class="pill success"><span class="dot" /> 正常</span>
-        </div>
-        <div class="panel-body">
-          <BaseChart :option="trafficOption" height="140px" />
-          <div class="traffic-meta">
-            <div class="tm-cell">
-              <div class="tm-label">请求成功率</div>
-              <BaseChart :option="gaugeOption" height="118px" />
-            </div>
-            <div class="tm-list">
-              <div class="tm-row">
-                <span>错误请求</span>
-                <strong class="mono" style="color: var(--danger)">1,382</strong>
-              </div>
-              <div class="tm-row">
-                <span>超时请求</span>
-                <strong class="mono" style="color: var(--warning)">2,104</strong>
-              </div>
-              <div class="tm-row">
-                <span>限流拦截</span>
-                <strong class="mono" style="color: var(--info)">847</strong>
-              </div>
-              <div class="tm-row">
-                <span>平均延迟</span>
-                <strong class="mono" style="color: var(--text)">132ms</strong>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </section>
@@ -489,9 +775,60 @@ const checkinAll = () => {
 /* stats */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: var(--space-4);
 }
+.req-gauge-float {
+  position: absolute;
+  top: 0;
+  left: 20%;
+  bottom: 70px;
+  height: 60%;
+  width: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* stat card sub-metrics */
+.sm-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.sm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-soft);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  transition: background 0.15s, border-color 0.15s;
+}
+.sm-chip:hover {
+  background: rgba(255,255,255,0.07);
+  border-color: rgba(255,255,255,0.1);
+}
+.sm-chip b {
+  font-weight: 700;
+  color: var(--text);
+}
+.sm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sm-chip.cyan .sm-dot { background: #22d3ee; box-shadow: 0 0 6px rgba(34,211,238,0.5); }
+.sm-chip.violet .sm-dot { background: #8b5cf6; box-shadow: 0 0 6px rgba(139,92,246,0.5); }
+.sm-chip.green .sm-dot { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.5); }
+.sm-chip.success .sm-dot { background: var(--success); box-shadow: 0 0 6px rgba(52,211,153,0.5); }
+.sm-chip.danger .sm-dot { background: var(--danger); box-shadow: 0 0 6px rgba(239,68,68,0.5); }
+.sm-chip.muted .sm-dot { background: var(--text-faint); }
 
 /* charts 1 */
 .charts-1 {
@@ -529,15 +866,9 @@ const checkinAll = () => {
 /* charts 2 */
 .charts-2 {
   display: grid;
-  grid-template-columns: 1fr 1.2fr;
+  grid-template-columns: 1.9fr 1fr;
   gap: var(--space-4);
 }
-.traffic-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
-.tm-cell { display: flex; flex-direction: column; align-items: center; }
-.tm-label { font-size: 11.5px; color: var(--text-faint); font-weight: 600; letter-spacing: 0.05em; }
-.tm-list { display: flex; flex-direction: column; gap: 10px; justify-content: center; padding-left: 12px; border-left: 1px solid var(--border); }
-.tm-row { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text-muted); }
-.tm-row strong { font-weight: 700; }
 
 /* bottom */
 .bottom-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: var(--space-4); }
@@ -590,6 +921,5 @@ const checkinAll = () => {
 }
 @media (max-width: 640px) {
   .stats-grid { grid-template-columns: 1fr; }
-  .traffic-meta { grid-template-columns: 1fr; }
 }
 </style>

@@ -33,9 +33,9 @@ go.work
 go.work.sum
 
 # SQLite
-backend/*.db
-backend/*.db-shm
-backend/*.db-wal
+*.db
+*.db-shm
+*.db-wal
 
 # Env
 backend/.env

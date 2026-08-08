@@ -70,13 +70,16 @@ const sparkOption = computed<echarts.EChartsOption>(() => {
     </div>
     <div class="stat-label">{{ label }}</div>
     <div class="stat-value mono">{{ value }}</div>
-    <div v-if="sub" class="stat-sub">{{ sub }}</div>
+    <div v-if="sub && !$slots.default" class="stat-sub">{{ sub }}</div>
+    <div v-if="$slots.default" class="stat-slot-area">
+      <slot />
+    </div>
     <BaseChart v-if="spark && spark.length" class="stat-spark" :option="sparkOption" height="44px" />
   </div>
 </template>
 
 <style scoped>
-.stat-card { padding: 20px; overflow: hidden; }
+.stat-card { padding: 20px; overflow: hidden; position: relative; }
 .stat-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .stat-ico {
   width: 38px;
@@ -117,5 +120,10 @@ const sparkOption = computed<echarts.EChartsOption>(() => {
   color: var(--text);
 }
 .stat-sub { font-size: 12px; color: var(--text-faint); margin-top: 4px; }
+.stat-slot-area {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-soft, rgba(255,255,255,0.06));
+}
 .stat-spark { margin-top: 12px; }
 </style>
