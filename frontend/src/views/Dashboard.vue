@@ -180,7 +180,15 @@ const requestSpark = computed(() => {
 })
 
 /* ---------------- per-model token series ---------------- */
-const MODEL_COLORS = ['#22d3ee', '#8b5cf6', '#e879f9', '#34d399', '#fbbf24', '#38bdf8', '#f87171']
+const modelColors = computed(() => [
+  c.value.c1,
+  c.value.c2,
+  c.value.c3,
+  c.value.c4,
+  c.value.c5,
+  c.value.c7,
+  c.value.c6
+])
 
 interface ModelSeries {
   name: string
@@ -221,8 +229,49 @@ const modelTokenSeries = computed<ModelSeries[]>(() => {
   return ranked.map((m, i) => ({
     name: m.name,
     data: axis.map(label => m.hourMap.get(label) || 0),
-    color: MODEL_COLORS[i % MODEL_COLORS.length]
+    color: modelColors.value[i % modelColors.value.length]
   }))
+})
+
+interface ModelUsageSlice {
+  name: string
+  value: number
+  percent: number
+  color: string
+}
+
+const modelUsageDistribution = computed<ModelUsageSlice[]>(() => {
+  const items = modelStats.value?.items ?? []
+  const totals = new Map<string, number>()
+
+  for (const item of items) {
+    const total = (item.input_tokens || 0) + (item.output_tokens || 0)
+    if (total <= 0) continue
+    const name = item.model.trim() || '未知模型'
+    totals.set(name, (totals.get(name) || 0) + total)
+  }
+
+  const ranked = [...totals.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+  const top = ranked.slice(0, 5)
+  const otherValue = ranked.slice(5).reduce((sum, item) => sum + item.value, 0)
+  if (otherValue > 0) top.push({ name: '其他', value: otherValue })
+
+  const total = top.reduce((sum, item) => sum + item.value, 0)
+  return top.map((item, index) => ({
+    ...item,
+    percent: total > 0 ? (item.value / total) * 100 : 0,
+    color: item.name === '其他'
+      ? c.value.faint
+      : modelColors.value[index % modelColors.value.length]
+  }))
+})
+
+const modelDistributionRangeLabel = computed(() => {
+  if (range.value === '24h') return '近 24 小时 token 消耗占比'
+  if (range.value === '7d') return '近 7 天 token 消耗占比'
+  return '近 30 天 token 消耗占比'
 })
 
 function formatHourLabel(isoHour: string, r: '24h' | '7d' | '30d'): string {
@@ -371,16 +420,13 @@ const trendOption = computed<echarts.EChartsOption>(() => {
 })
 
 const modelDonutOption = computed<echarts.EChartsOption>(() => {
-  const models = [
-    { name: 'gpt-4o', value: 34.8, color: c.value.c1 },
-    { name: 'gpt-4o-mini', value: 22.4, color: c.value.c7 },
-    { name: 'claude-3-5-sonnet', value: 18.2, color: c.value.c3 },
-    { name: 'deepseek-r1', value: 11.5, color: c.value.c2 },
-    { name: 'gemini-1.5-flash', value: 7.1, color: c.value.c4 },
-    { name: '其他', value: 6.0, color: c.value.faint }
-  ]
+  const models = modelUsageDistribution.value
   return {
-    tooltip: { ...tooltipStyle([]), trigger: 'item' as const, formatter: '{b}<br/> {c}%' },
+    tooltip: {
+      ...tooltipStyle([]),
+      trigger: 'item' as const,
+      formatter: (params: any) => `${params.name}<br/> ${fmtNum(Number(params.value))} tokens (${Number(params.percent || 0).toFixed(1)}%)`
+    },
     series: [
       {
         type: 'pie',
@@ -400,7 +446,7 @@ const modelDonutOption = computed<echarts.EChartsOption>(() => {
         left: 'center',
         top: '38%',
         style: {
-          text: '16.2M',
+          text: fmtNum(totalTokens.value),
           fill: c.value.text,
           font: '700 24px "JetBrains Mono", monospace',
           textAlign: 'center'
@@ -411,7 +457,7 @@ const modelDonutOption = computed<echarts.EChartsOption>(() => {
         left: 'center',
         top: '52%',
         style: {
-          text: '今日总消耗',
+          text: '总消耗',
           fill: c.value.muted,
           font: '12px "Inter", sans-serif',
           textAlign: 'center'
@@ -690,7 +736,7 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
         <div class="panel-header">
           <div>
             <div class="panel-title"><Cpu :size="16" /> 模型用量分布</div>
-            <div class="panel-sub">今日 token 消耗占比</div>
+            <div class="panel-sub">{{ modelDistributionRangeLabel }}</div>
           </div>
           <button class="icon-btn primary" @click="router.push('/logs')" aria-label="查看日志">
             <ArrowUpRight :size="15" />
@@ -699,16 +745,13 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
         <div class="panel-body">
           <BaseChart :option="modelDonutOption" height="210px" />
           <div class="donut-legend">
-            <span v-for="m in [
-              { n: 'gpt-4o', v: '34.8%', col: 'var(--c1)' },
-              { n: 'gpt-4o-mini', v: '22.4%', col: 'var(--c7)' },
-              { n: 'claude-3-5-sonnet', v: '18.2%', col: 'var(--c3)' },
-              { n: 'deepseek-r1', v: '11.5%', col: 'var(--c2)' }
-            ]" :key="m.n" class="donut-row">
-              <span class="d-dot" :style="{ background: m.col }"></span>
-              <span class="d-name">{{ m.n }}</span>
-              <span class="d-val mono">{{ m.v }}</span>
+            <span v-for="m in modelUsageDistribution" :key="m.name" class="donut-row">
+              <span class="d-dot" :style="{ background: m.color }"></span>
+              <span class="d-name">{{ m.name }}</span>
+              <span class="d-tokens mono">{{ fmtNum(m.value) }}</span>
+              <span class="d-val mono">{{ m.percent.toFixed(1) }}%</span>
             </span>
+            <span v-if="!modelUsageDistribution.length" class="donut-empty">暂无数据</span>
           </div>
         </div>
       </div>
@@ -929,8 +972,10 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
 .donut-legend { display: flex; flex-direction: column; gap: 8px; padding: 0 6px; }
 .donut-row { display: flex; align-items: center; gap: 9px; font-size: 12px; }
 .d-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; }
-.d-name { color: var(--text-soft); flex: 1; }
-.d-val { color: var(--text-muted); font-weight: 600; }
+.d-name { color: var(--text-soft); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-tokens { width: 64px; color: var(--text-soft); font-weight: 600; text-align: right; }
+.d-val { width: 52px; color: var(--text-muted); font-weight: 600; text-align: right; }
+.donut-empty { padding: 4px 0; color: var(--text-faint); font-size: 12px; }
 
 /* charts 2 */
 .charts-2 {
