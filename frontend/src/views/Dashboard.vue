@@ -7,10 +7,7 @@ import {
   Coins,
   Wifi,
   ArrowUpRight,
-  Cpu,
-  ShieldCheck,
-  Zap,
-  ChevronRight
+  Cpu
 } from 'lucide-vue-next'
 import StatCard from '../components/StatCard.vue'
 import BaseChart from '../components/BaseChart.vue'
@@ -19,7 +16,6 @@ import { store } from '../store'
 import { toast } from '../composables/toast'
 import { getHourlyModelStats } from '../api/dashboard'
 import type { HourlyModelStatsResponse } from '../api/dashboard'
-import type { Relay } from '../types'
 
 const router = useRouter()
 const { c, axisStyle, tooltipStyle } = useChartColors()
@@ -268,10 +264,42 @@ const modelUsageDistribution = computed<ModelUsageSlice[]>(() => {
   }))
 })
 
-const modelDistributionRangeLabel = computed(() => {
-  if (range.value === '24h') return '近 24 小时 token 消耗占比'
-  if (range.value === '7d') return '近 7 天 token 消耗占比'
-  return '近 30 天 token 消耗占比'
+interface RelayUsageSlice {
+  name: string
+  input: number
+  output: number
+  total: number
+}
+
+const relayUsageTop = computed<RelayUsageSlice[]>(() => {
+  const items = modelStats.value?.items ?? []
+  const map = new Map<string, { input: number; output: number }>()
+
+  for (const it of items) {
+    const name = it.backend?.trim() || '未知中转站'
+    const cur = map.get(name) || { input: 0, output: 0 }
+    cur.input += it.input_tokens || 0
+    cur.output += it.output_tokens || 0
+    map.set(name, cur)
+  }
+
+  const ranked = [...map.entries()]
+    .map(([name, v]) => ({ name, input: v.input, output: v.output, total: v.input + v.output }))
+    .sort((a, b) => b.total - a.total)
+
+  const top = ranked.slice(0, 5)
+  const rest = ranked.slice(5)
+  if (rest.length > 0) {
+    const merged = rest.reduce((acc, r) => ({ input: acc.input + r.input, output: acc.output + r.output }), { input: 0, output: 0 })
+    top.push({ name: '其他', input: merged.input, output: merged.output, total: merged.input + merged.output })
+  }
+  return top
+})
+
+const rangeLabel = computed(() => {
+  if (range.value === '24h') return '近 24 小时'
+  if (range.value === '7d') return '近 7 天'
+  return '近 30 天'
 })
 
 function formatHourLabel(isoHour: string, r: '24h' | '7d' | '30d'): string {
@@ -468,27 +496,25 @@ const modelDonutOption = computed<echarts.EChartsOption>(() => {
 })
 
 const relayBarOption = computed<echarts.EChartsOption>(() => {
-  const top = [...store.relays]
-    .sort((a, b) => b.used - a.used)
-    .slice(0, 6)
-    .map((r) => ({ name: r.name, used: r.used, color: r.status === 'disabled' ? c.value.faint : c.value.c2 }))
+  const top = relayUsageTop.value
+  const names = top.map(t => t.name)
   return {
     grid: { left: 8, right: 40, top: 8, bottom: 4, containLabel: true },
     tooltip: {
       ...tooltipStyle([]),
       trigger: 'item' as const,
-      formatter: (p: any) => `${p.name}<br/> ${(p.value / 1e6).toFixed(1)} M tokens`
+      formatter: (p: any) => `${p.name}<br/>总用量: ${fmtNum(p.value)}`
     },
-    xAxis: { type: 'value', ...axisStyle(), splitNumber: 3, axisLabel: { ...axisStyle().axisLabel, formatter: (v: number) => (v / 1e6).toFixed(0) + 'M' } },
-    yAxis: { type: 'category', ...axisStyle(), data: top.map((t) => t.name), axisLine: { show: false }, axisLabel: { color: c.value.text, fontSize: 11.5, fontFamily: 'Inter', width: 92, overflow: 'truncate' } },
+    xAxis: { type: 'value', ...axisStyle(), splitNumber: 3, axisLabel: { ...axisStyle().axisLabel, formatter: (v: number) => fmtNum(v) } },
+    yAxis: { type: 'category', ...axisStyle(), data: names, inverse: true, axisLine: { show: false }, axisLabel: { color: c.value.text, fontSize: 11.5, fontFamily: 'Inter', width: 92, overflow: 'truncate' } },
     series: [
       {
         type: 'bar',
-        data: top.map((t) => ({ value: t.used, itemStyle: { color: t.color, borderRadius: [0, 6, 6, 0] } })),
-        barWidth: 12,
+        data: top.map((t, i) => ({ value: t.total, itemStyle: { color: t.name === '其他' ? c.value.faint : c.value.c2, borderRadius: [0, 6, 6, 0] } })),
+        barWidth: 14,
         showBackground: true,
         backgroundStyle: { color: c.value.border, borderRadius: 6 },
-        label: { show: true, position: 'right', color: c.value.muted, fontSize: 11, fontFamily: 'JetBrains Mono', formatter: (p: any) => (p.value / 1e6).toFixed(0) + 'M' }
+        label: { show: true, position: 'right', color: c.value.muted, fontSize: 11, fontFamily: 'JetBrains Mono', formatter: (p: any) => fmtNum(p.value) }
       }
     ]
   }
@@ -634,12 +660,6 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
   }
 })
 
-/* ---------------- aggregates ---------------- */
-const activeCount = computed(() => store.relays.filter((r) => r.status === 'active').length)
-
-const relayStatusIcon = (s: Relay['status']) => (s === 'active' ? 'green' : 'rose')
-
-const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 </script>
 
@@ -700,13 +720,11 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
         <div class="panel-header">
           <div>
             <div class="panel-title"><Sparkles :size="16" /> Token 用量趋势</div>
-            <div class="panel-sub">各模型 token 消耗趋势 · 按用量排名前 6</div>
+            <div class="panel-sub">{{ rangeLabel }}各模型 token 消耗趋势</div>
           </div>
         </div>
         <div class="panel-body">
           <div class="token-summary">
-            <div class="token-big mono">{{ fmtNum(totalTokens) }}</div>
-            <div class="token-meta">输入 {{ fmtNum(totalInputTokens) }} · 输出 {{ fmtNum(totalOutputTokens) }}</div>
             <div class="token-legend">
               <button
                 type="button"
@@ -736,7 +754,7 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
         <div class="panel-header">
           <div>
             <div class="panel-title"><Cpu :size="16" /> 模型用量分布</div>
-            <div class="panel-sub">{{ modelDistributionRangeLabel }}</div>
+            <div class="panel-sub">{{ rangeLabel }} token 消耗占比</div>
           </div>
           <button class="icon-btn primary" @click="router.push('/logs')" aria-label="查看日志">
             <ArrowUpRight :size="15" />
@@ -763,13 +781,11 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
         <div class="panel-header">
           <div>
             <div class="panel-title"><Activity :size="16" /> 请求趋势</div>
-            <div class="panel-sub">按时间统计请求次数</div>
+            <div class="panel-sub">{{ rangeLabel }}请求次数统计</div>
           </div>
         </div>
         <div class="panel-body">
           <div class="token-summary">
-            <div class="token-big mono">{{ fmtNum(totalRequests) }}</div>
-            <div class="token-meta">成功 {{ fmtNum(successRequests) }} · 失败 {{ fmtNum(failedRequests) }}</div>
             <div class="token-legend">
               <button
                 v-for="item in [
@@ -794,7 +810,7 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
         <div class="panel-header">
           <div>
             <div class="panel-title"><Wifi :size="16" /> 中转站用量排行</div>
-            <div class="panel-sub">按累计消耗 token 排序</div>
+            <div class="panel-sub">{{ rangeLabel }} token 消耗排行</div>
           </div>
           <button class="btn btn-outline btn-sm" @click="router.push('/relays')">管理中转站</button>
         </div>
@@ -804,61 +820,6 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
       </div>
     </section>
 
-    <!-- bottom row -->
-    <section class="bottom-grid">
-      <div class="panel activity-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title"><Zap :size="16" /> 实时动态</div>
-            <div class="panel-sub">网关事件流</div>
-          </div>
-          <span class="pill info"><span class="dot pulse-dot" /> LIVE</span>
-        </div>
-        <div class="panel-body">
-          <div class="feed">
-            <div v-for="ev in [
-              { t: 'relay', title: '中转站签到成功', detail: 'Claude 代理池 · 每日额度刷新 +50M', time: '08:00', tone: 'success' },
-              { t: 'key', title: '新建 API Key', detail: '第三方客户 · A公司 创建密钥', time: '09:42', tone: 'info' },
-              { t: 'relay', title: '额度告警', detail: '智谱 GLM 剩余额度不足 0.1%', time: '10:15', tone: 'warning' },
-              { t: 'system', title: '自动故障转移', detail: 'Claude 池降级至 Gemini 官方', time: '11:47', tone: 'info' },
-              { t: 'relay', title: '同步完成', detail: 'DeepSeek 模型列表已更新', time: '12:20', tone: 'success' },
-              { t: 'key', title: '额度用尽预警', detail: '数据分析 Pipeline 达 99.4%', time: '13:05', tone: 'warning' }
-            ]" :key="ev.title" class="feed-item">
-              <span class="feed-dot" :class="ev.tone"></span>
-              <div class="feed-body">
-                <strong>{{ ev.title }}</strong>
-                <span class="feed-detail">{{ ev.detail }}</span>
-              </div>
-              <span class="feed-time mono">{{ ev.time }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel relay-status-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title"><ShieldCheck :size="16" /> 中转站链路状态</div>
-            <div class="panel-sub">实时健康监测</div>
-          </div>
-        </div>
-        <div class="panel-body">
-          <div v-for="r in store.relays.slice(0, 6)" :key="r.id" class="relay-row" @click="router.push('/relays')">
-            <div class="rr-left">
-              <span class="rr-dot" :class="relayStatusIcon(r.status)"></span>
-              <div class="rr-name">
-                <strong>{{ r.name }}</strong>
-                <span class="rr-model">{{ r.models[0]?.name }} 等 {{ r.models.length }} 个模型</span>
-              </div>
-            </div>
-            <div class="rr-right">
-              <span class="mono rr-latency">{{ fmtUsd(r.balance) }}</span>
-              <ChevronRight :size="14" class="rr-chevron" />
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
   </div>
 </template>
 
@@ -984,54 +945,9 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
   gap: var(--space-4);
 }
 
-/* bottom */
-.bottom-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: var(--space-4); }
-.feed { display: flex; flex-direction: column; }
-.feed-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 0;
-  border-bottom: 1px solid var(--border-soft);
-}
-.feed-item:last-child { border-bottom: none; }
-.feed-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.feed-dot.success { background: var(--success); box-shadow: 0 0 10px var(--success); }
-.feed-dot.warning { background: var(--warning); box-shadow: 0 0 10px var(--warning); }
-.feed-dot.danger { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
-.feed-dot.info { background: var(--info); box-shadow: 0 0 10px var(--info); }
-.feed-body { flex: 1; display: flex; flex-direction: column; }
-.feed-body strong { font-size: 13px; font-weight: 600; }
-.feed-detail { font-size: 11.5px; color: var(--text-faint); }
-.feed-time { font-size: 11px; color: var(--text-faint); }
-
-.relay-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 11px 12px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background 0.2s ease;
-}
-.relay-row:hover { background: var(--surface); }
-.rr-left { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.rr-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.rr-dot.green { background: var(--success); box-shadow: 0 0 10px var(--success); }
-.rr-dot.amber { background: var(--warning); box-shadow: 0 0 10px var(--warning); }
-.rr-dot.info { background: var(--info); box-shadow: 0 0 10px var(--info); }
-.rr-dot.rose { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
-.rr-name { display: flex; flex-direction: column; min-width: 0; }
-.rr-name strong { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rr-model { font-size: 11px; color: var(--text-faint); }
-.rr-right { display: flex; align-items: center; gap: 8px; }
-.rr-latency { font-size: 11.5px; color: var(--text-muted); }
-.rr-chevron { color: var(--text-faint); transition: transform 0.2s ease; }
-.relay-row:hover .rr-chevron { transform: translateX(3px); color: var(--text); }
-
 @media (max-width: 1200px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .charts-1, .charts-2, .bottom-grid { grid-template-columns: 1fr; }
+  .charts-1, .charts-2 { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   .stats-grid { grid-template-columns: 1fr; }
