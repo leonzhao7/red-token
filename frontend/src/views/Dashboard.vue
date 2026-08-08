@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Sparkles,
@@ -21,6 +21,8 @@ const router = useRouter()
 const { c, axisStyle, tooltipStyle } = useChartColors()
 
 const range = ref<'24h' | '7d' | '30d'>('24h')
+const selectedBackends = ref<Set<string>>(new Set())
+const showRelayDropdown = ref(false)
 
 /* ---------------- API data ---------------- */
 const modelStats = ref<HourlyModelStatsResponse | null>(null)
@@ -52,45 +54,82 @@ async function fetchDashboard() {
 onMounted(fetchDashboard)
 watch(range, fetchDashboard)
 
+function onClickOutside(e: MouseEvent) {
+  if (!showRelayDropdown.value) return
+  const el = (e.target as HTMLElement).closest('.backend-dropdown')
+  if (!el) showRelayDropdown.value = false
+}
+onMounted(() => document.addEventListener('click', onClickOutside))
+onBeforeUnmount(() => document.removeEventListener('click', onClickOutside))
+
+/* ---------------- backend filter ---------------- */
+const availableBackends = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return []
+  const map = new Map<string, number>()
+  for (const it of items) {
+    const name = it.backend?.trim() || '未知中转站'
+    map.set(name, (map.get(name) || 0) + (it.input_tokens || 0) + (it.output_tokens || 0))
+  }
+  return [...map.entries()]
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name)
+})
+
+const filteredItems = computed(() => {
+  const items = modelStats.value?.items
+  if (!items) return []
+  if (selectedBackends.value.size === 0) return items
+  return items.filter(it => selectedBackends.value.has(it.backend?.trim() || '未知中转站'))
+})
+
+function toggleBackend(name: string) {
+  const s = new Set(selectedBackends.value)
+  if (s.has(name)) s.delete(name)
+  else s.add(name)
+  selectedBackends.value = s
+}
+
 /* ---------------- computed stats ---------------- */
 // Token stats from model-level hourly data (real token counts)
 const totalInputTokens = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.input_tokens || 0), 0)
 })
 const totalOutputTokens = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.output_tokens || 0), 0)
 })
 const totalTokens = computed(() => totalInputTokens.value + totalOutputTokens.value)
 const totalCacheTokens = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.input_cache_tokens || 0), 0)
 })
 
 // Request stats from model stats
 const totalRequests = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.requests || 0), 0)
 })
 const successRequests = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.successes || 0), 0)
 })
 const failedRequests = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.failures || 0), 0)
 })
 
 // Latency (weighted average of success_avg_duration_ms by successes)
 const avgLatency = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return 0
   let totalDuration = 0
   let totalSucc = 0
@@ -104,12 +143,12 @@ const avgLatency = computed(() => {
 
 // Traffic bytes (request + response)
 const totalRequestBytes = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.success_request_bytes || 0), 0)
 })
 const totalResponseBytes = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items) return 0
   return items.reduce((sum, it) => sum + (it.success_response_bytes || 0), 0)
 })
@@ -125,7 +164,7 @@ const cacheRate = computed(() =>
 
 // Token sparkline from model stats (per-hour total tokens)
 const tokenSpark = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
   const hourMap = new Map<string, number>()
   for (const it of items) {
@@ -162,7 +201,7 @@ function fmtMs(ms: number): string {
 
 /* request sparkline from model stats (per-hour total requests) */
 const requestSpark = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
   const hourMap = new Map<string, number>()
   for (const it of items) {
@@ -193,7 +232,7 @@ interface ModelSeries {
 }
 
 const modelTokenSeries = computed<ModelSeries[]>(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
 
   // collect all hours from the axis for alignment
@@ -237,7 +276,7 @@ interface ModelUsageSlice {
 }
 
 const modelUsageDistribution = computed<ModelUsageSlice[]>(() => {
-  const items = modelStats.value?.items ?? []
+  const items = filteredItems.value
   const totals = new Map<string, number>()
 
   for (const item of items) {
@@ -272,7 +311,7 @@ interface RelayUsageSlice {
 }
 
 const relayUsageTop = computed<RelayUsageSlice[]>(() => {
-  const items = modelStats.value?.items ?? []
+  const items = filteredItems.value
   const map = new Map<string, { input: number; output: number }>()
 
   for (const it of items) {
@@ -314,7 +353,7 @@ function formatHourLabel(isoHour: string, r: '24h' | '7d' | '30d'): string {
 
 /* ---------------- time axis & request series from model stats ---------------- */
 const tokenAxis = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
   const labels = new Set<string>()
   for (const it of items) labels.add(formatHourLabel(it.hour, range.value))
@@ -322,7 +361,7 @@ const tokenAxis = computed(() => {
 })
 
 const requestData = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
   const axis = tokenAxis.value
   const hourMap = new Map<string, number>()
@@ -334,7 +373,7 @@ const requestData = computed(() => {
 })
 
 const successData = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
   const axis = tokenAxis.value
   const hourMap = new Map<string, number>()
@@ -346,7 +385,7 @@ const successData = computed(() => {
 })
 
 const failureData = computed(() => {
-  const items = modelStats.value?.items
+  const items = filteredItems.value
   if (!items || items.length === 0) return []
   const axis = tokenAxis.value
   const hourMap = new Map<string, number>()
@@ -673,6 +712,29 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
         <button :class="{ active: range === '7d' }" @click="range = '7d'">7D</button>
         <button :class="{ active: range === '30d' }" @click="range = '30d'">30D</button>
       </div>
+      <div v-if="availableBackends.length" class="backend-dropdown">
+        <span class="toolbar-label">中转站</span>
+        <button class="backend-trigger" @click.stop="showRelayDropdown = !showRelayDropdown">
+          <span>{{ selectedBackends.size === 0 ? '全部' : selectedBackends.size + ' 个已选' }}</span>
+          <span v-if="selectedBackends.size > 0" class="count">{{ selectedBackends.size }}</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div v-if="showRelayDropdown" class="backend-menu" @mousedown.prevent>
+          <div
+            v-for="b in availableBackends"
+            :key="b"
+            class="backend-option"
+            :class="{ selected: selectedBackends.has(b) }"
+            @click.stop="toggleBackend(b)"
+          >
+            <span class="backend-check"></span>
+            <span>{{ b }}</span>
+          </div>
+          <div v-if="selectedBackends.size > 0" class="backend-option" @click.stop="selectedBackends = new Set(); showRelayDropdown = false" style="color: var(--danger); margin-top: 4px; border-top: 1px solid var(--border-soft); padding-top: 10px;">
+            <span>清除筛选</span>
+          </div>
+        </div>
+      </div>
       <div class="spacer"></div>
     </section>
 
@@ -826,9 +888,75 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
 <style scoped>
 .dashboard { display: flex; flex-direction: column; gap: var(--space-5); }
 
-.toolbar { display: flex; align-items: center; gap: 16px; padding: 14px 16px; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: 16px; padding: 14px 16px; flex-wrap: wrap; position: relative; z-index: 10; }
 .toolbar-label { font-size: 11px; font-weight: 600; color: var(--text-faint); letter-spacing: 0.06em; text-transform: uppercase; }
 .spacer { flex: 1; }
+
+/* backend dropdown */
+.backend-dropdown { position: relative; margin-left: 12px; gap: 8px; display: inline-flex; align-items: center; }
+.backend-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.backend-trigger:hover { border-color: var(--c2); }
+.backend-trigger .count { background: var(--c2); color: #fff; border-radius: 8px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
+.backend-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  min-width: 200px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  padding: 8px;
+  z-index: 1000;
+}
+.backend-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+  color: var(--text);
+}
+.backend-option:hover { background: var(--surface-2); }
+.backend-check {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  transition: all 0.15s;
+}
+.backend-option.selected .backend-check {
+  background: var(--c2);
+  border-color: var(--c2);
+}
+.backend-option.selected .backend-check::after {
+  content: '✓';
+  font-size: 10px;
+  color: #fff;
+  font-weight: 700;
+}
 
 /* stats */
 .stats-grid {
