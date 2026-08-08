@@ -8,19 +8,23 @@ function readVar(name: string, fallback: string) {
 
 export function useChartColors() {
   const { theme } = useTheme()
-  const c = computed(() => ({
-    text: readVar('--text', '#f4f6fb'),
-    muted: readVar('--text-muted', '#8a93a8'),
-    faint: readVar('--text-faint', '#5b6377'),
-    border: readVar('--border', 'rgba(255,255,255,0.08)'),
-    c1: readVar('--c1', '#22d3ee'),
-    c2: readVar('--c2', '#8b5cf6'),
-    c3: readVar('--c3', '#e879f9'),
-    c4: readVar('--c4', '#34d399'),
-    c5: readVar('--c5', '#fbbf24'),
-    c6: readVar('--c6', '#fb7185'),
-    c7: readVar('--c7', '#38bdf8')
-  }))
+  const c = computed(() => {
+    const isLight = theme.value === 'light'
+
+    return {
+      text: readVar('--text', isLight ? '#0b0d1a' : '#f4f6fb'),
+      muted: readVar('--text-muted', isLight ? '#6b7188' : '#8a93a8'),
+      faint: readVar('--text-faint', isLight ? '#9aa0b5' : '#5b6377'),
+      border: readVar('--border', isLight ? 'rgba(10,12,30,0.09)' : 'rgba(255,255,255,0.08)'),
+      c1: readVar('--c1', isLight ? '#0891b2' : '#22d3ee'),
+      c2: readVar('--c2', isLight ? '#6366f1' : '#8b5cf6'),
+      c3: readVar('--c3', isLight ? '#c026d3' : '#e879f9'),
+      c4: readVar('--c4', isLight ? '#10b981' : '#34d399'),
+      c5: readVar('--c5', isLight ? '#f59e0b' : '#fbbf24'),
+      c6: readVar('--c6', isLight ? '#e11d48' : '#fb7185'),
+      c7: readVar('--c7', isLight ? '#0ea5e9' : '#38bdf8')
+    }
+  })
 
   function axisStyle() {
     return {

@@ -283,6 +283,25 @@ const failureData = computed(() => {
 const hours = tokenAxis
 
 /* ---------------- chart options ---------------- */
+const activeTokenSeries = ref<string | null>(null)
+const activeRequestSeries = ref<string | null>(null)
+
+function isTokenSeriesSelected(name: string) {
+  return activeTokenSeries.value === null || activeTokenSeries.value === name
+}
+
+function selectTokenSeries(name: string) {
+  activeTokenSeries.value = activeTokenSeries.value === name ? null : name
+}
+
+function isRequestSeriesSelected(name: string) {
+  return activeRequestSeries.value === null || activeRequestSeries.value === name
+}
+
+function selectRequestSeries(name: string) {
+  activeRequestSeries.value = activeRequestSeries.value === name ? null : name
+}
+
 const trendOption = computed<echarts.EChartsOption>(() => {
   const models = modelTokenSeries.value
   const axis = tokenAxis.value
@@ -333,7 +352,13 @@ const trendOption = computed<echarts.EChartsOption>(() => {
       trigger: 'axis' as const,
       valueFormatter: (v: any) => fmtNum(Number(v))
     },
-    legend: { show: false },
+    legend: {
+      show: false,
+      selected: Object.fromEntries(
+        ['总 Token', ...models.map((model) => model.name)]
+          .map((name) => [name, isTokenSeriesSelected(name)])
+      )
+    },
     xAxis: { type: 'category', data: axis, boundaryGap: false, ...axisStyle(), axisLine: { show: false } },
     yAxis: {
       type: 'value',
@@ -428,7 +453,12 @@ const requestTrendOption = computed<echarts.EChartsOption>(() => {
   return {
     grid: { left: 8, right: 16, top: 16, bottom: 4, containLabel: true },
     tooltip: { ...tooltipStyle([]), trigger: 'axis' as const, valueFormatter: (v: any) => fmtNum(Number(v)) },
-    legend: { show: false },
+    legend: {
+      show: false,
+      selected: Object.fromEntries(
+        ['总请求', '成功', '失败'].map((name) => [name, isRequestSeriesSelected(name)])
+      )
+    },
     xAxis: { type: 'category', data: axis, boundaryGap: false, ...axisStyle(), axisLine: { show: false } },
     yAxis: { type: 'value', ...axisStyle(), splitNumber: 4, axisLabel: { ...axisStyle().axisLabel, formatter: (v: number) => fmtNum(v) } },
     series: [
@@ -632,10 +662,24 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
             <div class="token-big mono">{{ fmtNum(totalTokens) }}</div>
             <div class="token-meta">输入 {{ fmtNum(totalInputTokens) }} · 输出 {{ fmtNum(totalOutputTokens) }}</div>
             <div class="token-legend">
-              <span class="legend-item"><i class="lg lg-1"></i>总量</span>
-              <span v-for="ms in modelTokenSeries" :key="ms.name" class="legend-item">
+              <button
+                type="button"
+                class="legend-item"
+                :class="{ inactive: !isTokenSeriesSelected('总 Token') }"
+                :aria-pressed="isTokenSeriesSelected('总 Token')"
+                @click="selectTokenSeries('总 Token')"
+              ><i class="lg lg-1"></i>总量</button>
+              <button
+                v-for="ms in modelTokenSeries"
+                :key="ms.name"
+                type="button"
+                class="legend-item"
+                :class="{ inactive: !isTokenSeriesSelected(ms.name) }"
+                :aria-pressed="isTokenSeriesSelected(ms.name)"
+                @click="selectTokenSeries(ms.name)"
+              >
                 <i class="lg" :style="{ background: ms.color }"></i>{{ ms.name }}
-              </span>
+              </button>
             </div>
           </div>
           <BaseChart :option="trendOption" height="250px" />
@@ -684,9 +728,19 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
             <div class="token-big mono">{{ fmtNum(totalRequests) }}</div>
             <div class="token-meta">成功 {{ fmtNum(successRequests) }} · 失败 {{ fmtNum(failedRequests) }}</div>
             <div class="token-legend">
-              <span class="legend-item"><i class="lg lg-2"></i>总请求</span>
-              <span class="legend-item"><i class="lg" style="background:#34d399"></i>成功</span>
-              <span class="legend-item"><i class="lg" style="background:#f87171"></i>失败</span>
+              <button
+                v-for="item in [
+                  { name: '总请求', className: 'lg-2', color: '' },
+                  { name: '成功', className: '', color: '#34d399' },
+                  { name: '失败', className: '', color: '#f87171' }
+                ]"
+                :key="item.name"
+                type="button"
+                class="legend-item"
+                :class="{ inactive: !isRequestSeriesSelected(item.name) }"
+                :aria-pressed="isRequestSeriesSelected(item.name)"
+                @click="selectRequestSeries(item.name)"
+              ><i class="lg" :class="item.className" :style="item.color ? { background: item.color } : undefined"></i>{{ item.name }}</button>
             </div>
           </div>
           <BaseChart :option="requestTrendOption" height="250px" />
@@ -850,8 +904,23 @@ const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionD
   border-radius: 99px;
 }
 .token-delta svg { color: var(--success); }
-.token-legend { display: flex; gap: 14px; margin-left: auto; }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+.token-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-left: auto; }
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+.legend-item:hover { color: var(--text); }
+.legend-item.inactive { opacity: 0.38; }
 .lg { width: 16px; height: 3px; border-radius: 3px; display: inline-block; }
 .lg-1 { background: var(--c1); box-shadow: 0 0 8px rgba(34,211,238,0.5); }
 .lg-2 { background: var(--c2); opacity: 0.8; }

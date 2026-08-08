@@ -7,7 +7,7 @@ watch(theme, (t) => {
   document.documentElement.setAttribute('data-theme', t)
   document.documentElement.classList.toggle('dark', t === 'dark')
   localStorage.setItem('nexus-theme', t)
-})
+}, { flush: 'sync' })
 
 if (stored === 'light') {
   document.documentElement.setAttribute('data-theme', 'light')
