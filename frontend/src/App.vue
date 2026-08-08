@@ -4,6 +4,7 @@ import { RouterView } from 'vue-router'
 import AppSidebar from './components/AppSidebar.vue'
 import AppHeader from './components/AppHeader.vue'
 import ToastStack from './components/ToastStack.vue'
+import ConsoleLogPanel from './components/ConsoleLogPanel.vue'
 
 const collapsed = ref(false)
 </script>
@@ -24,6 +25,7 @@ const collapsed = ref(false)
   </div>
 
   <ToastStack />
+  <ConsoleLogPanel />
 </template>
 
 <style scoped>

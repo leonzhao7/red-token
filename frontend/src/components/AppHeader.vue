@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Moon, Sun, ChevronDown, Menu } from 'lucide-vue-next'
+import { Moon, Sun, ChevronDown, Menu, Terminal } from 'lucide-vue-next'
 import { useTheme } from '../composables/useTheme'
+import { toggleConsoleLog, consoleLogRows } from '../composables/consoleLog'
 
 const { theme, toggle } = useTheme()
 const route = useRoute()
@@ -41,6 +42,11 @@ const date = computed(() =>
         <span class="clock-time">{{ clock }}</span>
         <span class="clock-date">{{ date }}</span>
       </div>
+
+      <button class="icon-btn terminal-btn" @click="toggleConsoleLog" aria-label="控制台日志">
+        <Terminal :size="16" />
+        <span v-if="consoleLogRows.length > 0" class="terminal-dot"></span>
+      </button>
 
       <button class="icon-btn" @click="toggle" aria-label="切换主题">
         <Moon v-if="theme === 'dark'" :size="16" />
@@ -99,6 +105,18 @@ const date = computed(() =>
   box-shadow: var(--glow-violet);
 }
 .avatar-caret { color: var(--text-faint); }
+
+.terminal-btn { position: relative; }
+.terminal-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c2);
+  box-shadow: 0 0 6px var(--c2);
+}
 
 @media (max-width: 1100px) {
   .clock { display: none; }
