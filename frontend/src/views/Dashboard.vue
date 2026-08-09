@@ -216,13 +216,13 @@ const requestSpark = computed(() => {
 
 /* ---------------- per-model token series ---------------- */
 const modelColors = computed(() => [
-  c.value.c1,
-  c.value.c2,
-  c.value.c3,
+  c.value.c6,
   c.value.c4,
   c.value.c5,
+  c.value.c2,
+  c.value.c3,
   c.value.c7,
-  c.value.c6
+  c.value.c1
 ])
 
 interface ModelSeries {

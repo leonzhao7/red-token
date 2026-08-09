@@ -22,7 +22,7 @@ export function useChartColors() {
       c4: readVar('--c4', isLight ? '#10b981' : '#34d399'),
       c5: readVar('--c5', isLight ? '#f59e0b' : '#fbbf24'),
       c6: readVar('--c6', isLight ? '#e11d48' : '#fb7185'),
-      c7: readVar('--c7', isLight ? '#0ea5e9' : '#38bdf8')
+      c7: readVar('--c7', isLight ? '#ea580c' : '#fb923c')
     }
   })
 

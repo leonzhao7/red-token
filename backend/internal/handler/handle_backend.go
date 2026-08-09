@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	pathpkg "path"
 	"strconv"
 	"strings"
 	"time"
@@ -2182,6 +2181,12 @@ func modelNameMatchesFocusPatterns(modelName, patterns string) bool {
 	if modelName == "" {
 		return false
 	}
+	// 取 "/" 之后的部分作为匹配目标，没有 "/" 则用完整名称
+	shortName := modelName
+	if idx := strings.LastIndex(modelName, "/"); idx >= 0 {
+		shortName = modelName[idx+1:]
+	}
+	shortNameLower := strings.ToLower(shortName)
 	for _, pattern := range strings.FieldsFunc(patterns, func(r rune) bool {
 		return r == ',' || r == '\n' || r == '\r' || r == '\t'
 	}) {
@@ -2189,13 +2194,11 @@ func modelNameMatchesFocusPatterns(modelName, patterns string) bool {
 		if pattern == "" {
 			continue
 		}
-		if pattern == "*" || pattern == modelName {
+		if pattern == "*" {
 			return true
 		}
-		if strings.ContainsAny(pattern, "*?") {
-			if ok, err := pathpkg.Match(pattern, modelName); err == nil && ok {
-				return true
-			}
+		if strings.EqualFold(pattern, shortNameLower) {
+			return true
 		}
 	}
 	return false
