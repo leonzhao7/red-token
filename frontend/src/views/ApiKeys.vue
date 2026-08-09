@@ -203,7 +203,7 @@ onMounted(loadData)
         <button :class="{ active: statusFilter === 'disabled' }" @click="statusFilter = 'disabled'">停用</button>
       </div>
       <div class="spacer"></div>
-      <button class="btn btn-primary" @click="openCreate"><Plus :size="15" /> 新建密钥</button>
+      <button class="btn btn-primary" @click="openCreate"><Plus :size="15" /> 新建</button>
     </section>
 
     <!-- loading -->
@@ -260,7 +260,7 @@ onMounted(loadData)
               {{ k.enabled ? '启用' : '已停用' }}
             </span>
             <div class="key-actions">
-              <button class="icon-btn primary" title="编辑" @click="openEdit(k)"><Pencil :size="14" /></button>
+              <button class="icon-btn primary" title="修改" @click="openEdit(k)"><Pencil :size="14" /></button>
               <button class="icon-btn" :title="k.enabled ? '停用' : '启用'" @click="toggleStatus(k)">
                 <ShieldOff v-if="k.enabled" :size="14" />
                 <ShieldCheck v-else :size="14" />
@@ -310,7 +310,7 @@ onMounted(loadData)
           <LoaderCircle v-if="saving" :size="15" class="spin" />
           <Pencil v-else-if="isEditing" :size="15" />
           <Plus v-else :size="15" />
-          {{ isEditing ? '保存修改' : '创建密钥' }}
+          {{ isEditing ? '保存修改' : '新建 API Key' }}
         </button>
       </template>
     </Modal>

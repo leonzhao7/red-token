@@ -144,7 +144,7 @@ onMounted(loadData)
         仅看已启用
       </label>
       <div class="spacer"></div>
-      <button class="btn btn-primary" @click="openCreate"><Plus :size="15" /> 添加代理</button>
+      <button class="btn btn-primary" @click="openCreate"><Plus :size="15" /> 添加</button>
     </section>
 
     <div v-if="loading" class="load-center">
@@ -203,7 +203,7 @@ onMounted(loadData)
 
         <footer class="pc-foot">
           <div class="spacer"></div>
-          <button class="icon-btn primary" title="编辑" @click="openEdit(p)"><Pencil :size="14" /></button>
+          <button class="icon-btn primary" title="修改" @click="openEdit(p)"><Pencil :size="14" /></button>
           <button class="icon-btn" :title="p.enabled ? '停用' : '启用'" @click="toggleEnabled(p)">
             <span class="toggle-dot" :class="{ on: p.enabled }"></span>
           </button>
@@ -211,13 +211,9 @@ onMounted(loadData)
         </footer>
       </article>
 
-      <article class="proxy-card add-tile" @click="openCreate">
-        <Plus :size="22" />
-        <span>添加代理节点</span>
-      </article>
     </section>
 
-    <Modal :open="showForm" :title="isEditing ? '编辑代理' : '添加代理'" subtitle="SOCKS5 代理配置" :icon="Network" @close="showForm = false">
+    <Modal :open="showForm" :title="isEditing ? '修改代理' : '添加代理'" subtitle="SOCKS5 代理配置" :icon="Network" @close="showForm = false">
       <div class="form-grid-2">
         <div class="field">
           <label class="field-label">名称 <span class="req">*</span></label>
