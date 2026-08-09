@@ -11,7 +11,6 @@ const emit = defineEmits<{ toggleSidebar: [] }>()
 
 const title = computed(() => route.meta.title as string)
 const group = computed(() => route.meta.group as string)
-const subtitle = computed(() => route.meta.subtitle as string)
 const now = ref(new Date())
 setInterval(() => (now.value = new Date()), 1000 * 60)
 
@@ -30,11 +29,8 @@ const date = computed(() =>
     </button>
 
     <div class="crumb">
-      <div class="crumb-line">
-        <span class="crumb-group">{{ group }}</span>
-        <h1 class="crumb-title">{{ title }}</h1>
-      </div>
-      <span v-if="subtitle" class="crumb-sub">{{ subtitle }}</span>
+      <span class="crumb-group">{{ group }}</span>
+      <h1 class="crumb-title">{{ title }}</h1>
     </div>
 
     <div class="header-right">
@@ -78,11 +74,9 @@ const date = computed(() =>
 }
 .burger { display: none; }
 
-.crumb { display: flex; flex-direction: column; gap: 3px; min-width: 0; justify-content: center; }
-.crumb-line { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
-.crumb-group { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
-.crumb-title { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.crumb-sub { font-size: 11px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 520px; }
+.crumb { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.crumb-group { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; flex-shrink: 0; }
+.crumb-title { font-size: 20px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .header-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 
