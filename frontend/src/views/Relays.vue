@@ -23,7 +23,8 @@ import {
   ChevronRight,
   ExternalLink,
   Eye,
-  EyeOff
+  EyeOff,
+  X
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
 import { MODEL_CATALOG } from '../data/mock'
@@ -811,6 +812,7 @@ onMounted(loadData)
       <div class="search-box" style="width: 250px">
         <Search :size="15" />
         <input v-model="search" class="input" placeholder="搜索名称 / 域名 / 用户名…" />
+        <button v-if="search" class="search-clear" aria-label="清除搜索" @click="search = ''"><X :size="14" /></button>
       </div>
       <div class="filter-group">
         <button class="filter-chip" :class="{ on: platformFilter === 'all' }" @click="platformFilter = 'all'">全部平台</button>
@@ -847,7 +849,7 @@ onMounted(loadData)
       </div>
       <div v-else-if="!filtered.length" class="relay-state"><Server :size="20" /><span>{{ relays.length ? '没有匹配的中转站' : '还没有配置中转站' }}</span></div>
 
-      <TransitionGroup v-else name="rl">
+      <div v-else>
         <div v-for="r in pageItems" :key="r.id" class="rl-row" :class="{ open: expandedId === r.id, off: r.status !== 'active', abnormal: r.status === 'abnormal' }">
           <div class="rl-main" @click="toggleExpand(r.id)">
             <div class="rl-cell name">
@@ -978,7 +980,7 @@ onMounted(loadData)
             </div>
           </Transition>
         </div>
-      </TransitionGroup>
+      </div>
 
       <div v-show="!loading && !loadError" class="pagination">
         <span class="page-info mono">{{ filtered.length }} 条记录 · 第 {{ page }}/{{ totalPages }} 页</span>
@@ -1490,9 +1492,6 @@ onMounted(loadData)
 .ke-top .field { flex: 1; }
 .ke-empty { font-size: 12px; color: var(--text-faint); text-align: center; padding: 14px 0; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); }
 
-.rl-enter-active { transition: all 0.3s var(--ease-out); }
-.rl-leave-active { transition: all 0.3s var(--ease-out); position: absolute; width: 100%; pointer-events: none; }
-.rl-enter-from, .rl-leave-to { opacity: 0; transform: translateY(-8px); }
 .detail-enter-active, .detail-leave-active { transition: all 0.3s var(--ease-out); }
 .detail-enter-from, .detail-leave-to { opacity: 0; transform: translateY(-6px); }
 

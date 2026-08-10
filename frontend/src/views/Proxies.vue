@@ -2,8 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import {
   Plus, Network, Pencil, Trash2,
-  Cable, Globe2, User, Lock, Eye, EyeOff,
-  LoaderCircle, AlertTriangle, Link2, Activity
+  Search, Globe2, User, Lock, Eye, EyeOff,
+  LoaderCircle, AlertTriangle, Link2, Activity, X
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
 import { toast } from '../composables/toast'
@@ -136,8 +136,9 @@ onMounted(loadData)
   <div class="page stagger">
     <section class="toolbar panel">
       <div class="search-box" style="width: 240px">
-        <Cable :size="15" />
+        <Search :size="15" />
         <input v-model="search" class="input" placeholder="搜索代理名称 / 地址…" />
+        <button v-if="search" class="search-clear" aria-label="清除搜索" @click="search = ''"><X :size="14" /></button>
       </div>
       <label class="toggle-label">
         <span class="switch" :class="{ on: onlyEnabled }" @click="onlyEnabled = !onlyEnabled"></span>

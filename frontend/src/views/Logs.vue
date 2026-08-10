@@ -11,7 +11,8 @@ import {
   LoaderCircle,
   SlidersHorizontal,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  X
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
 import { toast } from '../composables/toast'
@@ -186,6 +187,7 @@ onMounted(() => {
       <div class="search-box" style="width: 230px">
         <Search :size="15" />
         <input v-model="search" class="input" placeholder="搜索请求 ID / 模型 / 中转站…" />
+        <button v-if="search" class="search-clear" aria-label="清除搜索" @click="search = ''"><X :size="14" /></button>
       </div>
       <div class="toolbar-filters">
         <select v-model="modelFilter" class="select" style="width: 150px">

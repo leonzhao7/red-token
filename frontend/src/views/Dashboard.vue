@@ -589,7 +589,8 @@ const requestTrendOption = computed<echarts.EChartsOption>(() => {
               { offset: 1, color: 'rgba(139,92,246,0)' }
             ]
           }
-        }
+        },
+        emphasis: { focus: 'series' as const }
       },
       {
         name: '成功',
@@ -607,7 +608,8 @@ const requestTrendOption = computed<echarts.EChartsOption>(() => {
               { offset: 1, color: 'rgba(52,211,153,0)' }
             ]
           }
-        }
+        },
+        emphasis: { focus: 'series' as const }
       },
       {
         name: '失败',
@@ -625,7 +627,8 @@ const requestTrendOption = computed<echarts.EChartsOption>(() => {
               { offset: 1, color: 'rgba(248,113,113,0)' }
             ]
           }
-        }
+        },
+        emphasis: { focus: 'series' as const }
       }
     ]
   }

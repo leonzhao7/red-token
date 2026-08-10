@@ -196,6 +196,7 @@ onMounted(loadData)
       <div class="search-box" style="width: 260px">
         <Search :size="15" />
         <input v-model="search" class="input" placeholder="搜索名称或密钥…" />
+        <button v-if="search" class="search-clear" aria-label="清除搜索" @click="search = ''"><X :size="14" /></button>
       </div>
       <div class="segmented">
         <button :class="{ active: statusFilter === 'all' }" @click="statusFilter = 'all'">全部</button>
