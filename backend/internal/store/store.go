@@ -42,7 +42,7 @@ type SearchResult struct {
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite3", sqliteDSN(path))
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +193,24 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			value TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS workflow_definitions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			definition_json TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_definitions_updated_at ON workflow_definitions(updated_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS workflow_results (
+			workflow_id TEXT NOT NULL,
+			backend_id INTEGER NOT NULL,
+			output_json TEXT NOT NULL,
+			executed_at TEXT NOT NULL,
+			PRIMARY KEY (workflow_id, backend_id),
+			FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+			FOREIGN KEY (backend_id) REFERENCES backends(id) ON DELETE CASCADE
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_results_backend_id ON workflow_results(backend_id);`,
 	}
 
 	for _, stmt := range stmts {
@@ -380,6 +398,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 
 	return &Store{db: db}, nil
+}
+
+func sqliteDSN(path string) string {
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "_foreign_keys=on"
 }
 
 func (s *Store) Close() error {

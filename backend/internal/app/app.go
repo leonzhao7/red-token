@@ -28,6 +28,7 @@ type App struct {
 	cfg               config.Config
 	store             *store.Store
 	backendHandler    *handler.BackendHandler
+	workflowHandler   *handler.WorkflowHandler
 	usageLogHandler   *handler.UsageLogHandler
 	eventHandler      *handler.EventHandler
 	clientKeyHandler  *handler.ClientKeyHandler
@@ -131,6 +132,7 @@ func New(ctx context.Context, dbPath string) (*App, error) {
 		cfg:               cfg,
 		store:             st,
 		backendHandler:    handler.NewBackendHandler(st),
+		workflowHandler:   handler.NewWorkflowHandler(st),
 		usageLogHandler:   handler.NewUsageLogHandler(st),
 		eventHandler:      handler.NewEventHandler(st),
 		clientKeyHandler:  handler.NewClientKeyHandler(st),
@@ -141,6 +143,7 @@ func New(ctx context.Context, dbPath string) (*App, error) {
 		logger:            slog.Default().With("component", "app"),
 	}
 	app.backendHandler.SetConfig(&app.cfg)
+	app.workflowHandler.SetConfig(&app.cfg)
 	app.settingHandler = handler.NewSettingHandler(st, &app.cfg)
 	app.dashboardHandler = handler.NewDashboardHandler(st, app.backendHandler)
 	app.routes()
@@ -197,6 +200,13 @@ func (a *App) routes() {
 	a.mux.Handle("POST /admin/api/backends/import", http.HandlerFunc(a.backendHandler.HandleImportBackends))
 	a.mux.Handle("PUT /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleUpdateBackend))
 	a.mux.Handle("DELETE /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleDeleteBackend))
+	a.mux.Handle("GET /admin/api/workflows", http.HandlerFunc(a.workflowHandler.HandleListWorkflows))
+	a.mux.Handle("POST /admin/api/workflows", http.HandlerFunc(a.workflowHandler.HandleCreateWorkflow))
+	a.mux.Handle("GET /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleGetWorkflow))
+	a.mux.Handle("PUT /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleUpdateWorkflow))
+	a.mux.Handle("DELETE /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleDeleteWorkflow))
+	a.mux.Handle("POST /admin/api/workflows/{id}/execute", http.HandlerFunc(a.workflowHandler.HandleExecuteWorkflow))
+	a.mux.Handle("GET /admin/api/workflows/{id}/results/{backend_id}", http.HandlerFunc(a.workflowHandler.HandleGetWorkflowResult))
 	a.mux.Handle("GET /admin/api/client-keys", http.HandlerFunc(a.clientKeyHandler.HandleListClientKeys))
 	a.mux.Handle("GET /admin/api/client-keys/{id}/detail", http.HandlerFunc(a.clientKeyHandler.HandleClientKeyDetail))
 	a.mux.Handle("POST /admin/api/client-keys", http.HandlerFunc(a.clientKeyHandler.HandleCreateClientKey))

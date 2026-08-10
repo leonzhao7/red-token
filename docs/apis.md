@@ -76,8 +76,10 @@ X-Api-Key: tg-xxxxxxxx
 | `401` | `/v1/*` 缺少或使用了无效/已禁用的客户端密钥 |
 | `404` | 资源不存在或代理路径不支持 |
 | `405` | 路径存在但 HTTP 方法不匹配 |
+| `409` | 创建的资源稳定 ID 已存在 |
 | `499` | 客户端在代理请求完成前取消连接 |
 | `500` | 数据库或服务端内部错误 |
+| `502` | 工作流上游请求、响应解析、表达式或输出校验失败 |
 | `502` | 后端控制台请求失败 |
 | `503` | 没有可用上游后端，或所有候选后端均失败 |
 
@@ -1087,9 +1089,186 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 未提供的查询字段在响应中为 `null`。统计中的 Token、延迟和流量字段只累计成功请求。
 
-## 7. 客户端密钥管理
+## 7. HTTP 工作流管理
 
-### 7.1 密钥列表
+工作流配置使用 [`http-workflow/v1`](http_workflow.md) 语义。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库保存通过语法及表达式编译校验后的规范化配置。
+
+工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、`console_authorization`、SOCKS5 代理和全局控制台 User-Agent。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。
+
+### 7.1 工作流列表
+
+`GET /admin/api/workflows`
+
+支持通用 `page`、`limit` 分页参数。响应 `200`：
+
+```json
+{
+  "items": [
+    {
+      "id": "sub2api-default-checkin-profile",
+      "name": "sub2api 默认签到",
+      "definition": {
+        "spec": "http-workflow/v1",
+        "id": "sub2api-default-checkin-profile",
+        "name": "sub2api 默认签到",
+        "steps": [],
+        "output": {}
+      },
+      "created_at": "2026-08-10T08:00:00Z",
+      "updated_at": "2026-08-10T08:00:00Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "limit": 10
+}
+```
+
+`definition` 的完整字段及 jq 表达式规则见工作流规范。列表返回的 `items` 无数据时固定为 `[]`。
+
+### 7.2 创建工作流
+
+`POST /admin/api/workflows`
+
+请求体是工作流定义本身：
+
+```json
+{
+  "spec": "http-workflow/v1",
+  "id": "sub2api-default-checkin-profile",
+  "name": "sub2api 默认签到",
+  "steps": [
+    {
+      "id": "get_profile",
+      "name": "获取用户信息",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/auth/me"
+      },
+      "extract": [
+        { "alias": "user_id", "expression": ".data.id | tostring" }
+      ]
+    }
+  ],
+  "output": {
+    "user_id": "{{user_id}}"
+  }
+}
+```
+
+上例只展示配置传输格式；可执行签到配置的 `output` 必须包含固定业务 Schema 的全部字段，完整示例见工作流规范。
+
+响应 `201`：返回 7.1 中的单个工作流对象。定义非法、存在未知/重复字段、jq 编译失败时返回 `400`；相同 `id` 已存在时返回 `409`。
+
+### 7.3 获取工作流
+
+`GET /admin/api/workflows/{id}`
+
+响应 `200`：返回 7.1 中的单个工作流对象。不存在返回 `404`。
+
+### 7.4 更新工作流
+
+`PUT /admin/api/workflows/{id}`
+
+请求体是完整的新工作流定义，执行全量替换。路径 `id` 必须与定义中的 `id` 完全一致，稳定 ID 不可通过更新修改。
+
+响应 `200`：返回更新后的工作流对象。ID 不一致或定义非法返回 `400`，工作流不存在返回 `404`。已有成功执行结果不会因修改配置自动删除；下一次成功执行会替换对应后端的旧结果。
+
+### 7.5 删除工作流
+
+`DELETE /admin/api/workflows/{id}`
+
+响应 `200`：
+
+```json
+{
+  "deleted": "sub2api-default-checkin-profile"
+}
+```
+
+工作流不存在返回 `404`。删除配置时会同时删除它在所有后端上的持久化结果。
+
+### 7.6 在指定后端执行工作流
+
+`POST /admin/api/workflows/{id}/execute`
+
+请求体：
+
+```json
+{
+  "backend_id": 1,
+  "aliases": {}
+}
+```
+
+- `backend_id`：必填正整数，指定执行请求所使用的后端/中转站。
+- `aliases`：可选对象，作为本次运行的初始 alias store；名称和值仍受工作流规范约束。
+- `$runtime` 除规范字段外还包含 `backend_id` 和 `backend_name`。
+
+响应 `200`：
+
+```json
+{
+  "workflow_id": "sub2api-default-checkin-profile",
+  "backend": {
+    "id": 1,
+    "name": "relay-a"
+  },
+  "output": {
+    "user_id": "user-1",
+    "username": "alice@example.com",
+    "balance": 100,
+    "used_balance": 20,
+    "api_keys": [],
+    "models": []
+  },
+  "aliases": {
+    "user_id": "user-1"
+  },
+  "executed_at": "2026-08-10T08:05:00Z",
+  "requests": [
+    {
+      "time": "2026-08-10T08:05:00Z",
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "status_code": 200,
+      "body": "{...}"
+    }
+  ]
+}
+```
+
+只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会原子替换 `(workflow_id, backend_id)` 的上一次成功结果。`aliases` 和 `requests` 只随本次响应返回，不属于持久化业务快照。
+
+工作流或后端不存在返回 `404`；`backend_id`、`console_url` 或代理配置非法返回 `400`；传输、非 2xx 默认预期、JSON 解析、jq、模板或输出 Schema 失败返回 `502`。`502` 响应包含已执行的 `requests`，且不会覆盖旧的成功结果。
+
+### 7.7 获取后端上的最近成功结果
+
+`GET /admin/api/workflows/{id}/results/{backend_id}`
+
+响应 `200`：
+
+```json
+{
+  "workflow_id": "sub2api-default-checkin-profile",
+  "backend_id": 1,
+  "output": {
+    "user_id": "user-1",
+    "username": "alice@example.com",
+    "balance": 100,
+    "used_balance": 20,
+    "api_keys": [],
+    "models": []
+  },
+  "executed_at": "2026-08-10T08:05:00Z"
+}
+```
+
+`backend_id` 非正整数返回 `400`，当前组合尚无成功结果返回 `404`。删除对应工作流或后端时，该结果会级联删除。
+
+## 8. 客户端密钥管理
+
+### 8.1 密钥列表
 
 `GET /admin/api/client-keys`
 
@@ -1113,7 +1292,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 注意：除 `masked_token` 外，嵌入的 `ClientKey.token` 仍可能包含完整 Token。
 
-### 7.2 密钥详情
+### 8.2 密钥详情
 
 `GET /admin/api/client-keys/{id}/detail`
 
@@ -1127,7 +1306,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 - `activity.usage` 与 `activity.usage_logs`：最近 10 条相关用量日志。
 - `activity.events`：最近 10 条相关事件。
 
-### 7.3 创建客户端密钥
+### 8.3 创建客户端密钥
 
 `POST /admin/api/client-keys`
 
@@ -1157,7 +1336,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 `client` 为创建后的 `ClientKey`；`issued_token` 是本次实际签发或使用的完整 Token。
 
-### 7.4 更新客户端密钥
+### 8.4 更新客户端密钥
 
 `PUT /admin/api/client-keys/{id}`
 
@@ -1183,7 +1362,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-### 7.5 删除客户端密钥
+### 8.5 删除客户端密钥
 
 `DELETE /admin/api/client-keys/{id}`
 
@@ -1197,9 +1376,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-## 8. 审计事件
+## 9. 审计事件
 
-### 8.1 事件列表
+### 9.1 事件列表
 
 `GET /admin/api/events`
 
@@ -1219,7 +1398,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 响应 `200`：通用分页结构，`items` 为 `AuditEvent[]`。
 
-### 8.2 事件摘要
+### 9.2 事件摘要
 
 `GET /admin/api/events/summary`
 
@@ -1239,7 +1418,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 `time_series` 当前固定为空数组。
 
-### 8.3 事件详情
+### 9.3 事件详情
 
 `GET /admin/api/events/{id}`
 
@@ -1274,7 +1453,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 `raw` 为完整 `AuditEvent`。
 
-### 8.4 清空事件
+### 9.4 清空事件
 
 `DELETE /admin/api/events`
 
@@ -1289,9 +1468,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-## 9. 用量日志
+## 10. 用量日志
 
-### 9.1 日志列表
+### 10.1 日志列表
 
 `GET /admin/api/usage-logs`
 
@@ -1312,7 +1491,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 响应 `200`：通用分页结构，`items` 为 `UsageLog[]`。
 
-### 9.2 日志统计
+### 10.2 日志统计
 
 `GET /admin/api/usage-logs/stats`
 
@@ -1340,7 +1519,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 统计实现中 `successes` 计入 `2xx` 和 `3xx`，而 `failures` 按“非 `2xx`”判断，因此 `3xx` 会同时计入成功数和失败数；各状态族的原始分布以 `status_families` 为准。
 
-### 9.3 日志详情
+### 10.3 日志详情
 
 `GET /admin/api/usage-logs/{id}`
 
@@ -1387,7 +1566,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 `raw` 为完整 `UsageLog`。
 
-### 9.4 日志过滤选项
+### 10.4 日志过滤选项
 
 `GET /admin/api/usage-log-options`
 
@@ -1406,7 +1585,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 所有数组均去重并按字符串升序排列。`proxies` 来源于已配置的 SOCKS5 代理，不会自动加入用量日志中的 `direct`。
 
-### 9.5 清理日志
+### 10.5 清理日志
 
 `DELETE /admin/api/usage-logs`
 
@@ -1436,9 +1615,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 注意：`filter` 直接序列化 Go 结构体，因此字段名为大写驼峰，不是查询参数使用的蛇形命名；未设置时间会序列化为 Go 零时间。
 
-## 10. 配置管理
+## 11. 配置管理
 
-### 10.1 获取配置
+### 11.1 获取配置
 
 `GET /admin/api/config`
 
@@ -1462,7 +1641,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 值优先来自数据库设置；数据库没有非空值时回退到启动配置或环境变量。
 
-### 10.2 更新配置
+### 11.2 更新配置
 
 `PUT /admin/api/config`
 
@@ -1497,7 +1676,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 运行时说明：`log_level` 会立即更新日志级别；其他字段会更新数据库和部分内存配置。监听地址、数据库路径和关闭超时需要重启才能实际改变进程行为；调度器和已创建的代理客户端也可能继续使用启动时参数，建议修改关键运行参数后重启服务。
 
-### 10.3 重新加载配置
+### 11.3 重新加载配置
 
 `POST /admin/api/config/reload`
 
@@ -1522,7 +1701,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 与更新接口相同，重新载入不重建调度器、HTTP 代理服务或监听中的 HTTP Server；需要完整生效时应重启进程。
 
-## 11. 接口清单
+## 12. 接口清单
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
@@ -1556,6 +1735,13 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 | `POST` | `/admin/api/backends/import` | 导入后端 |
 | `PUT` | `/admin/api/backends/{id}` | 更新后端 |
 | `DELETE` | `/admin/api/backends/{id}` | 删除后端 |
+| `GET` | `/admin/api/workflows` | 工作流列表 |
+| `POST` | `/admin/api/workflows` | 创建工作流 |
+| `GET` | `/admin/api/workflows/{id}` | 获取工作流 |
+| `PUT` | `/admin/api/workflows/{id}` | 更新工作流 |
+| `DELETE` | `/admin/api/workflows/{id}` | 删除工作流 |
+| `POST` | `/admin/api/workflows/{id}/execute` | 在指定后端执行工作流 |
+| `GET` | `/admin/api/workflows/{id}/results/{backend_id}` | 获取最近成功结果 |
 | `GET` | `/admin/api/client-keys` | 客户端密钥列表 |
 | `GET` | `/admin/api/client-keys/{id}/detail` | 客户端密钥详情 |
 | `POST` | `/admin/api/client-keys` | 创建客户端密钥 |
