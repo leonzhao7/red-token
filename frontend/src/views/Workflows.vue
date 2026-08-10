@@ -1,0 +1,1001 @@
+<script setup lang="ts">
+import { ref, reactive, computed, onMounted } from 'vue'
+import {
+  Workflow,
+  Play,
+  Pencil,
+  Trash2,
+  Plus,
+  Save,
+  LoaderCircle,
+  AlertTriangle,
+  Sparkles,
+  Braces,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  ArrowUp,
+  ArrowDown,
+  X,
+  ListPlus
+} from 'lucide-vue-next'
+import { toast } from '../composables/toast'
+import Modal from '../components/Modal.vue'
+import {
+  listWorkflows,
+  createWorkflow,
+  updateWorkflow,
+  deleteWorkflow,
+  executeWorkflow,
+  type WorkflowRecord,
+  type WorkflowDefinition,
+  type WorkflowStep,
+  type WorkflowExecuteResult,
+  type WorkflowRequestLog
+} from '../api/workflows'
+import { listBackends, type BackendResponse } from '../api/backends'
+
+const loading = ref(true)
+const loadError = ref('')
+const workflows = ref<WorkflowRecord[]>([])
+
+interface KvRow {
+  key: string
+  value: string
+}
+interface ExtractRow {
+  alias: string
+  expression: string
+}
+interface StepForm {
+  id: string
+  name: string
+  method: string
+  path: string
+  query: KvRow[]
+  body: string
+  expect: string
+  extract: ExtractRow[]
+}
+
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
+const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+
+const showForm = ref(false)
+const isEditing = ref(false)
+const saving = ref(false)
+const formError = ref('')
+const stepOpen = ref<boolean[]>([])
+
+const form = reactive<{ name: string; id: string; steps: StepForm[]; output: string }>(freshForm())
+
+function freshForm() {
+  return { name: '', id: '', steps: [emptyStep()], output: '{}' }
+}
+
+function emptyStep(): StepForm {
+  return {
+    id: '',
+    name: '',
+    method: 'GET',
+    path: '',
+    query: [emptyKv()],
+    body: '',
+    expect: '',
+    extract: [emptyExtract()]
+  }
+}
+
+function emptyKv(): KvRow {
+  return { key: '', value: '' }
+}
+
+function emptyExtract(): ExtractRow {
+  return { alias: '', expression: '' }
+}
+
+const SAMPLE_DEFINITION = `{
+  "spec": "http-workflow/v1",
+  "id": "sub2api-default-checkin-profile",
+  "name": "sub2api 默认签到",
+  "steps": [
+    {
+      "id": "get_me",
+      "name": "获取用户信息",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/auth/me",
+        "query": {},
+        "headers": {}
+      },
+      "expect": "$response.status >= 200 and $response.status < 300 and ((.code? // 0) == 0)",
+      "extract": [
+        { "alias": "user_id", "expression": ".data.id | tostring" },
+        { "alias": "username", "expression": ".data.email // .data.username // \\"\\"" },
+        { "alias": "balance", "expression": "(.data.free_balance // .data.balance // 0) | tonumber" }
+      ]
+    },
+    {
+      "id": "get_keys",
+      "name": "获取 API Key 列表",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/keys",
+        "query": { "page": 1, "page_size": 100, "scope": "personal" },
+        "headers": {}
+      },
+      "extract": [
+        {
+          "alias": "api_keys_base",
+          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \\"\\"), key: (.key // \\"\\"), group: (.group.name // .group // \\"default\\")}]"
+        },
+        {
+          "alias": "key_ids",
+          "expression": "$vars.api_keys_base | map(.id)"
+        }
+      ]
+    },
+    {
+      "id": "get_key_usage",
+      "name": "获取 API Key 用量",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/usage/dashboard/api-keys-usage",
+        "query": {},
+        "headers": {},
+        "body": { "api_key_ids": "{{key_ids}}" }
+      },
+      "extract": [
+        {
+          "alias": "api_keys",
+          "expression": "$vars.api_keys_base | map(. as $key | $key + {total_cost: (($response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber)})"
+        },
+        {
+          "alias": "used_balance",
+          "expression": "$vars.api_keys | map(.total_cost) | add // 0"
+        }
+      ]
+    },
+    {
+      "id": "get_models",
+      "name": "获取模型定价",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/models",
+        "query": {},
+        "headers": {}
+      },
+      "extract": [
+        {
+          "alias": "group_ratios",
+          "expression": ".group_ratio // {}"
+        },
+        {
+          "alias": "model_rows",
+          "expression": "[.data[] | {name: (.model_name // .name), groups: (.enable_groups // []), in_price: ((.input_price // 0) | tonumber), out_price: ((.output_price // 0) | tonumber)}]"
+        },
+        {
+          "alias": "models",
+          "expression": "$vars.model_rows | map(. as $model | [$model.groups[] | {name: ., ratio: ($vars.group_ratios[.] // 1)}] as $groups | ($groups | map(.ratio) | min // null) as $min_ratio | {name: $model.name, cheapest_groups: (if $min_ratio == null then [] else [$groups[] | select(.ratio == $min_ratio) | .name] end), in_price: $model.in_price, out_price: $model.out_price})"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "user_id": "{{user_id}}",
+    "username": "{{username}}",
+    "balance": "{{balance}}",
+    "used_balance": "{{used_balance}}",
+    "api_keys": "{{api_keys}}",
+    "models": "{{models}}"
+  }
+}`
+
+const activeEditor = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
+const availableAliases = computed(() => {
+  const seen: string[] = []
+  for (const st of form.steps) {
+    for (const ex of st.extract) {
+      const alias = ex.alias.trim()
+      if (alias && !seen.includes(alias)) seen.push(alias)
+    }
+  }
+  return seen
+})
+
+function onFocus(e: FocusEvent) {
+  activeEditor.value = e.target as HTMLInputElement | HTMLTextAreaElement
+}
+
+function insertAlias(alias: string) {
+  const el = activeEditor.value
+  if (!el) return
+  const start = el.selectionStart ?? el.value.length
+  const end = el.selectionEnd ?? start
+  const text = `{{${alias}}}`
+  el.setRangeText(text, start, end, 'end')
+  el.dispatchEvent(new Event('input'))
+  el.focus()
+}
+
+function defToForm(def: WorkflowDefinition) {
+  form.name = def.name
+  form.id = def.id
+  form.steps = def.steps.map((step) => ({
+    id: step.id,
+    name: step.name,
+    method: step.request.method,
+    path: step.request.path,
+    query: objToKv(step.request.query),
+    body: 'body' in step.request ? JSON.stringify(step.request.body, null, 2) : '',
+    expect: step.expect || '',
+    extract: (step.extract || []).map((e) => ({ alias: e.alias, expression: e.expression }))
+  }))
+  form.output = JSON.stringify(def.output, null, 2)
+}
+
+function objToKv(obj: Record<string, unknown> | undefined): KvRow[] {
+  if (!obj || !Object.keys(obj).length) return [emptyKv()]
+  return Object.entries(obj).map(([key, value]) => ({ key, value: valueToStr(value) }))
+}
+
+function valueToStr(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+function openCreate() {
+  isEditing.value = false
+  formError.value = ''
+  Object.assign(form, freshForm())
+  stepOpen.value = [true]
+  showForm.value = true
+}
+
+function openEdit(record: WorkflowRecord) {
+  isEditing.value = true
+  formError.value = ''
+  defToForm(record.definition)
+  stepOpen.value = form.steps.map(() => true)
+  showForm.value = true
+}
+
+function fillExample() {
+  try {
+    const def = JSON.parse(SAMPLE_DEFINITION) as WorkflowDefinition
+    defToForm(def)
+    stepOpen.value = form.steps.map(() => true)
+    formError.value = ''
+  } catch (e: any) {
+    formError.value = '内置示例解析失败：' + (e?.message || '')
+  }
+}
+
+function formatJson() {
+  try {
+    form.output = JSON.stringify(JSON.parse(form.output), null, 2)
+    formError.value = ''
+  } catch (e: any) {
+    formError.value = 'Output JSON 格式错误'
+  }
+}
+
+function addStep() {
+  form.steps.push(emptyStep())
+  stepOpen.value.push(true)
+}
+
+function removeStep(index: number) {
+  form.steps.splice(index, 1)
+  stepOpen.value.splice(index, 1)
+}
+
+function moveStep(index: number, delta: number) {
+  const target = index + delta
+  if (target < 0 || target >= form.steps.length) return
+  const [step] = form.steps.splice(index, 1)
+  form.steps.splice(target, 0, step)
+  const [open] = stepOpen.value.splice(index, 1)
+  stepOpen.value.splice(target, 0, open)
+}
+
+function addKv(rows: KvRow[]) {
+  rows.push(emptyKv())
+}
+
+function removeKv(rows: KvRow[], index: number) {
+  rows.splice(index, 1)
+}
+
+function addExtract(step: StepForm) {
+  step.extract.push(emptyExtract())
+}
+
+function removeExtract(step: StepForm, index: number) {
+  step.extract.splice(index, 1)
+}
+
+function methodOptions() {
+  const set = [...HTTP_METHODS]
+  for (const st of form.steps) {
+    const m = st.method.trim().toUpperCase()
+    if (m && !set.includes(m)) set.push(m)
+  }
+  return set
+}
+
+function kvToObj(rows: KvRow[]): Record<string, unknown> {
+  const obj: Record<string, unknown> = {}
+  for (const row of rows) {
+    const key = row.key.trim()
+    if (!key) continue
+    obj[key] = parseKvValue(row.value)
+  }
+  return obj
+}
+
+function parseKvValue(text: string): unknown {
+  const trimmed = text.trim()
+  if (trimmed === '') return ''
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return text
+  }
+}
+
+function validateForm(): string[] {
+  const errors: string[] = []
+  if (!form.id.trim()) errors.push('工作流 ID 不能为空')
+  else if (!WORKFLOW_ID_RE.test(form.id.trim())) errors.push('ID 必须匹配 ^[a-z][a-z0-9_-]{0,63}$')
+  if (!form.name.trim()) errors.push('名称不能为空')
+
+  const stepIds = new Set<string>()
+  form.steps.forEach((st, i) => {
+    const label = `第 ${i + 1} 步` + (st.name.trim() ? `（${st.name.trim()}）` : '')
+    if (!st.id.trim()) errors.push(`${label}：步骤 ID 不能为空`)
+    else if (!WORKFLOW_ID_RE.test(st.id.trim())) errors.push(`${label}：步骤 ID 必须匹配 ^[a-z][a-z0-9_-]{0,63}$`)
+    else if (stepIds.has(st.id.trim())) errors.push(`${label}：步骤 ID「${st.id.trim()}」重复`)
+    else stepIds.add(st.id.trim())
+    if (!st.name.trim()) errors.push(`${label}：步骤名称不能为空`)
+    if (!st.path.trim()) errors.push(`${label}：path 不能为空`)
+    else if (!st.path.trim().startsWith('/')) errors.push(`${label}：path 必须以 / 开头`)
+    if (st.body.trim()) {
+      try {
+        JSON.parse(st.body)
+      } catch {
+        errors.push(`${label}：Body 不是合法 JSON`)
+      }
+    }
+    st.extract.forEach((ex, j) => {
+      if (!ex.alias.trim()) {
+        errors.push(`${label}：第 ${j + 1} 条提取缺少别名`)
+        return
+      }
+      if (!ALIAS_RE.test(ex.alias.trim())) errors.push(`${label}：提取别名「${ex.alias.trim()}」格式非法，需匹配 ^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+      if (!ex.expression.trim()) errors.push(`${label}：别名「${ex.alias.trim()}」缺少 jq 表达式`)
+    })
+  })
+  try {
+    JSON.parse(form.output)
+  } catch {
+    errors.push('Output 不是合法 JSON')
+  }
+  return errors
+}
+
+function formToDef(): WorkflowDefinition {
+  const steps: WorkflowStep[] = form.steps.map((st) => {
+    const request: WorkflowStep['request'] = {
+      method: st.method.trim().toUpperCase() || 'GET',
+      path: st.path.trim(),
+      query: kvToObj(st.query)
+    }
+    if (st.body.trim()) {
+      request.body = JSON.parse(st.body)
+    }
+    const step: WorkflowStep = {
+      id: st.id.trim(),
+      name: st.name.trim(),
+      request: request as WorkflowStep['request']
+    }
+    const expect = st.expect.trim()
+    if (expect) step.expect = expect
+    const extract = st.extract.filter((e) => e.alias.trim()).map((e) => ({ alias: e.alias.trim(), expression: e.expression.trim() }))
+    if (extract.length) step.extract = extract
+    return step
+  })
+  return {
+    spec: 'http-workflow/v1',
+    id: form.id.trim(),
+    name: form.name.trim(),
+    steps,
+    output: JSON.parse(form.output)
+  }
+}
+
+async function save() {
+  const errors = validateForm()
+  if (errors.length) {
+    formError.value = errors.join('；')
+    return
+  }
+  formError.value = ''
+  saving.value = true
+  try {
+    const definition = formToDef()
+    if (isEditing.value) {
+      const record = await updateWorkflow(form.id, definition)
+      const idx = workflows.value.findIndex((w) => w.id === record.id)
+      if (idx >= 0) workflows.value.splice(idx, 1, record)
+      toast('工作流已更新', record.name, 'success')
+    } else {
+      const record = await createWorkflow(definition)
+      workflows.value.unshift(record)
+      toast('工作流已创建', record.name, 'success')
+    }
+    showForm.value = false
+  } catch (e: any) {
+    toast('保存失败', e?.message || '', 'danger')
+  } finally {
+    saving.value = false
+  }
+}
+
+const showExecute = ref(false)
+const executingWorkflow = ref<WorkflowRecord | null>(null)
+const backends = ref<BackendResponse[]>([])
+const selectedBackendId = ref<number | 0>(0)
+const aliasesText = ref('')
+const executing = ref(false)
+const executeResult = ref<WorkflowExecuteResult | null>(null)
+const executeError = ref('')
+const executeRequests = ref<WorkflowRequestLog[]>([])
+
+async function openExecute(record: WorkflowRecord) {
+  executingWorkflow.value = record
+  selectedBackendId.value = 0
+  aliasesText.value = ''
+  executeResult.value = null
+  executeError.value = ''
+  executeRequests.value = []
+  showExecute.value = true
+  try {
+    if (!backends.value.length) {
+      const page = await listBackends()
+      backends.value = page.items.filter((b) => b.console_url && b.console_url.trim())
+    }
+  } catch {}
+}
+
+const selectedBackend = computed(() => backends.value.find((b) => b.id === selectedBackendId.value))
+
+async function runExecute() {
+  const wf = executingWorkflow.value
+  if (!wf || !selectedBackendId.value) return
+  executeResult.value = null
+  executeError.value = ''
+  executeRequests.value = []
+  executing.value = true
+  let aliases: Record<string, unknown> | undefined
+  if (aliasesText.value.trim()) {
+    try {
+      aliases = JSON.parse(aliasesText.value)
+    } catch (e: any) {
+      toast('输入别名解析失败', e?.message || '', 'danger')
+      executing.value = false
+      return
+    }
+  }
+  try {
+    const result = await executeWorkflow(wf.id, {
+      backend_id: selectedBackendId.value,
+      aliases
+    })
+    executeResult.value = result
+    executeRequests.value = result.requests || []
+    toast('执行成功', `${result.backend.name} · ${new Date(result.executed_at).toLocaleString('zh-CN')}`, 'success')
+  } catch (e: any) {
+    executeError.value = e?.message || '执行失败'
+    executeRequests.value = e?.requests || []
+    toast('执行失败', executeError.value, 'danger')
+  } finally {
+    executing.value = false
+  }
+}
+
+const workflowToDelete = ref<WorkflowRecord | null>(null)
+
+async function doDelete() {
+  const wf = workflowToDelete.value
+  if (!wf) return
+  try {
+    await deleteWorkflow(wf.id)
+    workflows.value = workflows.value.filter((w) => w.id !== wf.id)
+    workflowToDelete.value = null
+    toast('工作流已删除', wf.name, 'success')
+  } catch (e: any) {
+    toast('删除失败', e?.message || '', 'danger')
+  }
+}
+
+function fmtTime(s: string) {
+  return new Date(s).toLocaleString('zh-CN', { hour12: false })
+}
+
+function statusClass(code: number) {
+  if (code >= 200 && code < 300) return 'ok'
+  if (code >= 300 && code < 400) return 'info'
+  if (code >= 400 && code < 500) return 'warn'
+  return 'err'
+}
+
+async function loadData() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const page = await listWorkflows()
+    workflows.value = page.items
+  } catch (e: any) {
+    loadError.value = e?.message || '加载工作流失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(loadData)
+</script>
+
+<template>
+  <div class="page stagger">
+    <section class="toolbar panel">
+      <div class="wf-title-row">
+        <div class="wf-title-icon"><Workflow :size="16" /></div>
+        <div>
+          <div class="wf-title">HTTP 工作流配置</div>
+          <div class="wf-sub">按 docs/http_workflow.md 编排控制台请求，生成 profile 业务快照；可对任意中转站执行并持久化结果</div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" @click="openCreate"><Plus :size="15" /> 新建 Profile</button>
+    </section>
+
+    <section class="panel wf-list">
+      <div v-if="loading" class="wf-state"><LoaderCircle :size="20" class="spin" /><span>正在加载工作流…</span></div>
+      <div v-else-if="loadError" class="wf-state error">
+        <AlertTriangle :size="20" />
+        <span>{{ loadError }}</span>
+        <button class="btn btn-ghost btn-sm" @click="loadData">重试</button>
+      </div>
+      <div v-else-if="!workflows.length" class="wf-state">
+        <Workflow :size="20" />
+        <span>还没有配置工作流，点击右上角「新建 Profile」开始</span>
+      </div>
+      <template v-else>
+        <div v-for="w in workflows" :key="w.id" class="wf-row">
+          <div class="wf-row-ico"><Workflow :size="16" /></div>
+          <div class="wf-row-main">
+            <div class="wf-row-name">{{ w.name }}</div>
+            <div class="wf-row-meta">
+              <span class="mono">{{ w.id }}</span>
+              <span class="sep">·</span>
+              <span>{{ w.definition.steps.length }} 步</span>
+              <span class="sep">·</span>
+              <span>更新于 {{ fmtTime(w.updated_at) }}</span>
+            </div>
+          </div>
+          <div class="wf-row-actions">
+            <button class="btn btn-ghost btn-sm btn-purple" @click="openExecute(w)">
+              <Play :size="13" /> 执行
+            </button>
+            <button class="icon-btn" title="编辑" @click="openEdit(w)"><Pencil :size="15" /></button>
+            <button class="icon-btn wf-del" title="删除" @click="workflowToDelete = w"><Trash2 :size="15" /></button>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- create / edit -->
+    <Modal
+      :open="showForm"
+      :title="isEditing ? '编辑工作流' : '新建工作流'"
+      :subtitle="isEditing ? '修改配置后保存，立即生效' : '创建结构化 HTTP 工作流 profile'"
+      :icon="Workflow"
+      width="1080px"
+      @close="showForm = false"
+    >
+      <div class="wf-form">
+        <div class="wf-form-grid">
+          <div class="field">
+            <label class="field-label">名称</label>
+            <input v-model="form.name" class="input" placeholder="例如：sub2api 默认签到" />
+          </div>
+          <div class="field">
+            <label class="field-label">ID <em class="wf-hint">稳定标识，创建后不可修改</em></label>
+            <input v-model="form.id" class="input mono" :disabled="isEditing" placeholder="sub2api-default-checkin-profile" spellcheck="false" />
+          </div>
+        </div>
+
+        <div class="wf-sec-head">
+          <span class="wf-sec-title">步骤 <em class="wf-hint">{{ form.steps.length }} 个</em></span>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" @click="fillExample"><Sparkles :size="13" /> 填充示例</button>
+          <button class="btn btn-primary btn-sm" @click="addStep"><Plus :size="13" /> 添加步骤</button>
+        </div>
+
+        <div v-if="availableAliases.length" class="wf-alias-bar">
+          <span class="wf-alias-label">可用 Alias</span>
+          <button v-for="alias in availableAliases" :key="alias" class="wf-alias" @click="insertAlias(alias)">
+            {{ alias }}
+          </button>
+          <span class="wf-alias-tip">点击插入光标处</span>
+        </div>
+
+        <div v-for="(st, i) in form.steps" :key="i" class="wf-step" :class="{ open: stepOpen[i] }">
+          <div class="wf-step-head" @click="stepOpen[i] = !stepOpen[i]">
+            <span class="wf-step-idx mono">{{ String(i + 1).padStart(2, '0') }}</span>
+            <input v-model="st.name" class="input wf-step-name" :placeholder="`步骤 ${i + 1} 名称`" @click.stop />
+            <span v-if="st.id" class="mono wf-step-tag">{{ st.id }}</span>
+            <div class="spacer"></div>
+            <button class="icon-btn" title="上移" @click.stop="moveStep(i, -1)"><ArrowUp :size="14" /></button>
+            <button class="icon-btn" title="下移" @click.stop="moveStep(i, 1)"><ArrowDown :size="14" /></button>
+            <button class="icon-btn wf-del" title="删除步骤" @click.stop="removeStep(i)"><Trash2 :size="14" /></button>
+            <button class="icon-btn" :title="stepOpen[i] ? '折叠' : '展开'">
+              <ChevronUp v-if="stepOpen[i]" :size="15" />
+              <ChevronDown v-else :size="15" />
+            </button>
+          </div>
+
+          <div v-if="stepOpen[i]" class="wf-step-body">
+            <div class="wf-grid-2">
+              <div class="field">
+                <label class="field-label">步骤 ID</label>
+                <input v-model="st.id" class="input mono" placeholder="get_me" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label class="field-label">方法 / Path</label>
+                <div class="wf-req-line">
+                  <select v-model="st.method" class="select wf-method-select">
+                    <option v-for="m in methodOptions()" :key="m" :value="m">{{ m }}</option>
+                  </select>
+                  <input v-model="st.path" class="input mono" placeholder="/api/v1/auth/me" spellcheck="false" />
+                </div>
+              </div>
+            </div>
+
+            <div class="wf-grid-2">
+              <div class="wf-kv">
+                <label class="field-label">Query 参数</label>
+                <div v-for="(q, qi) in st.query" :key="qi" class="wf-kv-row">
+                  <input v-model="q.key" class="input mono wf-kv-key" placeholder="参数名" spellcheck="false" />
+                  <input v-model="q.value" class="input mono" placeholder="值（按 JSON 解析，可引用 {{alias}}）" spellcheck="false" />
+                  <button class="icon-btn wf-del" title="移除" @click="removeKv(st.query, qi)"><X :size="13" /></button>
+                </div>
+                <button class="btn btn-ghost btn-sm" @click="addKv(st.query)"><Plus :size="12" /> 添加参数</button>
+              </div>
+              <div class="wf-body-col">
+                <label class="field-label">Body <em class="wf-hint">留空则不发送</em></label>
+                <textarea
+                  v-model="st.body"
+                  class="textarea mono wf-body"
+                  placeholder='如 { "api_key_ids": "{{key_ids}}" }'
+                  spellcheck="false"
+                  @focus="onFocus"
+                ></textarea>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label">Expect <em class="wf-hint">jq 布尔表达式，留空则默认 2xx</em></label>
+              <input
+                v-model="st.expect"
+                class="input mono"
+                placeholder='$response.status >= 200 and $response.status < 300 and ((.code? // 0) == 0)'
+                spellcheck="false"
+                @focus="onFocus"
+              />
+            </div>
+
+            <div class="wf-extract">
+              <div class="wf-sec-head sub">
+                <span class="wf-sec-title">Extract 提取</span>
+                <div class="spacer"></div>
+                <button class="btn btn-ghost btn-sm" @click="addExtract(st)"><ListPlus :size="13" /> 添加提取</button>
+              </div>
+              <div v-if="!st.extract.length" class="wf-extract-empty">未配置提取；响应中的值可通过 jq 表达式保存为 alias 供后续步骤引用</div>
+              <div v-for="(ex, ei) in st.extract" :key="ei" class="wf-extract-row">
+                <input v-model="ex.alias" class="input mono wf-extract-alias" placeholder="alias" spellcheck="false" />
+                <input
+                  v-model="ex.expression"
+                  class="input mono wf-extract-expr"
+                  placeholder=".data.id | tostring"
+                  spellcheck="false"
+                  @focus="onFocus"
+                />
+                <button class="icon-btn wf-del" title="移除" @click="removeExtract(st, ei)"><X :size="13" /></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Output <em class="wf-hint">递归 alias 模板</em></label>
+          <textarea v-model="form.output" class="textarea mono wf-output" spellcheck="false" @focus="onFocus"></textarea>
+          <div class="wf-json-bar">
+            <button class="btn btn-ghost btn-sm" @click="formatJson"><Braces :size="13" /> 格式化</button>
+            <span v-if="formError" class="wf-json-err"><AlertTriangle :size="12" /> {{ formError }}</span>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showForm = false">取消</button>
+        <button class="btn btn-primary" :disabled="saving" @click="save">
+          <LoaderCircle v-if="saving" :size="15" class="spin" />
+          <Save v-else :size="15" />
+          保存
+        </button>
+      </template>
+    </Modal>
+
+    <!-- execute -->
+    <Modal
+      :open="showExecute"
+      title="执行工作流"
+      :subtitle="executingWorkflow ? executingWorkflow.name : ''"
+      :icon="Play"
+      width="900px"
+      @close="showExecute = false"
+    >
+      <div class="wf-form">
+        <div class="wf-form-grid">
+          <div class="field">
+            <label class="field-label">目标中转站</label>
+            <select v-model="selectedBackendId" class="select">
+              <option :value="0" disabled>选择要执行的中转站…</option>
+              <option v-for="b in backends" :key="b.id" :value="b.id">{{ b.name }}（{{ b.console_url }}）</option>
+            </select>
+            <span v-if="selectedBackend" class="field-hint">基础 URL 与认证信息取自中转站控制台配置</span>
+          </div>
+          <div class="field">
+            <label class="field-label">输入 Alias <em class="wf-hint">可选</em></label>
+            <textarea v-model="aliasesText" class="textarea mono wf-aliases" placeholder='{ "some_key": "value" }' spellcheck="false"></textarea>
+          </div>
+        </div>
+
+        <div v-if="executing" class="wf-run-state"><LoaderCircle :size="18" class="spin" /><span>正在执行…</span></div>
+
+        <div v-else-if="executeResult" class="wf-result">
+          <div class="wf-result-head ok">
+            <CheckCircle2 :size="15" />
+            <span>执行成功 · {{ executeResult.backend.name }} · {{ fmtTime(executeResult.executed_at) }}</span>
+          </div>
+          <div class="wf-result-block">
+            <div class="wf-result-label">Output</div>
+            <pre class="wf-pre">{{ JSON.stringify(executeResult.output, null, 2) }}</pre>
+          </div>
+          <div v-if="executeRequests.length" class="wf-result-block">
+            <div class="wf-result-label">请求记录</div>
+            <div class="wf-req-list">
+              <div v-for="(r, i) in executeRequests" :key="i" class="wf-req">
+                <span class="wf-req-seq mono">{{ i + 1 }}</span>
+                <span class="tag mono wf-method">{{ r.method }}</span>
+                <span class="mono wf-req-path">{{ r.path }}</span>
+                <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="executeError" class="wf-result">
+          <div class="wf-result-head err"><AlertTriangle :size="15" /><span>执行失败：{{ executeError }}</span></div>
+          <div v-if="executeRequests.length" class="wf-result-block">
+            <div class="wf-result-label">请求记录</div>
+            <div class="wf-req-list">
+              <div v-for="(r, i) in executeRequests" :key="i" class="wf-req">
+                <span class="wf-req-seq mono">{{ i + 1 }}</span>
+                <span class="tag mono wf-method">{{ r.method }}</span>
+                <span class="mono wf-req-path">{{ r.path }}</span>
+                <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showExecute = false">关闭</button>
+        <button class="btn btn-primary" :disabled="executing || !selectedBackendId" @click="runExecute">
+          <LoaderCircle v-if="executing" :size="15" class="spin" />
+          <Play v-else :size="15" />
+          执行
+        </button>
+      </template>
+    </Modal>
+
+    <!-- delete confirm -->
+    <Modal
+      :open="workflowToDelete !== null"
+      title="删除工作流"
+      :subtitle="workflowToDelete?.name"
+      :icon="Trash2"
+      @close="workflowToDelete = null"
+    >
+      <div class="wf-confirm">
+        <AlertTriangle :size="20" />
+        <p>删除后该 profile 配置将无法恢复，已保存的执行结果仍保留。</p>
+        <p class="mono">{{ workflowToDelete?.id }}</p>
+      </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="workflowToDelete = null">取消</button>
+        <button class="btn btn-danger" @click="doDelete"><Trash2 :size="15" /> 删除</button>
+      </template>
+    </Modal>
+  </div>
+</template>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.toolbar { display: flex; align-items: center; gap: var(--space-4); padding: 14px 18px; flex-wrap: wrap; }
+.wf-title-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.wf-title-icon {
+  width: 38px; height: 38px; border-radius: 12px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--grad-soft); color: var(--primary);
+  border: 1px solid var(--border-strong);
+}
+.wf-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.wf-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+
+.wf-list { padding: 6px; }
+.wf-state {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 44px 16px; color: var(--text-faint); font-size: 13px;
+}
+.wf-state.error { color: var(--danger); }
+.wf-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  transition: background 0.2s ease;
+}
+.wf-row:last-child { border-bottom: none; }
+.wf-row:hover { background: var(--surface-2); }
+.wf-row-ico {
+  width: 36px; height: 36px; border-radius: 11px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-3); color: var(--primary);
+  border: 1px solid var(--border);
+}
+.wf-row-main { min-width: 0; flex: 1; }
+.wf-row-name { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.wf-row-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-faint); margin-top: 3px; flex-wrap: wrap; }
+.wf-row-meta .sep { color: var(--text-faint); }
+.wf-row-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.wf-del:hover { color: var(--danger); background: var(--danger-soft); }
+
+.wf-form { display: flex; flex-direction: column; gap: 14px; }
+.wf-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wf-hint { font-style: normal; font-size: 11px; color: var(--text-faint); font-weight: 500; margin-left: 6px; }
+
+.wf-sec-head { display: flex; align-items: center; gap: 10px; }
+.wf-sec-head.sub { margin: 2px 0 4px; }
+.wf-sec-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-soft); }
+.wf-sec-title em { text-transform: none; letter-spacing: 0; }
+
+.wf-alias-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.wf-alias-label { font-size: 11px; font-weight: 700; color: var(--text-faint); margin-right: 2px; }
+.wf-alias {
+  padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--primary); background: var(--grad-soft);
+  border: 1px solid var(--border-strong);
+  transition: filter 0.15s ease;
+}
+.wf-alias:hover { filter: brightness(1.15); }
+.wf-alias-tip { font-size: 11px; color: var(--text-faint); }
+
+.wf-step {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); overflow: hidden;
+}
+.wf-step.open { border-color: var(--border-strong); }
+.wf-step-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; cursor: pointer; user-select: none;
+}
+.wf-step-idx {
+  width: 28px; text-align: center; flex: none;
+  font-size: 11.5px; font-weight: 700; color: var(--primary);
+  background: var(--grad-soft); border: 1px solid var(--border-strong);
+  border-radius: 8px; padding: 3px 0;
+}
+.wf-step-name { max-width: 300px; }
+.wf-step-tag { font-size: 11px; color: var(--text-faint); }
+.wf-step-body {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wf-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wf-req-line { display: flex; gap: 8px; }
+.wf-method-select { width: 116px; flex: none; }
+
+.wf-kv { display: flex; flex-direction: column; gap: 6px; }
+.wf-kv-row { display: flex; gap: 6px; }
+.wf-kv-key { width: 130px; flex: none; }
+
+.wf-body-col { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.wf-body-col .wf-body { width: 100%; min-height: 108px; }
+.wf-body { min-height: 90px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
+
+.wf-extract { display: flex; flex-direction: column; gap: 8px; }
+.wf-extract-empty { font-size: 12px; color: var(--text-faint); padding: 6px 2px; }
+.wf-extract-row { display: flex; gap: 6px; }
+.wf-extract-alias { width: 160px; flex: none; }
+
+.wf-output { min-height: 150px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
+.wf-aliases { min-height: 84px; font-size: 12px; line-height: 1.5; background: var(--bg-soft); }
+.wf-json-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-json-err { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--danger); }
+
+.wf-run-state {
+  display: flex; align-items: center; gap: 10px;
+  padding: 18px; color: var(--text-soft); font-size: 13px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.wf-result { display: flex; flex-direction: column; gap: 12px; }
+.wf-result-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600;
+  padding: 10px 13px; border-radius: var(--radius-sm);
+}
+.wf-result-head.ok { color: var(--success); background: var(--success-soft); }
+.wf-result-head.err { color: var(--danger); background: var(--danger-soft); }
+.wf-result-block { display: flex; flex-direction: column; gap: 7px; }
+.wf-result-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.wf-pre {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-soft);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+  max-height: 320px;
+}
+.wf-req-list { display: flex; flex-direction: column; gap: 6px; }
+.wf-req {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.wf-req-seq { color: var(--text-faint); width: 18px; text-align: right; }
+.wf-method { font-size: 10.5px; flex: none; }
+.wf-req-path { color: var(--text-soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.wf-status { flex: none; font-weight: 700; }
+.wf-status.ok { color: var(--success); }
+.wf-status.info { color: var(--info); }
+.wf-status.warn { color: var(--warning); }
+.wf-status.err { color: var(--danger); }
+
+.wf-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 8px 0; color: var(--text-soft); font-size: 13.5px; }
+.wf-confirm svg { color: var(--warning); }
+.wf-confirm p.mono { color: var(--text-faint); font-size: 12px; }
+
+@media (max-width: 720px) {
+  .wf-form-grid, .wf-grid-2 { grid-template-columns: 1fr; }
+  .wf-row { flex-wrap: wrap; }
+}
+</style>

@@ -8,6 +8,7 @@ import {
   ServerCog,
   ScrollText,
   Settings,
+  Workflow,
   PanelLeftClose,
   PanelLeftOpen,
   Activity
@@ -35,7 +36,10 @@ const groups = [
   },
   {
     label: '系统',
-    items: [{ to: '/settings', label: '系统配置', icon: Settings }]
+    items: [
+      { to: '/settings', label: '系统配置', icon: Settings },
+      { to: '/settings/workflows', label: '工作流', icon: Workflow }
+    ]
   }
 ]
 
