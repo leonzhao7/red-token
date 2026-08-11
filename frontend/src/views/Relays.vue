@@ -46,6 +46,7 @@ import {
   type BackendType,
   type SocksProxyResponse
 } from '../api/backends'
+import { listWorkflows, type WorkflowRecord } from '../api/workflows'
 import type { Relay, RelayKey, RelayModel, PlatformType } from '../types'
 
 const search = ref('')
@@ -77,6 +78,7 @@ type RelayView = Omit<Relay, 'status'> & {
 
 const relays = ref<RelayView[]>([])
 const proxyOptions = ref<SocksProxyResponse[]>([])
+const workflowOptions = ref<WorkflowRecord[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const saving = ref(false)
@@ -597,6 +599,7 @@ const form = ref<{
   consoleUserId: string
   consoleAuthorization: string
   consoleCheckinPath: string
+  consoleCheckinWorkflowId: string
   channelUrl: string
   proxyId: string
   weight: number
@@ -614,6 +617,7 @@ const form = ref<{
   consoleUserId: '',
   consoleAuthorization: '',
   consoleCheckinPath: '',
+  consoleCheckinWorkflowId: '',
   channelUrl: '',
   proxyId: '',
   weight: 10,
@@ -625,6 +629,7 @@ const editingId = ref<string | null>(null)
 const isEditing = computed(() => editingId.value !== null)
 const isNewAPIBackendType = computed(() => form.value.backendType === 'new-api')
 const isSub2APIBackendType = computed(() => form.value.backendType === 'sub2api')
+const isConsoleBackendType = computed(() => isNewAPIBackendType.value || isSub2APIBackendType.value)
 const consoleHeadersError = computed(() => {
   if (!isNewAPIBackendType.value) return ''
   try {
@@ -647,6 +652,7 @@ function resetForm() {
   form.value = {
     name: '', url: '', protocol: 'openai', backendType: 'new-api', consoleUrl: '', username: '', password: '',
     newApiRefresh: '', consoleHeaders: '', consoleUserId: '', consoleAuthorization: '', consoleCheckinPath: '',
+    consoleCheckinWorkflowId: '',
     channelUrl: '', proxyId: '', weight: 10, keys: []
   }
 }
@@ -672,6 +678,7 @@ function openEditRelay(r: RelayView) {
     consoleUserId: consoleUserIdOf(r.raw),
     consoleAuthorization: r.raw.console_authorization || '',
     consoleCheckinPath: r.raw.console_checkin_path || '',
+    consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
     channelUrl: r.raw.channel_url || '',
     proxyId: r.proxyId,
     weight: numberValue(r.raw.weight) || 10,
@@ -723,6 +730,7 @@ function buildPayload() {
     console_user_id: backendType === 'new-api' ? form.value.consoleUserId.trim() : '',
     console_authorization: backendType === 'sub2api' ? form.value.consoleAuthorization.trim() : '',
     console_checkin_path: backendType === 'sub2api' ? form.value.consoleCheckinPath.trim() : '',
+    console_checkin_workflow_id: form.value.consoleCheckinWorkflowId.trim(),
     channel_url: backendType === 'sub2api' ? form.value.channelUrl.trim() : '',
     proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0,
     weight: Math.min(100, Math.max(1, Math.round(numberValue(form.value.weight) || 10)))
@@ -792,9 +800,10 @@ async function loadData() {
   loading.value = true
   loadError.value = ''
   try {
-    const [backendPage, proxyPage] = await Promise.all([listBackends(), listSocksProxies()])
+    const [backendPage, proxyPage, workflowPage] = await Promise.all([listBackends(), listSocksProxies(), listWorkflows()])
     relays.value = backendPage.items.map(mapBackend)
     proxyOptions.value = proxyPage.items
+    workflowOptions.value = workflowPage.items
   } catch (error) {
     loadError.value = errorMessage(error)
   } finally {
@@ -1025,6 +1034,14 @@ onMounted(loadData)
           <div class="field">
             <label class="field-label">Server URL</label>
             <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
+          </div>
+
+          <div v-if="isConsoleBackendType" class="field">
+            <label class="field-label">签到工作流 <em class="ke-hint">配置后手动签到/同步改走工作流执行</em></label>
+            <select v-model="form.consoleCheckinWorkflowId" class="select">
+              <option value="">无（使用平台默认签到）</option>
+              <option v-for="wf in workflowOptions" :key="wf.id" :value="wf.id">{{ wf.id }} · {{ wf.name }}</option>
+            </select>
           </div>
 
           <div class="form-grid-2">

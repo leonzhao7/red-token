@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -205,21 +206,6 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "backend_id must be a positive integer")
 		return
 	}
-
-	record, err := h.store.GetHTTPWorkflow(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "workflow not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	definition, err := service.ParseGeneralWorkflow(record.Definition)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "stored workflow is invalid: "+err.Error())
-		return
-	}
 	backend, err := h.store.GetBackend(r.Context(), payload.BackendID)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "backend not found")
@@ -229,32 +215,85 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if strings.TrimSpace(backend.ConsoleURL) == "" {
-		writeError(w, http.StatusBadRequest, "backend console_url is required")
+	outcome, err := h.runCheckinWorkflow(r.Context(), backend, r.PathValue("id"), payload.Aliases, nil, nil)
+	if err != nil {
+		status := http.StatusBadGateway
+		var runErr *workflowRunError
+		if errors.As(err, &runErr) {
+			status = runErr.status
+		}
+		writeWorkflowExecutionError(w, status, err.Error(), outcome.Requests, outcome.DebugLogs)
 		return
+	}
+	writeJSON(w, http.StatusOK, workflowExecuteResponse{
+		WorkflowID: outcome.WorkflowID,
+		Backend:    workflowBackendRef{ID: backend.ID, Name: backend.Name},
+		Output:     outcome.Output,
+		Aliases:    outcome.Aliases,
+		ExecutedAt: outcome.ExecutedAt,
+		Requests:   outcome.Requests,
+		DebugLogs:  outcome.DebugLogs,
+	})
+}
+
+type checkinWorkflowOutcome struct {
+	WorkflowID string
+	Backend    domain.Backend
+	Output     any
+	Aliases    map[string]any
+	ExecutedAt time.Time
+	Requests   []service.NewAPIRequestLog
+	DebugLogs  []service.GeneralWorkflowDebugLog
+}
+
+type workflowRunError struct {
+	status  int
+	message string
+}
+
+func (e *workflowRunError) Error() string { return e.message }
+
+// runCheckinWorkflow executes a stored workflow against a backend and applies
+// its validated output to the backend, persisting both the output snapshot and
+// the updated backend runtime fields.
+func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain.Backend, workflowID string, aliases map[string]any, recorder *service.NewAPIRequestRecorder, debugLogs *workflowDebugLogCollector) (checkinWorkflowOutcome, error) {
+	record, err := h.store.GetHTTPWorkflow(ctx, workflowID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return checkinWorkflowOutcome{}, &workflowRunError{status: http.StatusNotFound, message: "workflow not found"}
+	}
+	if err != nil {
+		return checkinWorkflowOutcome{}, err
+	}
+	definition, err := service.ParseGeneralWorkflow(record.Definition)
+	if err != nil {
+		return checkinWorkflowOutcome{}, &workflowRunError{status: http.StatusInternalServerError, message: "stored workflow is invalid: " + err.Error()}
+	}
+	if strings.TrimSpace(backend.ConsoleURL) == "" {
+		return checkinWorkflowOutcome{}, &workflowRunError{status: http.StatusBadRequest, message: "backend console_url is required"}
 	}
 	if err := validateWorkflowConsoleURL(backend.ConsoleURL); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return checkinWorkflowOutcome{}, &workflowRunError{status: http.StatusBadRequest, message: err.Error()}
 	}
-
 	client, err := h.httpClientForBackend(backend)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return checkinWorkflowOutcome{}, &workflowRunError{status: http.StatusBadRequest, message: err.Error()}
 	}
 	headers := workflowConsoleHeaders(backend)
-	recorder := service.NewNewAPIRequestRecorder()
-	debugLogs := &workflowDebugLogCollector{Logs: []service.GeneralWorkflowDebugLog{}}
+	if recorder == nil {
+		recorder = service.NewNewAPIRequestRecorder()
+	}
+	if debugLogs == nil {
+		debugLogs = &workflowDebugLogCollector{Logs: []service.GeneralWorkflowDebugLog{}}
+	}
 	engine := service.NewGeneralWorkflow(service.GeneralWorkflowOptions{
 		HTTPClient:       client,
 		UserAgent:        h.consoleUserAgent(),
 		ProtectedHeaders: []string{"authorization", "cookie"},
 	})
-	result, err := engine.Execute(r.Context(), definition, service.GeneralWorkflowRunOptions{
+	result, err := engine.Execute(ctx, definition, service.GeneralWorkflowRunOptions{
 		BaseURL:        backend.ConsoleURL,
 		Headers:        headers,
-		InitialAliases: payload.Aliases,
+		InitialAliases: aliases,
 		Runtime: map[string]any{
 			"backend_id":   backend.ID,
 			"backend_name": backend.Name,
@@ -264,33 +303,29 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 		ValidateOutput: service.ValidateCheckinWorkflowOutput,
 	})
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusBadGateway, err.Error(), recorder.Requests, debugLogs.Logs)
-		return
+		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusBadGateway, message: err.Error()}
 	}
 	outputJSON, err := json.Marshal(result.Output)
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
-		return
+		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error()}
 	}
 	updatedBackend, err := applyWorkflowOutputToBackend(backend, result.Output, h.focusModelPatterns())
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
-		return
+		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error()}
 	}
-	_, snapshot, err := h.store.ApplyHTTPWorkflowResult(r.Context(), definition.ID, updatedBackend, outputJSON)
+	storedBackend, snapshot, err := h.store.ApplyHTTPWorkflowResult(ctx, definition.ID, updatedBackend, outputJSON)
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
-		return
+		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error()}
 	}
-	writeJSON(w, http.StatusOK, workflowExecuteResponse{
+	return checkinWorkflowOutcome{
 		WorkflowID: definition.ID,
-		Backend:    workflowBackendRef{ID: backend.ID, Name: backend.Name},
+		Backend:    storedBackend,
 		Output:     result.Output,
 		Aliases:    result.Aliases,
 		ExecutedAt: snapshot.ExecutedAt,
 		Requests:   recorder.Requests,
 		DebugLogs:  debugLogs.Logs,
-	})
+	}, nil
 }
 
 func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatterns string) (domain.Backend, error) {

@@ -70,33 +70,34 @@ type BackendDetailData struct {
 }
 
 type BackendPatch struct {
-	Name                 *string
-	Protocol             *string
-	BackendType          *string
-	BaseURL              *string
-	APIKeys              *[]domain.BackendAPIKey
-	ConsoleURL           *string
-	Tags                 *[]string
-	ConsoleUsername      *string
-	ConsolePassword      *string
-	NewAPIRefresh        *string
-	ConsoleAuthorization *string
-	ConsoleCheckinPath   *string
-	ChannelURL           *string
-	ConsoleCookie        *string
-	ConsoleHeaders       *map[string]string
-	ConsoleAccountJSON   *string
-	Notes                *string
-	ProxyID              *int64
-	Status               *string
-	ResetRuntimeState    bool
-	Weight               *int
+	Name                   *string
+	Protocol               *string
+	BackendType            *string
+	BaseURL                *string
+	APIKeys                *[]domain.BackendAPIKey
+	ConsoleURL             *string
+	Tags                   *[]string
+	ConsoleUsername        *string
+	ConsolePassword        *string
+	NewAPIRefresh          *string
+	ConsoleAuthorization   *string
+	ConsoleCheckinPath     *string
+	ConsoleCheckinWorkflow *string
+	ChannelURL             *string
+	ConsoleCookie          *string
+	ConsoleHeaders         *map[string]string
+	ConsoleAccountJSON     *string
+	Notes                  *string
+	ProxyID                *int64
+	Status                 *string
+	ResetRuntimeState      bool
+	Weight                 *int
 }
 
 func (s *Store) ListBackends(ctx context.Context) ([]domain.Backend, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
+			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
 			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
@@ -289,7 +290,7 @@ func (s *Store) BackendBindingCountByProxyIDs(ctx context.Context, ids []int64) 
 func (s *Store) ListBackendsPage(ctx context.Context, limit, offset int) ([]domain.Backend, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
+			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
 			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
@@ -320,8 +321,8 @@ func (s *Store) CreateBackend(ctx context.Context, backend domain.Backend) (doma
 	legacyAPIKey, legacyModels, legacyModelMapping := legacyBackendRoutingFields(apiKeys)
 
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO backends(name, protocol, backend_type, base_url, api_key, api_keys_json, console_url, tag_list, console_username, console_password, new_api_refresh, console_authorization, console_checkin_path, channel_url, console_cookie, console_headers_json, console_account_json, console_pricing_json, notes, proxy_id, status, consecutive_failures, recover_at, weight, model_list, model_mapping, endpoint_list, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO backends(name, protocol, backend_type, base_url, api_key, api_keys_json, console_url, tag_list, console_username, console_password, new_api_refresh, console_authorization, console_checkin_path, console_checkin_workflow_id, channel_url, console_cookie, console_headers_json, console_account_json, console_pricing_json, notes, proxy_id, status, consecutive_failures, recover_at, weight, model_list, model_mapping, endpoint_list, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		strings.TrimSpace(backend.Name),
 		domain.NormalizeBackendProtocol(backend.Protocol),
@@ -336,6 +337,7 @@ func (s *Store) CreateBackend(ctx context.Context, backend domain.Backend) (doma
 		strings.TrimSpace(backend.NewAPIRefresh),
 		strings.TrimSpace(backend.ConsoleAuthorization),
 		strings.TrimSpace(backend.ConsoleCheckinPath),
+		strings.TrimSpace(backend.ConsoleCheckinWorkflow),
 		strings.TrimSpace(backend.ChannelURL),
 		strings.TrimSpace(backend.ConsoleCookie),
 		mustEncodeMap(backend.ConsoleHeaders),
@@ -395,8 +397,8 @@ func (s *Store) ImportBackends(ctx context.Context, backends []domain.Backend) (
 		backend.Status = normalizeBackendStatus(backend.Status)
 		backend.Weight = normalizeWeight(backend.Weight)
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO backends(name, protocol, backend_type, base_url, api_key, api_keys_json, console_url, tag_list, console_username, console_password, new_api_refresh, console_authorization, console_checkin_path, channel_url, console_cookie, console_headers_json, console_account_json, console_pricing_json, notes, proxy_id, status, consecutive_failures, recover_at, weight, model_list, model_mapping, endpoint_list, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO backends(name, protocol, backend_type, base_url, api_key, api_keys_json, console_url, tag_list, console_username, console_password, new_api_refresh, console_authorization, console_checkin_path, console_checkin_workflow_id, channel_url, console_cookie, console_headers_json, console_account_json, console_pricing_json, notes, proxy_id, status, consecutive_failures, recover_at, weight, model_list, model_mapping, endpoint_list, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			backend.Name,
 			backend.Protocol,
@@ -411,6 +413,7 @@ func (s *Store) ImportBackends(ctx context.Context, backends []domain.Backend) (
 			backend.NewAPIRefresh,
 			backend.ConsoleAuthorization,
 			backend.ConsoleCheckinPath,
+			backend.ConsoleCheckinWorkflow,
 			backend.ChannelURL,
 			backend.ConsoleCookie,
 			mustEncodeMap(backend.ConsoleHeaders),
@@ -455,7 +458,7 @@ func (s *Store) UpdateBackend(ctx context.Context, backend domain.Backend) (doma
 
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE backends
-		SET name = ?, protocol = ?, backend_type = ?, base_url = ?, api_key = ?, api_keys_json = ?, console_url = ?, tag_list = ?, console_username = ?, console_password = ?, new_api_refresh = ?, console_authorization = ?, console_checkin_path = ?, channel_url = ?, console_cookie = ?, console_headers_json = ?, console_account_json = ?, console_pricing_json = ?, notes = ?, proxy_id = ?, status = ?, consecutive_failures = ?, recover_at = ?, weight = ?, model_list = ?, model_mapping = ?, endpoint_list = ?, updated_at = ?
+		SET name = ?, protocol = ?, backend_type = ?, base_url = ?, api_key = ?, api_keys_json = ?, console_url = ?, tag_list = ?, console_username = ?, console_password = ?, new_api_refresh = ?, console_authorization = ?, console_checkin_path = ?, console_checkin_workflow_id = ?, channel_url = ?, console_cookie = ?, console_headers_json = ?, console_account_json = ?, console_pricing_json = ?, notes = ?, proxy_id = ?, status = ?, consecutive_failures = ?, recover_at = ?, weight = ?, model_list = ?, model_mapping = ?, endpoint_list = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		strings.TrimSpace(backend.Name),
@@ -471,6 +474,7 @@ func (s *Store) UpdateBackend(ctx context.Context, backend domain.Backend) (doma
 		strings.TrimSpace(backend.NewAPIRefresh),
 		strings.TrimSpace(backend.ConsoleAuthorization),
 		strings.TrimSpace(backend.ConsoleCheckinPath),
+		strings.TrimSpace(backend.ConsoleCheckinWorkflow),
 		strings.TrimSpace(backend.ChannelURL),
 		strings.TrimSpace(backend.ConsoleCookie),
 		mustEncodeMap(normalizeMap(backend.ConsoleHeaders)),
@@ -543,6 +547,9 @@ func (s *Store) PatchBackend(ctx context.Context, id int64, patch BackendPatch) 
 	if patch.ConsoleCheckinPath != nil {
 		add("console_checkin_path", strings.TrimSpace(*patch.ConsoleCheckinPath))
 	}
+	if patch.ConsoleCheckinWorkflow != nil {
+		add("console_checkin_workflow_id", strings.TrimSpace(*patch.ConsoleCheckinWorkflow))
+	}
 	if patch.ChannelURL != nil {
 		add("channel_url", strings.TrimSpace(*patch.ChannelURL))
 	}
@@ -587,7 +594,7 @@ func (s *Store) PatchBackend(ctx context.Context, id int64, patch BackendPatch) 
 func (s *Store) GetBackend(ctx context.Context, id int64) (domain.Backend, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
-			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
+			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
 			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
@@ -837,21 +844,21 @@ func backendHourlyModelStatsFilterClause(filter BackendHourlyModelStatsFilter) (
 
 func scanBackend(s scanner) (domain.Backend, error) {
 	var (
-		backend                                                                                                                                         domain.Backend
-		modelList, modelMappingRaw, apiKeysJSON, tagList                                                                                                string
-		endpointList                                                                                                                                    string
-		createdAt, updatedAt                                                                                                                            string
-		recoverAt, consoleURL                                                                                                                           string
-		consoleUsername, consolePassword, newAPIRefresh, consoleAuthorization, consoleCheckinPath, channelURL, consoleCookie, consoleHeadersJSON, notes string
-		consoleAccountJSON, consolePricingJSON, backendTypeValue                                                                                        string
-		proxyID                                                                                                                                         sql.NullInt64
-		proxyName                                                                                                                                       sql.NullString
-		proxyAddress                                                                                                                                    sql.NullString
-		proxyUsername                                                                                                                                   sql.NullString
-		proxyPassword                                                                                                                                   sql.NullString
-		proxyEnabled                                                                                                                                    sql.NullInt64
-		proxyCreatedAt                                                                                                                                  sql.NullString
-		proxyUpdatedAt                                                                                                                                  sql.NullString
+		backend                                                                                                                                                                 domain.Backend
+		modelList, modelMappingRaw, apiKeysJSON, tagList                                                                                                                        string
+		endpointList                                                                                                                                                            string
+		createdAt, updatedAt                                                                                                                                                    string
+		recoverAt, consoleURL                                                                                                                                                   string
+		consoleUsername, consolePassword, newAPIRefresh, consoleAuthorization, consoleCheckinPath, consoleCheckinWorkflow, channelURL, consoleCookie, consoleHeadersJSON, notes string
+		consoleAccountJSON, consolePricingJSON, backendTypeValue                                                                                                                string
+		proxyID                                                                                                                                                                 sql.NullInt64
+		proxyName                                                                                                                                                               sql.NullString
+		proxyAddress                                                                                                                                                            sql.NullString
+		proxyUsername                                                                                                                                                           sql.NullString
+		proxyPassword                                                                                                                                                           sql.NullString
+		proxyEnabled                                                                                                                                                            sql.NullInt64
+		proxyCreatedAt                                                                                                                                                          sql.NullString
+		proxyUpdatedAt                                                                                                                                                          sql.NullString
 	)
 	err := s.Scan(
 		&backend.ID,
@@ -868,6 +875,7 @@ func scanBackend(s scanner) (domain.Backend, error) {
 		&newAPIRefresh,
 		&consoleAuthorization,
 		&consoleCheckinPath,
+		&consoleCheckinWorkflow,
 		&channelURL,
 		&consoleCookie,
 		&consoleHeadersJSON,
@@ -908,6 +916,7 @@ func scanBackend(s scanner) (domain.Backend, error) {
 	backend.NewAPIRefresh = strings.TrimSpace(newAPIRefresh)
 	backend.ConsoleAuthorization = strings.TrimSpace(consoleAuthorization)
 	backend.ConsoleCheckinPath = strings.TrimSpace(consoleCheckinPath)
+	backend.ConsoleCheckinWorkflow = strings.TrimSpace(consoleCheckinWorkflow)
 	backend.ChannelURL = strings.TrimSpace(channelURL)
 	backend.ConsoleCookie = strings.TrimSpace(consoleCookie)
 	backend.ConsoleHeaders = decodeMap(consoleHeadersJSON)
@@ -944,7 +953,7 @@ func scanBackend(s scanner) (domain.Backend, error) {
 func (s *Store) listBackendsByProxyID(ctx context.Context, proxyID int64) ([]domain.Backend, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
+			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.console_username, b.console_password, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.channel_url, b.console_cookie, b.console_headers_json, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
 			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id

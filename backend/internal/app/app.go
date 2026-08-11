@@ -143,6 +143,7 @@ func New(ctx context.Context, dbPath string) (*App, error) {
 		logger:            slog.Default().With("component", "app"),
 	}
 	app.backendHandler.SetConfig(&app.cfg)
+	app.backendHandler.SetWorkflowHandler(app.workflowHandler)
 	app.workflowHandler.SetConfig(&app.cfg)
 	app.settingHandler = handler.NewSettingHandler(st, &app.cfg)
 	app.dashboardHandler = handler.NewDashboardHandler(st, app.backendHandler)

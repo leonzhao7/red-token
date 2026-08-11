@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ type BackendHandler struct {
 	cfg               *config.Config
 	consoleHTTPClient *http.Client
 	logger            *slog.Logger
+	workflowHandler   *WorkflowHandler
 }
 
 func NewBackendHandler(st *store.Store) *BackendHandler {
@@ -30,6 +32,10 @@ func NewBackendHandler(st *store.Store) *BackendHandler {
 		store:  st,
 		logger: slog.Default().With("component", "backend_handler"),
 	}
+}
+
+func (h *BackendHandler) SetWorkflowHandler(workflowHandler *WorkflowHandler) {
+	h.workflowHandler = workflowHandler
 }
 
 func (h *BackendHandler) SetConsoleHTTPClient(client *http.Client) {
@@ -90,59 +96,61 @@ type backendConsoleSyncSummary struct {
 }
 
 type backendUpdatePayload struct {
-	Name                 *string                 `json:"name"`
-	Protocol             *string                 `json:"protocol"`
-	BackendType          *string                 `json:"backend_type"`
-	BaseURL              *string                 `json:"base_url"`
-	APIKeys              *[]domain.BackendAPIKey `json:"api_keys"`
-	APIKey               *string                 `json:"api_key"`
-	ConsoleURL           *string                 `json:"console_url"`
-	Tags                 *[]string               `json:"tags"`
-	ConsoleUsername      *string                 `json:"console_username"`
-	ConsolePassword      *string                 `json:"console_password"`
-	NewAPIRefresh        *string                 `json:"new_api_refresh"`
-	ConsoleAuthorization *string                 `json:"console_authorization"`
-	ConsoleCheckinPath   *string                 `json:"console_checkin_path"`
-	ChannelURL           *string                 `json:"channel_url"`
-	ConsoleCookie        *string                 `json:"console_cookie"`
-	ConsoleHeaders       *map[string]string      `json:"console_headers"`
-	ConsoleUserID        *string                 `json:"console_user_id"`
-	Notes                *string                 `json:"notes"`
-	ProxyID              *int64                  `json:"proxy_id"`
-	Status               *string                 `json:"status"`
-	Weight               *int                    `json:"weight"`
-	Models               *[]string               `json:"models"`
-	ModelMapping         *map[string]string      `json:"model_mapping"`
-	Endpoints            *[]string               `json:"endpoints"`
+	Name                   *string                 `json:"name"`
+	Protocol               *string                 `json:"protocol"`
+	BackendType            *string                 `json:"backend_type"`
+	BaseURL                *string                 `json:"base_url"`
+	APIKeys                *[]domain.BackendAPIKey `json:"api_keys"`
+	APIKey                 *string                 `json:"api_key"`
+	ConsoleURL             *string                 `json:"console_url"`
+	Tags                   *[]string               `json:"tags"`
+	ConsoleUsername        *string                 `json:"console_username"`
+	ConsolePassword        *string                 `json:"console_password"`
+	NewAPIRefresh          *string                 `json:"new_api_refresh"`
+	ConsoleAuthorization   *string                 `json:"console_authorization"`
+	ConsoleCheckinPath     *string                 `json:"console_checkin_path"`
+	ConsoleCheckinWorkflow *string                 `json:"console_checkin_workflow_id"`
+	ChannelURL             *string                 `json:"channel_url"`
+	ConsoleCookie          *string                 `json:"console_cookie"`
+	ConsoleHeaders         *map[string]string      `json:"console_headers"`
+	ConsoleUserID          *string                 `json:"console_user_id"`
+	Notes                  *string                 `json:"notes"`
+	ProxyID                *int64                  `json:"proxy_id"`
+	Status                 *string                 `json:"status"`
+	Weight                 *int                    `json:"weight"`
+	Models                 *[]string               `json:"models"`
+	ModelMapping           *map[string]string      `json:"model_mapping"`
+	Endpoints              *[]string               `json:"endpoints"`
 }
 
 type backendImportExportItem struct {
-	Name                 string                 `json:"name"`
-	Protocol             string                 `json:"protocol"`
-	BackendType          string                 `json:"backend_type"`
-	BaseURL              string                 `json:"base_url"`
-	APIKeys              []domain.BackendAPIKey `json:"api_keys"`
-	APIKey               string                 `json:"api_key,omitempty"`
-	ConsoleURL           string                 `json:"console_url"`
-	Tags                 []string               `json:"tags"`
-	ConsoleUsername      string                 `json:"console_username"`
-	ConsolePassword      string                 `json:"console_password"`
-	NewAPIRefresh        string                 `json:"new_api_refresh"`
-	ConsoleAuthorization string                 `json:"console_authorization"`
-	ConsoleCheckinPath   string                 `json:"console_checkin_path"`
-	ChannelURL           string                 `json:"channel_url"`
-	ConsoleCookie        string                 `json:"console_cookie,omitempty"`
-	ConsoleHeaders       map[string]string      `json:"console_headers"`
-	ConsoleAccountJSON   string                 `json:"console_account_json"`
-	ConsolePricingJSON   string                 `json:"console_pricing_json"`
-	Notes                string                 `json:"notes"`
-	ProxyID              int64                  `json:"proxy_id"`
-	Status               string                 `json:"status"`
-	ConsecutiveFailures  int                    `json:"consecutive_failures"`
-	Weight               int                    `json:"weight"`
-	Models               []string               `json:"models,omitempty"`
-	ModelMapping         map[string]string      `json:"model_mapping,omitempty"`
-	Endpoints            []string               `json:"endpoints,omitempty"`
+	Name                   string                 `json:"name"`
+	Protocol               string                 `json:"protocol"`
+	BackendType            string                 `json:"backend_type"`
+	BaseURL                string                 `json:"base_url"`
+	APIKeys                []domain.BackendAPIKey `json:"api_keys"`
+	APIKey                 string                 `json:"api_key,omitempty"`
+	ConsoleURL             string                 `json:"console_url"`
+	Tags                   []string               `json:"tags"`
+	ConsoleUsername        string                 `json:"console_username"`
+	ConsolePassword        string                 `json:"console_password"`
+	NewAPIRefresh          string                 `json:"new_api_refresh"`
+	ConsoleAuthorization   string                 `json:"console_authorization"`
+	ConsoleCheckinPath     string                 `json:"console_checkin_path"`
+	ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id,omitempty"`
+	ChannelURL             string                 `json:"channel_url"`
+	ConsoleCookie          string                 `json:"console_cookie,omitempty"`
+	ConsoleHeaders         map[string]string      `json:"console_headers"`
+	ConsoleAccountJSON     string                 `json:"console_account_json"`
+	ConsolePricingJSON     string                 `json:"console_pricing_json"`
+	Notes                  string                 `json:"notes"`
+	ProxyID                int64                  `json:"proxy_id"`
+	Status                 string                 `json:"status"`
+	ConsecutiveFailures    int                    `json:"consecutive_failures"`
+	Weight                 int                    `json:"weight"`
+	Models                 []string               `json:"models,omitempty"`
+	ModelMapping           map[string]string      `json:"model_mapping,omitempty"`
+	Endpoints              []string               `json:"endpoints,omitempty"`
 }
 
 type BackendUsageSummary struct {
@@ -288,30 +296,31 @@ func (h *BackendHandler) HandleImportBackends(w http.ResponseWriter, r *http.Req
 
 func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Name                 string                 `json:"name"`
-		Protocol             string                 `json:"protocol"`
-		BackendType          string                 `json:"backend_type"`
-		BaseURL              string                 `json:"base_url"`
-		APIKeys              []domain.BackendAPIKey `json:"api_keys"`
-		APIKey               string                 `json:"api_key"`
-		ConsoleURL           string                 `json:"console_url"`
-		Tags                 []string               `json:"tags"`
-		ConsoleUsername      string                 `json:"console_username"`
-		ConsolePassword      string                 `json:"console_password"`
-		NewAPIRefresh        string                 `json:"new_api_refresh"`
-		ConsoleAuthorization string                 `json:"console_authorization"`
-		ConsoleCheckinPath   string                 `json:"console_checkin_path"`
-		ChannelURL           string                 `json:"channel_url"`
-		ConsoleCookie        string                 `json:"console_cookie"`
-		ConsoleHeaders       map[string]string      `json:"console_headers"`
-		ConsoleUserID        *string                `json:"console_user_id"`
-		Notes                string                 `json:"notes"`
-		ProxyID              int64                  `json:"proxy_id"`
-		Status               string                 `json:"status"`
-		Weight               int                    `json:"weight"`
-		Models               []string               `json:"models"`
-		ModelMapping         map[string]string      `json:"model_mapping"`
-		Endpoints            []string               `json:"endpoints"`
+		Name                   string                 `json:"name"`
+		Protocol               string                 `json:"protocol"`
+		BackendType            string                 `json:"backend_type"`
+		BaseURL                string                 `json:"base_url"`
+		APIKeys                []domain.BackendAPIKey `json:"api_keys"`
+		APIKey                 string                 `json:"api_key"`
+		ConsoleURL             string                 `json:"console_url"`
+		Tags                   []string               `json:"tags"`
+		ConsoleUsername        string                 `json:"console_username"`
+		ConsolePassword        string                 `json:"console_password"`
+		NewAPIRefresh          string                 `json:"new_api_refresh"`
+		ConsoleAuthorization   string                 `json:"console_authorization"`
+		ConsoleCheckinPath     string                 `json:"console_checkin_path"`
+		ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id"`
+		ChannelURL             string                 `json:"channel_url"`
+		ConsoleCookie          string                 `json:"console_cookie"`
+		ConsoleHeaders         map[string]string      `json:"console_headers"`
+		ConsoleUserID          *string                `json:"console_user_id"`
+		Notes                  string                 `json:"notes"`
+		ProxyID                int64                  `json:"proxy_id"`
+		Status                 string                 `json:"status"`
+		Weight                 int                    `json:"weight"`
+		Models                 []string               `json:"models"`
+		ModelMapping           map[string]string      `json:"model_mapping"`
+		Endpoints              []string               `json:"endpoints"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -339,6 +348,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 	backendType := domain.NormalizeBackendType(payload.BackendType)
 	consoleAuthorization := strings.TrimSpace(payload.ConsoleAuthorization)
 	consoleCheckinPath := normalizeConsoleAPIPath(payload.ConsoleCheckinPath)
+	consoleCheckinWorkflow := strings.TrimSpace(payload.ConsoleCheckinWorkflow)
 	channelURL := normalizeConsoleAPIPath(payload.ChannelURL)
 	if backendType != domain.BackendTypeSub2API {
 		consoleAuthorization = ""
@@ -370,26 +380,31 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	if err := h.validateCheckinWorkflowRef(r.Context(), consoleCheckinWorkflow); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	backend, err := h.store.CreateBackend(r.Context(), domain.Backend{
-		Name:                 payload.Name,
-		Protocol:             domain.NormalizeBackendProtocol(payload.Protocol),
-		BackendType:          backendType,
-		BaseURL:              payload.BaseURL,
-		APIKeys:              apiKeys,
-		ConsoleURL:           payload.ConsoleURL,
-		Tags:                 payload.Tags,
-		ConsoleUsername:      payload.ConsoleUsername,
-		ConsolePassword:      payload.ConsolePassword,
-		NewAPIRefresh:        newAPIRefresh,
-		ConsoleAuthorization: consoleAuthorization,
-		ConsoleCheckinPath:   consoleCheckinPath,
-		ChannelURL:           channelURL,
-		ConsoleHeaders:       consoleHeaders,
-		ConsoleAccountJSON:   consoleAccountJSON,
-		Notes:                payload.Notes,
-		ProxyID:              payload.ProxyID,
-		Weight:               payload.Weight,
+		Name:                   payload.Name,
+		Protocol:               domain.NormalizeBackendProtocol(payload.Protocol),
+		BackendType:            backendType,
+		BaseURL:                payload.BaseURL,
+		APIKeys:                apiKeys,
+		ConsoleURL:             payload.ConsoleURL,
+		Tags:                   payload.Tags,
+		ConsoleUsername:        payload.ConsoleUsername,
+		ConsolePassword:        payload.ConsolePassword,
+		NewAPIRefresh:          newAPIRefresh,
+		ConsoleAuthorization:   consoleAuthorization,
+		ConsoleCheckinPath:     consoleCheckinPath,
+		ConsoleCheckinWorkflow: consoleCheckinWorkflow,
+		ChannelURL:             channelURL,
+		ConsoleHeaders:         consoleHeaders,
+		ConsoleAccountJSON:     consoleAccountJSON,
+		Notes:                  payload.Notes,
+		ProxyID:                payload.ProxyID,
+		Weight:                 payload.Weight,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -519,6 +534,14 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 		}
 		patch.ChannelURL = &value
 	}
+	if payload.ConsoleCheckinWorkflow != nil {
+		value := strings.TrimSpace(*payload.ConsoleCheckinWorkflow)
+		if err := h.validateCheckinWorkflowRef(r.Context(), value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		patch.ConsoleCheckinWorkflow = &value
+	}
 	if payload.ConsoleCookie != nil {
 		value := map[string]string{}
 		if backendType == domain.BackendTypeNewAPI {
@@ -574,12 +597,23 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 
 func (h *BackendHandler) HandleBackendConsoleCheckin(w http.ResponseWriter, r *http.Request) {
 	recorder := newNewAPIConsoleRequestRecorder()
-	backend, err := h.consoleBackend(r)
+	backend, err := h.loadConsoleBackend(r)
 	if err != nil {
 		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_rejected",
 			slog.String("error", err.Error()),
 		)
 		writeConsoleError(w, http.StatusBadRequest, err.Error(), recorder)
+		return
+	}
+	if workflowID := strings.TrimSpace(backend.ConsoleCheckinWorkflow); workflowID != "" {
+		h.handleWorkflowConsoleCheckin(w, r, backend, workflowID, recorder)
+		return
+	}
+	if domain.NormalizeBackendType(backend.BackendType) != domain.BackendTypeNewAPI {
+		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_rejected",
+			slog.String("error", "backend_type must be new-api"),
+		)
+		writeConsoleError(w, http.StatusBadRequest, "backend_type must be new-api", recorder)
 		return
 	}
 	h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_checkin_started", consoleBackendAttrs(backend)...)
@@ -721,6 +755,64 @@ func (h *BackendHandler) HandleBackendConsoleCheckin(w http.ResponseWriter, r *h
 	})
 }
 
+func (h *BackendHandler) handleWorkflowConsoleCheckin(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *newAPIConsoleRequestRecorder) {
+	if h.workflowHandler == nil {
+		h.logConsoleEvent(r.Context(), slog.LevelWarn, "console_checkin_workflow_unavailable", consoleBackendAttrs(backend)...)
+		writeConsoleError(w, http.StatusInternalServerError, "workflow handler unavailable", recorder)
+		return
+	}
+	outcome, err := h.workflowHandler.runCheckinWorkflow(r.Context(), backend, workflowID, nil, recorder, nil)
+	if err != nil {
+		status := http.StatusBadGateway
+		var runErr *workflowRunError
+		if errors.As(err, &runErr) {
+			status = runErr.status
+		}
+		h.logConsoleEvent(r.Context(), slog.LevelWarn, "console_checkin_workflow_failed", append(consoleBackendAttrs(backend),
+			slog.String("workflow_id", workflowID),
+			slog.String("error", err.Error()),
+		)...)
+		writeConsoleError(w, status, err.Error(), recorder)
+		return
+	}
+	h.logConsoleEvent(r.Context(), slog.LevelInfo, "console_checkin_workflow_completed", append(consoleBackendAttrs(outcome.Backend),
+		slog.String("workflow_id", outcome.WorkflowID),
+	)...)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"backend":    outcome.Backend,
+		"checkin":    outcome.Output,
+		"account":    decodeJSONMap(outcome.Backend.ConsoleAccountJSON),
+		"requests":   outcome.Requests,
+		"debug_logs": outcome.DebugLogs,
+	})
+}
+
+func (h *BackendHandler) handleWorkflowConsoleSync(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *newAPIConsoleRequestRecorder, stream *consoleSyncStream) {
+	if h.workflowHandler == nil {
+		writeConsoleSyncError(w, http.StatusInternalServerError, "workflow handler unavailable", recorder, stream)
+		return
+	}
+	outcome, err := h.workflowHandler.runCheckinWorkflow(r.Context(), backend, workflowID, nil, recorder, nil)
+	if err != nil {
+		status := http.StatusBadGateway
+		var runErr *workflowRunError
+		if errors.As(err, &runErr) {
+			status = runErr.status
+		}
+		writeConsoleSyncError(w, status, err.Error(), recorder, stream)
+		return
+	}
+	h.appendBackendConsoleSyncAudit(r, outcome.Backend)
+	writeConsoleSyncSuccess(w, map[string]any{
+		"backend":    outcome.Backend,
+		"checkin":    outcome.Output,
+		"account":    decodeJSONMap(outcome.Backend.ConsoleAccountJSON),
+		"pricing":    decodeJSONMap(outcome.Backend.ConsolePricingJSON),
+		"requests":   outcome.Requests,
+		"debug_logs": outcome.DebugLogs,
+	}, stream)
+}
+
 func (h *BackendHandler) HandleBackendConsolePricing(w http.ResponseWriter, r *http.Request) {
 	recorder := newNewAPIConsoleRequestRecorder()
 	backend, err := h.consoleBackend(r)
@@ -772,6 +864,10 @@ func (h *BackendHandler) HandleBackendConsoleSync(w http.ResponseWriter, r *http
 	backend, err := h.consoleSyncBackend(r)
 	if err != nil {
 		writeConsoleSyncError(w, http.StatusBadRequest, err.Error(), recorder, stream)
+		return
+	}
+	if workflowID := strings.TrimSpace(backend.ConsoleCheckinWorkflow); workflowID != "" {
+		h.handleWorkflowConsoleSync(w, r, backend, workflowID, recorder, stream)
 		return
 	}
 
@@ -1028,28 +1124,33 @@ func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, paylo
 		if apiKeysErr != nil {
 			return nil, fmt.Errorf("backend %q: %w", name, apiKeysErr)
 		}
+		consoleCheckinWorkflow := strings.TrimSpace(item.ConsoleCheckinWorkflow)
+		if err := h.validateCheckinWorkflowRef(ctx, consoleCheckinWorkflow); err != nil {
+			return nil, fmt.Errorf("backend %q: %w", name, err)
+		}
 		backends = append(backends, domain.Backend{
-			Name:                 name,
-			Protocol:             domain.NormalizeBackendProtocol(item.Protocol),
-			BackendType:          backendType,
-			BaseURL:              item.BaseURL,
-			APIKeys:              apiKeys,
-			ConsoleURL:           item.ConsoleURL,
-			Tags:                 item.Tags,
-			ConsoleUsername:      item.ConsoleUsername,
-			ConsolePassword:      item.ConsolePassword,
-			NewAPIRefresh:        newAPIRefresh,
-			ConsoleAuthorization: item.ConsoleAuthorization,
-			ConsoleCheckinPath:   normalizeConsoleAPIPath(item.ConsoleCheckinPath),
-			ChannelURL:           normalizeConsoleAPIPath(item.ChannelURL),
-			ConsoleHeaders:       consoleHeaders,
-			ConsoleAccountJSON:   item.ConsoleAccountJSON,
-			ConsolePricingJSON:   item.ConsolePricingJSON,
-			Notes:                item.Notes,
-			ProxyID:              item.ProxyID,
-			Status:               status,
-			ConsecutiveFailures:  item.ConsecutiveFailures,
-			Weight:               item.Weight,
+			Name:                   name,
+			Protocol:               domain.NormalizeBackendProtocol(item.Protocol),
+			BackendType:            backendType,
+			BaseURL:                item.BaseURL,
+			APIKeys:                apiKeys,
+			ConsoleURL:             item.ConsoleURL,
+			Tags:                   item.Tags,
+			ConsoleUsername:        item.ConsoleUsername,
+			ConsolePassword:        item.ConsolePassword,
+			NewAPIRefresh:          newAPIRefresh,
+			ConsoleAuthorization:   item.ConsoleAuthorization,
+			ConsoleCheckinPath:     normalizeConsoleAPIPath(item.ConsoleCheckinPath),
+			ConsoleCheckinWorkflow: consoleCheckinWorkflow,
+			ChannelURL:             normalizeConsoleAPIPath(item.ChannelURL),
+			ConsoleHeaders:         consoleHeaders,
+			ConsoleAccountJSON:     item.ConsoleAccountJSON,
+			ConsolePricingJSON:     item.ConsolePricingJSON,
+			Notes:                  item.Notes,
+			ProxyID:                item.ProxyID,
+			Status:                 status,
+			ConsecutiveFailures:    item.ConsecutiveFailures,
+			Weight:                 item.Weight,
 		})
 	}
 	return backends, nil
@@ -1057,27 +1158,28 @@ func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, paylo
 
 func backendToImportExportItem(backend domain.Backend) backendImportExportItem {
 	return backendImportExportItem{
-		Name:                 backend.Name,
-		Protocol:             domain.NormalizeBackendProtocol(backend.Protocol),
-		BackendType:          domain.NormalizeBackendType(backend.BackendType),
-		BaseURL:              backend.BaseURL,
-		APIKeys:              backend.APIKeys,
-		ConsoleURL:           backend.ConsoleURL,
-		Tags:                 backend.Tags,
-		ConsoleUsername:      backend.ConsoleUsername,
-		ConsolePassword:      backend.ConsolePassword,
-		NewAPIRefresh:        backend.NewAPIRefresh,
-		ConsoleAuthorization: backend.ConsoleAuthorization,
-		ConsoleCheckinPath:   backend.ConsoleCheckinPath,
-		ChannelURL:           backend.ChannelURL,
-		ConsoleHeaders:       newAPIConsoleHeaders(backend),
-		ConsoleAccountJSON:   backend.ConsoleAccountJSON,
-		ConsolePricingJSON:   backend.ConsolePricingJSON,
-		Notes:                backend.Notes,
-		ProxyID:              backend.ProxyID,
-		Status:               backend.Status,
-		ConsecutiveFailures:  backend.ConsecutiveFailures,
-		Weight:               backend.Weight,
+		Name:                   backend.Name,
+		Protocol:               domain.NormalizeBackendProtocol(backend.Protocol),
+		BackendType:            domain.NormalizeBackendType(backend.BackendType),
+		BaseURL:                backend.BaseURL,
+		APIKeys:                backend.APIKeys,
+		ConsoleURL:             backend.ConsoleURL,
+		Tags:                   backend.Tags,
+		ConsoleUsername:        backend.ConsoleUsername,
+		ConsolePassword:        backend.ConsolePassword,
+		NewAPIRefresh:          backend.NewAPIRefresh,
+		ConsoleAuthorization:   backend.ConsoleAuthorization,
+		ConsoleCheckinPath:     backend.ConsoleCheckinPath,
+		ConsoleCheckinWorkflow: backend.ConsoleCheckinWorkflow,
+		ChannelURL:             backend.ChannelURL,
+		ConsoleHeaders:         newAPIConsoleHeaders(backend),
+		ConsoleAccountJSON:     backend.ConsoleAccountJSON,
+		ConsolePricingJSON:     backend.ConsolePricingJSON,
+		Notes:                  backend.Notes,
+		ProxyID:                backend.ProxyID,
+		Status:                 backend.Status,
+		ConsecutiveFailures:    backend.ConsecutiveFailures,
+		Weight:                 backend.Weight,
 	}
 }
 
@@ -1390,6 +1492,20 @@ func (h *BackendHandler) validateSocksProxyReference(ctx context.Context, proxyI
 	}
 	if _, err := h.store.GetSocksProxy(ctx, proxyID); err != nil {
 		return errors.New("socks proxy not found")
+	}
+	return nil
+}
+
+func (h *BackendHandler) validateCheckinWorkflowRef(ctx context.Context, workflowID string) error {
+	workflowID = strings.TrimSpace(workflowID)
+	if workflowID == "" {
+		return nil
+	}
+	if _, err := h.store.GetHTTPWorkflow(ctx, workflowID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("console checkin workflow not found: %s", workflowID)
+		}
+		return err
 	}
 	return nil
 }

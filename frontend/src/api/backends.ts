@@ -50,6 +50,7 @@ export interface BackendResponse {
   new_api_refresh?: string
   console_authorization?: string
   console_checkin_path?: string
+  console_checkin_workflow_id?: string
   channel_url?: string
   console_cookie?: string
   console_headers?: Record<string, string>
@@ -85,6 +86,7 @@ export interface BackendWritePayload {
   new_api_refresh?: string
   console_authorization?: string
   console_checkin_path?: string
+  console_checkin_workflow_id?: string
   channel_url?: string
   console_headers?: Record<string, string>
   console_user_id?: string

@@ -97,6 +97,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			new_api_refresh TEXT NOT NULL DEFAULT '',
 			console_authorization TEXT NOT NULL DEFAULT '',
 			console_checkin_path TEXT NOT NULL DEFAULT '',
+			console_checkin_workflow_id TEXT NOT NULL DEFAULT '',
 			channel_url TEXT NOT NULL DEFAULT '',
 			console_cookie TEXT NOT NULL DEFAULT '',
 			console_headers_json TEXT NOT NULL DEFAULT '{}',
@@ -305,6 +306,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureColumn(ctx, db, "backends", "console_checkin_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends console_checkin_path: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "backends", "console_checkin_workflow_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate backends console_checkin_workflow_id: %w", err)
 	}
 	if err := ensureColumn(ctx, db, "backends", "channel_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()

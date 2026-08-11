@@ -59,9 +59,10 @@ type Backend struct {
 	ConsoleUsername      string            `json:"console_username"`
 	ConsolePassword      string            `json:"console_password,omitempty"`
 	NewAPIRefresh        string            `json:"new_api_refresh,omitempty"`
-	ConsoleAuthorization string            `json:"console_authorization,omitempty"`
-	ConsoleCheckinPath   string            `json:"console_checkin_path,omitempty"`
-	ChannelURL           string            `json:"channel_url,omitempty"`
+	ConsoleAuthorization   string            `json:"console_authorization,omitempty"`
+	ConsoleCheckinPath     string            `json:"console_checkin_path,omitempty"`
+	ConsoleCheckinWorkflow string            `json:"console_checkin_workflow_id,omitempty"`
+	ChannelURL             string            `json:"channel_url,omitempty"`
 	ConsoleCookie        string            `json:"console_cookie,omitempty"`
 	ConsoleHeaders       map[string]string `json:"console_headers,omitempty"`
 	ConsoleAccountJSON   string            `json:"console_account_json"`
