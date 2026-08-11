@@ -155,6 +155,56 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowDebugLogsIncludeFailureContext(t *testing.T) {
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{
+		HTTPClient: generalWorkflowJSONClient(`{"ok":false,"message":"upstream rejected","api_key":"response-secret"}`, http.StatusBadRequest),
+	})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v1","id":"debug-failure","name":"Debug failure",
+  "steps":[{"id":"request","name":"Request","request":{"method":"POST","path":"/api","query":{"api_key":"query-secret"},"body":{"password":"request-secret"}},"expect":"$response.status == 200"}],
+  "output":{}
+}`)
+	logs := make([]GeneralWorkflowDebugLog, 0)
+	recorder := NewNewAPIRequestRecorder()
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL:  "https://console.example",
+		Recorder: recorder,
+		DebugLog: func(log GeneralWorkflowDebugLog) { logs = append(logs, log) },
+	})
+	if err == nil || !strings.Contains(err.Error(), `step "request" expect`) {
+		t.Fatalf("expected expect failure, got %v", err)
+	}
+	if len(logs) < 5 {
+		t.Fatalf("expected detailed debug logs, got %d: %#v", len(logs), logs)
+	}
+	encoded, marshalErr := json.Marshal(logs)
+	if marshalErr != nil {
+		t.Fatalf("marshal debug logs: %v", marshalErr)
+	}
+	if !strings.Contains(string(encoded), "request-secret") || !strings.Contains(string(encoded), "response-secret") || !strings.Contains(string(encoded), "query-secret") {
+		t.Fatalf("debug logs did not preserve raw request/response values: %s", encoded)
+	}
+	if len(recorder.Requests) != 1 || !strings.Contains(recorder.Requests[0].Path, "query-secret") || !strings.Contains(recorder.Requests[0].Body, "response-secret") {
+		t.Fatalf("request log did not preserve raw values: %#v", recorder.Requests)
+	}
+	var responseLogged, failureLogged bool
+	errorLogs := 0
+	for _, log := range logs {
+		if log.Phase == "response" {
+			responseLogged = true
+		}
+		if log.Level == "error" {
+			errorLogs++
+			if log.Phase == "expect" && strings.Contains(log.Message, "HTTP 400") && log.Details["response_status"] == http.StatusBadRequest {
+				failureLogged = true
+			}
+		}
+	}
+	if !responseLogged || !failureLogged || errorLogs != 1 {
+		t.Fatalf("missing response/failure debug logs: %#v", logs)
+	}
+}
+
 func TestGeneralWorkflowDocumentationExampleParses(t *testing.T) {
 	document, err := os.ReadFile("../../../docs/http_workflow.md")
 	if err != nil {

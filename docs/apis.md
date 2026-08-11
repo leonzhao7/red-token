@@ -1234,13 +1234,28 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
       "status_code": 200,
       "body": "{...}"
     }
+  ],
+  "debug_logs": [
+    {
+      "time": "2026-08-10T08:05:00Z",
+      "level": "debug",
+      "step_id": "profile",
+      "step_name": "Profile",
+      "phase": "response",
+      "message": "HTTP response received",
+      "duration_ms": 128,
+      "details": {
+        "status_code": 200,
+        "body": {"user_id": "user-1"}
+      }
+    }
   ]
 }
 ```
 
-只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会原子替换 `(workflow_id, backend_id)` 的上一次成功结果。`aliases` 和 `requests` 只随本次响应返回，不属于持久化业务快照。
+只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会原子替换 `(workflow_id, backend_id)` 的上一次成功结果。`aliases`、`requests` 和 `debug_logs` 只随本次响应返回，不属于持久化业务快照。
 
-工作流或后端不存在返回 `404`；`backend_id`、`console_url` 或代理配置非法返回 `400`；传输、非 2xx 默认预期、JSON 解析、jq、模板或输出 Schema 失败返回 `502`。`502` 响应包含已执行的 `requests`，且不会覆盖旧的成功结果。
+工作流或后端不存在返回 `404`；`backend_id`、`console_url` 或代理配置非法返回 `400`；传输、非 2xx 默认预期、JSON 解析、jq、模板或输出 Schema 失败返回 `502`。`502` 响应包含已执行的 `requests` 和逐阶段 `debug_logs`，且不会覆盖旧的成功结果。调试日志覆盖工作流校验、请求渲染、HTTP 响应、expect、alias 提取、output 渲染与 Schema 校验；header、query、请求 body 和响应 body 按原值返回，单项预览最多 64 KiB。
 
 ### 7.7 获取后端上的最近成功结果
 

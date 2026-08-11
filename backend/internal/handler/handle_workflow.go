@@ -59,12 +59,24 @@ type workflowExecuteRequest struct {
 }
 
 type workflowExecuteResponse struct {
-	WorkflowID string                     `json:"workflow_id"`
-	Backend    workflowBackendRef         `json:"backend"`
-	Output     any                        `json:"output"`
-	Aliases    map[string]any             `json:"aliases"`
-	ExecutedAt time.Time                  `json:"executed_at"`
-	Requests   []service.NewAPIRequestLog `json:"requests"`
+	WorkflowID string                            `json:"workflow_id"`
+	Backend    workflowBackendRef                `json:"backend"`
+	Output     any                               `json:"output"`
+	Aliases    map[string]any                    `json:"aliases"`
+	ExecutedAt time.Time                         `json:"executed_at"`
+	Requests   []service.NewAPIRequestLog        `json:"requests"`
+	DebugLogs  []service.GeneralWorkflowDebugLog `json:"debug_logs"`
+}
+
+type workflowDebugLogCollector struct {
+	Logs []service.GeneralWorkflowDebugLog
+}
+
+func (c *workflowDebugLogCollector) Record(log service.GeneralWorkflowDebugLog) {
+	if c == nil {
+		return
+	}
+	c.Logs = append(c.Logs, log)
 }
 
 func (h *WorkflowHandler) HandleListWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +237,7 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 	}
 	headers := workflowConsoleHeaders(backend)
 	recorder := service.NewNewAPIRequestRecorder()
+	debugLogs := &workflowDebugLogCollector{Logs: []service.GeneralWorkflowDebugLog{}}
 	engine := service.NewGeneralWorkflow(service.GeneralWorkflowOptions{
 		HTTPClient:       client,
 		UserAgent:        h.consoleUserAgent(),
@@ -239,20 +252,21 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 			"backend_name": backend.Name,
 		},
 		Recorder:       recorder,
+		DebugLog:       debugLogs.Record,
 		ValidateOutput: service.ValidateCheckinWorkflowOutput,
 	})
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusBadGateway, err.Error(), recorder.Requests)
+		writeWorkflowExecutionError(w, http.StatusBadGateway, err.Error(), recorder.Requests, debugLogs.Logs)
 		return
 	}
 	outputJSON, err := json.Marshal(result.Output)
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests)
+		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
 		return
 	}
 	snapshot, err := h.store.UpsertHTTPWorkflowResult(r.Context(), definition.ID, backend.ID, outputJSON)
 	if err != nil {
-		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests)
+		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
 		return
 	}
 	writeJSON(w, http.StatusOK, workflowExecuteResponse{
@@ -262,6 +276,7 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 		Aliases:    result.Aliases,
 		ExecutedAt: snapshot.ExecutedAt,
 		Requests:   recorder.Requests,
+		DebugLogs:  debugLogs.Logs,
 	})
 }
 
@@ -373,15 +388,19 @@ func (h *WorkflowHandler) consoleUserAgent() string {
 	return strings.TrimSpace(h.cfg.BackendConsoleUserAgent)
 }
 
-func writeWorkflowExecutionError(w http.ResponseWriter, status int, message string, requests []service.NewAPIRequestLog) {
+func writeWorkflowExecutionError(w http.ResponseWriter, status int, message string, requests []service.NewAPIRequestLog, debugLogs []service.GeneralWorkflowDebugLog) {
 	if requests == nil {
 		requests = []service.NewAPIRequestLog{}
+	}
+	if debugLogs == nil {
+		debugLogs = []service.GeneralWorkflowDebugLog{}
 	}
 	writeJSON(w, status, map[string]any{
 		"error": map[string]any{
 			"message": message,
 			"type":    "red_token_error",
 		},
-		"requests": requests,
+		"requests":   requests,
+		"debug_logs": debugLogs,
 	})
 }

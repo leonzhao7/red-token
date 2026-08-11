@@ -171,7 +171,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 
 	mode.Store(1)
 	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/execute-workflow/execute", executeBody)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"requests"`) {
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"requests"`) || !strings.Contains(response.Body.String(), `"debug_logs"`) || !strings.Contains(response.Body.String(), `"phase":"request"`) {
 		t.Fatalf("failed execute status=%d body=%s", response.Code, response.Body.String())
 	}
 	response = workflowRequest(t, mux, http.MethodGet, resultPath, "")

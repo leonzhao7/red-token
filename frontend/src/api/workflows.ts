@@ -45,6 +45,17 @@ export interface WorkflowRequestLog {
   body: string
 }
 
+export interface WorkflowDebugLog {
+  time: string
+  level: 'debug' | 'info' | 'warn' | 'error' | string
+  step_id?: string
+  step_name?: string
+  phase: string
+  message: string
+  duration_ms?: number
+  details?: Record<string, unknown>
+}
+
 export interface WorkflowExecuteResult {
   workflow_id: string
   backend: { id: number; name: string }
@@ -52,6 +63,7 @@ export interface WorkflowExecuteResult {
   aliases: Record<string, unknown>
   executed_at: string
   requests: WorkflowRequestLog[]
+  debug_logs: WorkflowDebugLog[]
 }
 
 export interface WorkflowResultSnapshot {
@@ -64,6 +76,7 @@ export interface WorkflowResultSnapshot {
 export interface WorkflowExecuteError {
   error?: { message?: string; type?: string }
   requests?: WorkflowRequestLog[]
+  debug_logs?: WorkflowDebugLog[]
 }
 
 interface PagedResponse<T> {
@@ -76,12 +89,14 @@ interface PagedResponse<T> {
 class ApiError extends Error {
   status: number
   requests?: WorkflowRequestLog[]
+  debugLogs?: WorkflowDebugLog[]
 
-  constructor(message: string, status: number, requests?: WorkflowRequestLog[]) {
+  constructor(message: string, status: number, requests?: WorkflowRequestLog[], debugLogs?: WorkflowDebugLog[]) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.requests = requests
+    this.debugLogs = debugLogs
   }
 }
 
@@ -99,13 +114,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       payload && typeof payload === 'object' && Array.isArray((payload as WorkflowExecuteError).requests)
         ? (payload as WorkflowExecuteError).requests
         : undefined
+    const debugLogs =
+      payload && typeof payload === 'object' && Array.isArray((payload as WorkflowExecuteError).debug_logs)
+        ? (payload as WorkflowExecuteError).debug_logs
+        : undefined
     const message =
       payload && typeof payload === 'object' && (payload as WorkflowExecuteError).error?.message
         ? (payload as WorkflowExecuteError).error!.message!
         : typeof payload === 'string' && payload.trim()
           ? payload.trim()
           : response.statusText || `请求失败（${response.status}）`
-    throw new ApiError(message, response.status, requests)
+    throw new ApiError(message, response.status, requests, debugLogs)
   }
   return payload as T
 }

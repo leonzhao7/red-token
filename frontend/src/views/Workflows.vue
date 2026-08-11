@@ -31,7 +31,8 @@ import {
   type WorkflowDefinition,
   type WorkflowStep,
   type WorkflowExecuteResult,
-  type WorkflowRequestLog
+  type WorkflowRequestLog,
+  type WorkflowDebugLog
 } from '../api/workflows'
 import { listBackends, type BackendResponse } from '../api/backends'
 
@@ -452,6 +453,7 @@ const executing = ref(false)
 const executeResult = ref<WorkflowExecuteResult | null>(null)
 const executeError = ref('')
 const executeRequests = ref<WorkflowRequestLog[]>([])
+const executeDebugLogs = ref<WorkflowDebugLog[]>([])
 
 async function openExecute(record: WorkflowRecord) {
   executingWorkflow.value = record
@@ -460,6 +462,7 @@ async function openExecute(record: WorkflowRecord) {
   executeResult.value = null
   executeError.value = ''
   executeRequests.value = []
+  executeDebugLogs.value = []
   showExecute.value = true
   try {
     if (!backends.value.length) {
@@ -477,6 +480,7 @@ async function runExecute() {
   executeResult.value = null
   executeError.value = ''
   executeRequests.value = []
+  executeDebugLogs.value = []
   executing.value = true
   let aliases: Record<string, unknown> | undefined
   if (aliasesText.value.trim()) {
@@ -495,10 +499,12 @@ async function runExecute() {
     })
     executeResult.value = result
     executeRequests.value = result.requests || []
+    executeDebugLogs.value = result.debug_logs || []
     toast('执行成功', `${result.backend.name} · ${new Date(result.executed_at).toLocaleString('zh-CN')}`, 'success')
   } catch (e: any) {
     executeError.value = e?.message || '执行失败'
     executeRequests.value = e?.requests || []
+    executeDebugLogs.value = e?.debugLogs || []
     toast('执行失败', executeError.value, 'danger')
   } finally {
     executing.value = false
@@ -777,12 +783,15 @@ onMounted(loadData)
           <div v-if="executeRequests.length" class="wf-result-block">
             <div class="wf-result-label">请求记录</div>
             <div class="wf-req-list">
-              <div v-for="(r, i) in executeRequests" :key="i" class="wf-req">
-                <span class="wf-req-seq mono">{{ i + 1 }}</span>
-                <span class="tag mono wf-method">{{ r.method }}</span>
-                <span class="mono wf-req-path">{{ r.path }}</span>
-                <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code }}</span>
-              </div>
+              <details v-for="(r, i) in executeRequests" :key="i" class="wf-req" :open="r.status_code === 0 || r.status_code >= 400">
+                <summary class="wf-req-summary">
+                  <span class="wf-req-seq mono">{{ i + 1 }}</span>
+                  <span class="tag mono wf-method">{{ r.method }}</span>
+                  <span class="mono wf-req-path">{{ r.path }}</span>
+                  <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code || '未收到响应' }}</span>
+                </summary>
+                <pre v-if="r.body" class="wf-req-body">{{ r.body }}</pre>
+              </details>
             </div>
           </div>
         </div>
@@ -792,13 +801,39 @@ onMounted(loadData)
           <div v-if="executeRequests.length" class="wf-result-block">
             <div class="wf-result-label">请求记录</div>
             <div class="wf-req-list">
-              <div v-for="(r, i) in executeRequests" :key="i" class="wf-req">
-                <span class="wf-req-seq mono">{{ i + 1 }}</span>
-                <span class="tag mono wf-method">{{ r.method }}</span>
-                <span class="mono wf-req-path">{{ r.path }}</span>
-                <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code }}</span>
-              </div>
+              <details v-for="(r, i) in executeRequests" :key="i" class="wf-req" :open="r.status_code === 0 || r.status_code >= 400">
+                <summary class="wf-req-summary">
+                  <span class="wf-req-seq mono">{{ i + 1 }}</span>
+                  <span class="tag mono wf-method">{{ r.method }}</span>
+                  <span class="mono wf-req-path">{{ r.path }}</span>
+                  <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code || '未收到响应' }}</span>
+                </summary>
+                <pre v-if="r.body" class="wf-req-body">{{ r.body }}</pre>
+              </details>
             </div>
+          </div>
+        </div>
+
+        <div v-if="!executing && executeDebugLogs.length" class="wf-result-block">
+          <div class="wf-result-label">调试日志</div>
+          <div class="wf-debug-list">
+            <details
+              v-for="(entry, i) in executeDebugLogs"
+              :key="`${entry.time}-${i}`"
+              class="wf-debug-entry"
+              :class="`level-${entry.level}`"
+              :open="entry.level === 'error'"
+            >
+              <summary class="wf-debug-summary">
+                <span class="wf-debug-time mono">{{ fmtTime(entry.time) }}</span>
+                <span class="wf-debug-level mono">{{ entry.level }}</span>
+                <span v-if="entry.step_id" class="tag mono">{{ entry.step_id }}</span>
+                <span class="wf-debug-phase mono">{{ entry.phase }}</span>
+                <span class="wf-debug-message">{{ entry.message }}</span>
+                <span v-if="entry.duration_ms != null" class="wf-debug-duration mono">{{ entry.duration_ms }} ms</span>
+              </summary>
+              <pre v-if="entry.details" class="wf-debug-details">{{ JSON.stringify(entry.details, null, 2) }}</pre>
+            </details>
           </div>
         </div>
       </div>
@@ -974,13 +1009,15 @@ onMounted(loadData)
 }
 .wf-req-list { display: flex; flex-direction: column; gap: 6px; }
 .wf-req {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px;
+  padding: 0 12px;
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   font-size: 12px;
 }
+.wf-req-summary { display: flex; align-items: center; gap: 10px; min-height: 36px; cursor: pointer; list-style: none; }
+.wf-req-summary::-webkit-details-marker { display: none; }
+.wf-req-body { margin: 0 0 10px 28px; padding: 9px 11px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-soft); background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); font: 11px/1.5 var(--font-mono); }
 .wf-req-seq { color: var(--text-faint); width: 18px; text-align: right; }
 .wf-method { font-size: 10.5px; flex: none; }
 .wf-req-path { color: var(--text-soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
@@ -989,6 +1026,18 @@ onMounted(loadData)
 .wf-status.info { color: var(--info); }
 .wf-status.warn { color: var(--warning); }
 .wf-status.err { color: var(--danger); }
+.wf-debug-list { display: flex; flex-direction: column; gap: 5px; }
+.wf-debug-entry { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface); }
+.wf-debug-entry.level-error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.wf-debug-summary { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 10px; cursor: pointer; list-style: none; font-size: 11.5px; }
+.wf-debug-summary::-webkit-details-marker { display: none; }
+.wf-debug-time { color: var(--text-faint); flex: none; }
+.wf-debug-level { color: var(--info); text-transform: uppercase; width: 42px; flex: none; }
+.wf-debug-entry.level-error .wf-debug-level { color: var(--danger); }
+.wf-debug-phase { color: var(--primary); flex: none; }
+.wf-debug-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); flex: 1; }
+.wf-debug-duration { color: var(--text-faint); flex: none; }
+.wf-debug-details { margin: 0 10px 10px; padding: 9px 11px; max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-soft); background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); font: 11px/1.5 var(--font-mono); }
 
 .wf-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 8px 0; color: var(--text-soft); font-size: 13.5px; }
 .wf-confirm svg { color: var(--warning); }

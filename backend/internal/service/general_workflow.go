@@ -30,6 +30,7 @@ const (
 	defaultGeneralWorkflowBodyLimit   = int64(10 << 20)
 	defaultGeneralWorkflowHTTPTimeout = 30 * time.Second
 	defaultGeneralWorkflowJQTimeout   = 5 * time.Second
+	generalWorkflowDebugPreviewBytes  = 64 << 10
 	maxSafeJSONInteger                = int64(1<<53 - 1)
 )
 
@@ -104,7 +105,19 @@ type GeneralWorkflowRunOptions struct {
 	InitialAliases map[string]any
 	Runtime        map[string]any
 	Recorder       ConsoleRequestRecorder
+	DebugLog       func(GeneralWorkflowDebugLog)
 	ValidateOutput func(any) error
+}
+
+type GeneralWorkflowDebugLog struct {
+	Time       string         `json:"time"`
+	Level      string         `json:"level"`
+	StepID     string         `json:"step_id,omitempty"`
+	StepName   string         `json:"step_name,omitempty"`
+	Phase      string         `json:"phase"`
+	Message    string         `json:"message"`
+	DurationMS int64          `json:"duration_ms,omitempty"`
+	Details    map[string]any `json:"details,omitempty"`
 }
 
 type GeneralWorkflowResult struct {
@@ -536,7 +549,42 @@ func validateGeneralWorkflowJQ(query *gojq.Query) error {
 	return nil
 }
 
-func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition GeneralWorkflowDefinition, options GeneralWorkflowRunOptions) (GeneralWorkflowResult, error) {
+func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition GeneralWorkflowDefinition, options GeneralWorkflowRunOptions) (result GeneralWorkflowResult, resultErr error) {
+	workflowStartedAt := time.Now()
+	terminalErrorLogged := false
+	workflow.emitDebug(options.DebugLog, GeneralWorkflowDebugLog{
+		Level:   "info",
+		Phase:   "workflow_start",
+		Message: "workflow execution started",
+		Details: map[string]any{
+			"workflow_id": definition.ID,
+			"name":        definition.Name,
+			"spec":        definition.Spec,
+			"step_count":  len(definition.Steps),
+			"base_url":    options.BaseURL,
+		},
+	})
+	defer func() {
+		if resultErr == nil || terminalErrorLogged {
+			return
+		}
+		entry := GeneralWorkflowDebugLog{
+			Level:      "error",
+			Phase:      "workflow",
+			Message:    resultErr.Error(),
+			DurationMS: time.Since(workflowStartedAt).Milliseconds(),
+			Details:    map[string]any{"error": resultErr.Error()},
+		}
+		var workflowErr *GeneralWorkflowError
+		if errors.As(resultErr, &workflowErr) {
+			entry.StepID = workflowErr.StepID
+			entry.StepName = generalWorkflowStepName(definition, workflowErr.StepID)
+			entry.Phase = workflowErr.Phase
+			entry.Details["error"] = workflowErr.Err.Error()
+		}
+		workflow.emitDebug(options.DebugLog, entry)
+	}()
+
 	compiled, err := compileGeneralWorkflow(definition)
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "validate", Err: err}
@@ -560,21 +608,67 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "validate base headers", Err: err}
 	}
+	workflow.emitDebug(options.DebugLog, GeneralWorkflowDebugLog{
+		Level:   "debug",
+		Phase:   "validation",
+		Message: "workflow definition and runtime inputs validated",
+		Details: map[string]any{
+			"initial_aliases": sortedGeneralWorkflowKeys(aliases),
+			"runtime_fields":  sortedGeneralWorkflowKeys(runtime),
+		},
+	})
 
 	for _, step := range compiled.steps {
+		stepStartedAt := time.Now()
+		stepLog := GeneralWorkflowDebugLog{StepID: step.definition.ID, StepName: step.definition.Name}
+		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_start", "step execution started", nil, 0))
 		request, err := workflow.renderRequest(step.definition.Request, aliases, baseHeaders)
 		if err != nil {
 			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "render request", Err: err}
 		}
+		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "request", "HTTP request rendered", map[string]any{
+			"method":   request.method,
+			"path":     request.path,
+			"query":    generalWorkflowDebugValue("query", request.query),
+			"headers":  generalWorkflowHeaderObject(request.headers),
+			"has_body": request.hasBody,
+			"body":     generalWorkflowDebugValue("body", request.body),
+		}, 0))
+		requestStartedAt := time.Now()
 		response, err := workflow.doRequest(ctx, baseURL, request, options.Recorder)
 		if err != nil {
 			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "request", Err: err}
 		}
+		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "response", "HTTP response received", map[string]any{
+			"status_code": response.envelope["status"],
+			"headers":     response.envelope["headers"],
+			"has_body":    response.envelope["has_body"],
+			"body":        generalWorkflowDebugValue("body", response.body),
+		}, time.Since(requestStartedAt).Milliseconds()))
 		expected, err := workflow.runJQ(ctx, step.expect, response.body, response.envelope, request.jqValue, aliases, runtime)
 		if err != nil {
 			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate expect", Err: err}
 		}
+		expectSource := strings.TrimSpace(step.definition.Expect)
+		if expectSource == "" {
+			expectSource = "$response.status >= 200 and $response.status < 300"
+		}
 		accepted, ok := expected.(bool)
+		expectLevel := "debug"
+		expectMessage := "expect expression returned true"
+		expectDetails := map[string]any{
+			"expression":  expectSource,
+			"result_type": generalWorkflowJSONType(expected),
+			"result":      expected,
+		}
+		if !ok || !accepted {
+			expectLevel = "error"
+			expectMessage = fmt.Sprintf("expect expression rejected the response (HTTP %v)", response.envelope["status"])
+			expectDetails["response_status"] = response.envelope["status"]
+			expectDetails["response_body"] = generalWorkflowDebugValue("body", response.body)
+			terminalErrorLogged = true
+		}
+		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, expectLevel, "expect", expectMessage, expectDetails, time.Since(stepStartedAt).Milliseconds()))
 		if !ok || !accepted {
 			return GeneralWorkflowResult{}, &GeneralWorkflowError{
 				StepID: step.definition.ID,
@@ -590,6 +684,12 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 		for _, extraction := range step.extract {
 			value, err := workflow.runJQ(ctx, extraction.code, response.body, response.envelope, request.jqValue, stagedAliases, runtime)
 			if err != nil {
+				terminalErrorLogged = true
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "extract", "alias extraction failed", map[string]any{
+					"alias":      extraction.definition.Alias,
+					"expression": extraction.definition.Expression,
+					"error":      err.Error(),
+				}, time.Since(stepStartedAt).Milliseconds()))
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{
 					StepID: step.definition.ID,
 					Phase:  fmt.Sprintf("extract alias %q", extraction.definition.Alias),
@@ -597,8 +697,17 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 				}
 			}
 			stagedAliases[extraction.definition.Alias] = value
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "extract", "alias extracted", map[string]any{
+				"alias":       extraction.definition.Alias,
+				"expression":  extraction.definition.Expression,
+				"result_type": generalWorkflowJSONType(value),
+				"result":      generalWorkflowDebugValue(extraction.definition.Alias, value),
+			}, 0))
 		}
 		aliases = stagedAliases
+		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_complete", "step execution completed", map[string]any{
+			"alias_count": len(aliases),
+		}, time.Since(stepStartedAt).Milliseconds()))
 	}
 
 	output, err := renderGeneralWorkflowTemplate(compiled.output, aliases)
@@ -609,6 +718,12 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "validate output JSON", Err: err}
 	}
+	workflow.emitDebug(options.DebugLog, GeneralWorkflowDebugLog{
+		Level:   "debug",
+		Phase:   "output_render",
+		Message: "workflow output rendered",
+		Details: map[string]any{"output": generalWorkflowDebugValue("output", output)},
+	})
 	if options.ValidateOutput != nil {
 		validationValue, err := canonicalGeneralWorkflowJSON(output, "output validation value")
 		if err != nil {
@@ -618,11 +733,69 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 			return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "validate output schema", Err: err}
 		}
 	}
+	workflow.emitDebug(options.DebugLog, GeneralWorkflowDebugLog{
+		Level:   "debug",
+		Phase:   "output_validation",
+		Message: "workflow output schema validated",
+	})
 	resultAliases, err := cloneGeneralWorkflowObject(aliases)
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "copy result aliases", Err: err}
 	}
+	workflow.emitDebug(options.DebugLog, GeneralWorkflowDebugLog{
+		Level:      "info",
+		Phase:      "workflow_complete",
+		Message:    "workflow execution completed",
+		DurationMS: time.Since(workflowStartedAt).Milliseconds(),
+		Details: map[string]any{
+			"alias_count": len(resultAliases),
+			"step_count":  len(compiled.steps),
+		},
+	})
 	return GeneralWorkflowResult{Output: output, Aliases: resultAliases}, nil
+}
+
+func (workflow *GeneralWorkflow) emitDebug(callback func(GeneralWorkflowDebugLog), entry GeneralWorkflowDebugLog) {
+	if callback == nil {
+		return
+	}
+	entry.Time = workflow.now().UTC().Format(time.RFC3339Nano)
+	callback(entry)
+}
+
+func generalWorkflowDebugWith(base GeneralWorkflowDebugLog, level, phase, message string, details map[string]any, durationMS int64) GeneralWorkflowDebugLog {
+	base.Level = level
+	base.Phase = phase
+	base.Message = message
+	base.Details = details
+	base.DurationMS = durationMS
+	return base
+}
+
+func generalWorkflowStepName(definition GeneralWorkflowDefinition, stepID string) string {
+	for _, step := range definition.Steps {
+		if step.ID == stepID {
+			return step.Name
+		}
+	}
+	return ""
+}
+
+func sortedGeneralWorkflowKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func generalWorkflowDebugValue(name string, value any) any {
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) <= generalWorkflowDebugPreviewBytes {
+		return value
+	}
+	return string(encoded[:generalWorkflowDebugPreviewBytes]) + "... [truncated]"
 }
 
 func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[string]any) (map[string]any, error) {
@@ -952,17 +1125,17 @@ func (workflow *GeneralWorkflow) doRequest(ctx context.Context, baseURL *url.URL
 	request.Header = rendered.headers.Clone()
 	response, err := workflow.httpClient.Do(request)
 	if err != nil {
-		recordConsoleRequest(recorder, rendered.method, request.URL.RequestURI(), 0, err.Error())
+		recordConsoleRequest(recorder, rendered.method, generalWorkflowRecordedRequestURI(request.URL), 0, err.Error())
 		return generalWorkflowHTTPResponse{}, err
 	}
 	defer response.Body.Close()
 	body, err := readGeneralWorkflowBody(response.Body, workflow.maxResponseBytes)
 	if err != nil {
-		recordConsoleRequest(recorder, rendered.method, request.URL.RequestURI(), response.StatusCode, err.Error())
+		recordConsoleRequest(recorder, rendered.method, generalWorkflowRecordedRequestURI(request.URL), response.StatusCode, err.Error())
 		return generalWorkflowHTTPResponse{}, err
 	}
-	recordedBody := compactGeneralWorkflowJSON(body)
-	recordConsoleRequest(recorder, rendered.method, request.URL.RequestURI(), response.StatusCode, recordedBody)
+	recordedBody := generalWorkflowRecordedBody(body)
+	recordConsoleRequest(recorder, rendered.method, generalWorkflowRecordedRequestURI(request.URL), response.StatusCode, recordedBody)
 	if !utf8.Valid(body) {
 		return generalWorkflowHTTPResponse{}, errors.New("response body is not valid UTF-8")
 	}
@@ -1019,6 +1192,24 @@ func compactGeneralWorkflowJSON(data []byte) string {
 		return output.String()
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func generalWorkflowRecordedBody(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	text := compactGeneralWorkflowJSON(data)
+	if len(text) > generalWorkflowDebugPreviewBytes {
+		return text[:generalWorkflowDebugPreviewBytes] + "... [truncated]"
+	}
+	return text
+}
+
+func generalWorkflowRecordedRequestURI(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	return target.RequestURI()
 }
 
 func generalWorkflowHeaderObject(headers http.Header) map[string]any {
