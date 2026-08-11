@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,6 +33,13 @@ func NewWorkflowHandler(st *store.Store) *WorkflowHandler {
 
 func (h *WorkflowHandler) SetConfig(cfg *config.Config) {
 	h.cfg = cfg
+}
+
+func (h *WorkflowHandler) focusModelPatterns() string {
+	if h.cfg == nil {
+		return ""
+	}
+	return h.cfg.FocusModels
 }
 
 // SetHTTPClient overrides proxy-aware client construction. It is primarily
@@ -264,7 +272,12 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
 		return
 	}
-	snapshot, err := h.store.UpsertHTTPWorkflowResult(r.Context(), definition.ID, backend.ID, outputJSON)
+	updatedBackend, err := applyWorkflowOutputToBackend(backend, result.Output, h.focusModelPatterns())
+	if err != nil {
+		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
+		return
+	}
+	_, snapshot, err := h.store.ApplyHTTPWorkflowResult(r.Context(), definition.ID, updatedBackend, outputJSON)
 	if err != nil {
 		writeWorkflowExecutionError(w, http.StatusInternalServerError, err.Error(), recorder.Requests, debugLogs.Logs)
 		return
@@ -278,6 +291,155 @@ func (h *WorkflowHandler) HandleExecuteWorkflow(w http.ResponseWriter, r *http.R
 		Requests:   recorder.Requests,
 		DebugLogs:  debugLogs.Logs,
 	})
+}
+
+func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatterns string) (domain.Backend, error) {
+	output, ok := value.(map[string]any)
+	if !ok {
+		return domain.Backend{}, errors.New("workflow output must be an object")
+	}
+	userID, _ := output["user_id"].(string)
+	username, _ := output["username"].(string)
+	balance, ok := workflowOutputNumber(output["balance"])
+	if !ok {
+		return domain.Backend{}, errors.New("workflow output balance is not a number")
+	}
+	usedBalance, ok := workflowOutputNumber(output["used_balance"])
+	if !ok {
+		return domain.Backend{}, errors.New("workflow output used_balance is not a number")
+	}
+
+	executedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	account := decodeJSONMap(backend.ConsoleAccountJSON)
+	account["id"] = userID
+	account["username"] = username
+	if strings.TrimSpace(fmt.Sprint(account["email"])) == "" || fmt.Sprint(account["email"]) == "<nil>" {
+		account["email"] = username
+	}
+	account["balance"] = balance
+	account["total_actual_cost"] = usedBalance
+	account["last_checkin_at"] = executedAt
+	account["last_workflow_at"] = executedAt
+	accountJSON, err := json.Marshal(account)
+	if err != nil {
+		return domain.Backend{}, err
+	}
+
+	modelsByGroup, pricingJSON, err := workflowOutputPricingJSON(output["models"], focusPatterns)
+	if err != nil {
+		return domain.Backend{}, err
+	}
+	apiKeys, err := workflowOutputAPIKeys(output["api_keys"], modelsByGroup)
+	if err != nil {
+		return domain.Backend{}, err
+	}
+	backend.APIKeys = apiKeys
+	backend.ConsoleAccountJSON = string(accountJSON)
+	backend.ConsolePricingJSON = pricingJSON
+	return backend, nil
+}
+
+func workflowOutputAPIKeys(value any, modelsByGroup map[string][]string) ([]domain.BackendAPIKey, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("workflow output api_keys must be an array")
+	}
+	keys := make([]domain.BackendAPIKey, 0, len(items))
+	for index, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("workflow output api_keys[%d] must be an object", index)
+		}
+		key, _ := object["key"].(string)
+		name, _ := object["name"].(string)
+		group, _ := object["group"].(string)
+		if strings.TrimSpace(group) == "" {
+			group = "default"
+		}
+		if strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("workflow output api_keys[%d].key is required", index)
+		}
+		keys = append(keys, domain.BackendAPIKey{
+			APIKey:       key,
+			Name:         name,
+			Group:        group,
+			Models:       append([]string(nil), modelsByGroup[group]...),
+			ModelMapping: map[string]string{},
+		})
+	}
+	return keys, nil
+}
+
+func workflowOutputPricingJSON(value any, focusPatterns string) (map[string][]string, string, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return nil, "", errors.New("workflow output models must be an array")
+	}
+	models := make([]any, 0, len(items))
+	modelsByGroup := make(map[string][]string)
+	for index, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return nil, "", fmt.Errorf("workflow output models[%d] must be an object", index)
+		}
+		name, _ := object["name"].(string)
+		if strings.TrimSpace(focusPatterns) != "" && !modelNameMatchesFocusPatterns(name, focusPatterns) {
+			continue
+		}
+		groups, ok := object["cheapest_groups"].([]any)
+		if !ok {
+			return nil, "", fmt.Errorf("workflow output models[%d].cheapest_groups must be an array", index)
+		}
+		inPrice, ok := workflowOutputNumber(object["in_price"])
+		if !ok {
+			return nil, "", fmt.Errorf("workflow output models[%d].in_price is not a number", index)
+		}
+		outPrice, ok := workflowOutputNumber(object["out_price"])
+		if !ok {
+			return nil, "", fmt.Errorf("workflow output models[%d].out_price is not a number", index)
+		}
+		groupNames := make([]any, 0, len(groups))
+		for groupIndex, group := range groups {
+			groupName, ok := group.(string)
+			if !ok {
+				return nil, "", fmt.Errorf("workflow output models[%d].cheapest_groups[%d] must be a string", index, groupIndex)
+			}
+			groupNames = append(groupNames, groupName)
+		}
+		for _, group := range groupNames {
+			groupName := group.(string)
+			modelsByGroup[groupName] = append(modelsByGroup[groupName], name)
+		}
+		models = append(models, map[string]any{
+			"model_name":    name,
+			"enable_groups": groupNames,
+			"input_price":   inPrice,
+			"output_price":  outPrice,
+			"billing_mode":  "token",
+		})
+	}
+	pricing := map[string]any{"code": 0, "message": "workflow", "data": models}
+	encoded, err := json.Marshal(pricing)
+	if err != nil {
+		return nil, "", err
+	}
+	return modelsByGroup, string(encoded), nil
+}
+
+func workflowOutputNumber(value any) (float64, bool) {
+	switch value := value.(type) {
+	case int:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	case float64:
+		return value, !math.IsNaN(value) && !math.IsInf(value, 0)
+	case json.Number:
+		parsed, err := value.Float64()
+		return parsed, err == nil && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
+	default:
+		return 0, false
+	}
 }
 
 func (h *WorkflowHandler) HandleGetWorkflowResult(w http.ResponseWriter, r *http.Request) {

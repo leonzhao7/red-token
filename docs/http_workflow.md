@@ -833,7 +833,7 @@ sub2api 签到工作流的固定输出 Schema 为：
 
 失败时不得持久化部分业务输出。宿主可以持久化独立的运行日志和 HTTP 审计记录，但必须对 Authorization、Cookie、API Key、请求 body 和响应 body 中的敏感字段进行脱敏。
 
-只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
+只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`balance`、`used_balance`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
 
 ## 14. 版本兼容
 

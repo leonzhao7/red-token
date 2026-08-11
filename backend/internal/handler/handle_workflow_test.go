@@ -84,7 +84,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	var received atomic.Bool
 	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := http.StatusOK
-		body := `{"user_id":"user-1","username":"alice","balance":12.5,"used_balance":3,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","total_cost":3}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2}]}`
+		body := `{"user_id":"user-1","username":"alice","balance":12.5,"used_balance":3,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","total_cost":3}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4}]}`
 		if r.URL.Scheme != "https" || r.URL.Host != "selected-console.test" || r.URL.Path != "/snapshot" {
 			status = http.StatusNotFound
 			body = `{"error":"wrong target"}`
@@ -127,7 +127,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		t.Fatalf("create backend: %v", err)
 	}
 	handler := NewWorkflowHandler(st)
-	handler.SetConfig(&config.Config{BackendConsoleUserAgent: "Workflow-Test/1.0"})
+	handler.SetConfig(&config.Config{BackendConsoleUserAgent: "Workflow-Test/1.0", FocusModels: "model-a"})
 	handler.SetHTTPClient(client)
 	mux := workflowTestMux(handler)
 
@@ -161,6 +161,22 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	if execution.Output["user_id"] != "user-1" || execution.Aliases["username"] != "alice" || len(execution.Requests) != 1 || execution.ExecutedAt == "" {
 		t.Fatalf("unexpected execution response: %+v", execution)
 	}
+	updatedBackend, err := st.GetBackend(context.Background(), backend.ID)
+	if err != nil {
+		t.Fatalf("get updated backend: %v", err)
+	}
+	if updatedBackend.APIKey != "sk-value" || len(updatedBackend.APIKeys) != 1 || len(updatedBackend.APIKeys[0].Models) != 1 || updatedBackend.APIKeys[0].Models[0] != "model-a" {
+		t.Fatalf("workflow did not update backend api keys: %+v", updatedBackend.APIKeys)
+	}
+	account := decodeJSONMap(updatedBackend.ConsoleAccountJSON)
+	if account["id"] != "user-1" || account["username"] != "alice" || account["balance"] != 12.5 || account["total_actual_cost"] != 3.0 {
+		t.Fatalf("workflow did not update backend account: %s", updatedBackend.ConsoleAccountJSON)
+	}
+	pricing := decodeJSONMap(updatedBackend.ConsolePricingJSON)
+	pricingModels, ok := pricing["data"].([]any)
+	if !ok || len(pricingModels) != 1 || pricingModels[0].(map[string]any)["model_name"] != "model-a" {
+		t.Fatalf("workflow did not update backend pricing: %s", updatedBackend.ConsolePricingJSON)
+	}
 
 	resultPath := "/admin/api/workflows/execute-workflow/results/" + jsonInt64(backend.ID)
 	response = workflowRequest(t, mux, http.MethodGet, resultPath, "")
@@ -168,6 +184,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		t.Fatalf("get result status=%d body=%s", response.Code, response.Body.String())
 	}
 	successfulSnapshot := response.Body.String()
+	backendAfterSuccess := updatedBackend
 
 	mode.Store(1)
 	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/execute-workflow/execute", executeBody)
@@ -187,6 +204,13 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	response = workflowRequest(t, mux, http.MethodGet, resultPath, "")
 	if response.Code != http.StatusOK || response.Body.String() != successfulSnapshot {
 		t.Fatalf("schema failure replaced snapshot: status=%d body=%s want=%s", response.Code, response.Body.String(), successfulSnapshot)
+	}
+	updatedBackend, err = st.GetBackend(context.Background(), backend.ID)
+	if err != nil {
+		t.Fatalf("get backend after failed workflow: %v", err)
+	}
+	if updatedBackend.ConsoleAccountJSON != backendAfterSuccess.ConsoleAccountJSON || updatedBackend.ConsolePricingJSON != backendAfterSuccess.ConsolePricingJSON || updatedBackend.APIKey != backendAfterSuccess.APIKey {
+		t.Fatalf("failed workflow changed backend data: before=%+v after=%+v", backendAfterSuccess, updatedBackend)
 	}
 }
 

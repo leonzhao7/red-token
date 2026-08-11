@@ -106,3 +106,58 @@ func TestHTTPWorkflowStoreCRUDResultsAndCascades(t *testing.T) {
 		t.Fatalf("expected backend delete to cascade result, got %v", err)
 	}
 }
+
+func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "workflow-apply.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	backend, err := st.CreateBackend(ctx, domain.Backend{
+		Name:       "workflow-backend",
+		BaseURL:    "https://api.example.com",
+		ConsoleURL: "https://console.example.com",
+		APIKeys: []domain.BackendAPIKey{{
+			APIKey: "old-key", Group: "old", Models: []string{"old-model"}, ModelMapping: map[string]string{},
+		}},
+		ConsoleAccountJSON: `{"balance":1}`,
+		ConsolePricingJSON: `{"data":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+	workflow, err := st.CreateHTTPWorkflow(ctx, "apply", "Apply", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	updated := backend
+	updated.APIKeys = []domain.BackendAPIKey{{APIKey: "new-key", Group: "new", Models: []string{"new-model"}}}
+	updated.ConsoleAccountJSON = `{"balance":9}`
+	updated.ConsolePricingJSON = `{"data":[{"model_name":"new-model"}]}`
+	output := json.RawMessage(`{"balance":9}`)
+	gotBackend, gotResult, err := st.ApplyHTTPWorkflowResult(ctx, workflow.ID, updated, output)
+	if err != nil {
+		t.Fatalf("apply workflow result: %v", err)
+	}
+	if gotBackend.APIKey != "new-key" || gotBackend.ConsoleAccountJSON != updated.ConsoleAccountJSON || gotBackend.ConsolePricingJSON != updated.ConsolePricingJSON {
+		t.Fatalf("backend fields were not applied: %+v", gotBackend)
+	}
+	if string(gotResult.Output) != string(output) || gotResult.BackendID != backend.ID {
+		t.Fatalf("snapshot was not applied: %+v", gotResult)
+	}
+
+	rollbackCandidate := gotBackend
+	rollbackCandidate.APIKeys = []domain.BackendAPIKey{{APIKey: "should-rollback", Group: "rollback", Models: []string{"rollback-model"}}}
+	rollbackCandidate.ConsoleAccountJSON = `{"balance":999}`
+	if _, _, err := st.ApplyHTTPWorkflowResult(ctx, "missing-workflow", rollbackCandidate, json.RawMessage(`{"balance":999}`)); err == nil {
+		t.Fatal("expected missing workflow foreign key to fail")
+	}
+	afterRollback, err := st.GetBackend(ctx, backend.ID)
+	if err != nil {
+		t.Fatalf("get backend after rollback: %v", err)
+	}
+	if afterRollback.APIKey != gotBackend.APIKey || afterRollback.ConsoleAccountJSON != gotBackend.ConsoleAccountJSON {
+		t.Fatalf("failed snapshot write did not roll back backend: before=%+v after=%+v", gotBackend, afterRollback)
+	}
+}

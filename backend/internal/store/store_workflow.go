@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"red-token/internal/domain"
 )
 
 // HTTPWorkflow is a validated http-workflow/v1 definition stored by its
@@ -116,6 +119,68 @@ func (s *Store) UpsertHTTPWorkflowResult(ctx context.Context, workflowID string,
 		return HTTPWorkflowResult{}, err
 	}
 	return s.GetHTTPWorkflowResult(ctx, workflowID, backendID)
+}
+
+// ApplyHTTPWorkflowResult atomically updates the backend's workflow-derived
+// runtime data and replaces the successful workflow snapshot.
+func (s *Store) ApplyHTTPWorkflowResult(ctx context.Context, workflowID string, backend domain.Backend, output json.RawMessage) (domain.Backend, HTTPWorkflowResult, error) {
+	now := time.Now().UTC()
+	apiKeys := normalizeBackendAPIKeys(backend.APIKeys)
+	legacyAPIKey, legacyModels, legacyModelMapping := legacyBackendRoutingFields(apiKeys)
+	accountJSON := normalizeJSONObject(backend.ConsoleAccountJSON)
+	pricingJSON := normalizeJSONObject(backend.ConsolePricingJSON)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE backends
+		SET api_key = ?, api_keys_json = ?, model_list = ?, model_mapping = ?, console_account_json = ?, console_pricing_json = ?, updated_at = ?
+		WHERE id = ?
+	`,
+		legacyAPIKey,
+		mustEncodeBackendAPIKeys(apiKeys),
+		mustEncodeList(legacyModels),
+		mustEncodeMap(legacyModelMapping),
+		accountJSON,
+		pricingJSON,
+		formatTime(now),
+		backend.ID,
+	)
+	if err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	if affected == 0 {
+		return domain.Backend{}, HTTPWorkflowResult{}, errors.New("backend not found")
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workflow_results(workflow_id, backend_id, output_json, executed_at)
+		VALUES(?, ?, ?, ?)
+		ON CONFLICT(workflow_id, backend_id) DO UPDATE SET
+			output_json = excluded.output_json,
+			executed_at = excluded.executed_at
+	`, workflowID, backend.ID, string(output), formatTime(now)); err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	updatedBackend, err := s.GetBackend(ctx, backend.ID)
+	if err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	updatedResult, err := s.GetHTTPWorkflowResult(ctx, workflowID, backend.ID)
+	if err != nil {
+		return domain.Backend{}, HTTPWorkflowResult{}, err
+	}
+	return updatedBackend, updatedResult, nil
 }
 
 func (s *Store) GetHTTPWorkflowResult(ctx context.Context, workflowID string, backendID int64) (HTTPWorkflowResult, error) {
