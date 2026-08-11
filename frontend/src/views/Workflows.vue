@@ -17,7 +17,9 @@ import {
   ArrowUp,
   ArrowDown,
   X,
-  ListPlus
+  ListPlus,
+  Download,
+  Upload
 } from 'lucide-vue-next'
 import { toast } from '../composables/toast'
 import Modal from '../components/Modal.vue'
@@ -271,6 +273,44 @@ function fillExample() {
   } catch (e: any) {
     formError.value = '内置示例解析失败：' + (e?.message || '')
   }
+}
+
+function exportWorkflow(record: WorkflowRecord) {
+  const json = JSON.stringify(record.definition, null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${record.id}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+const importFileInput = ref<HTMLInputElement | null>(null)
+
+function triggerImport() {
+  importFileInput.value?.click()
+}
+
+function handleImportFile(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const def = JSON.parse(e.target?.result as string) as WorkflowDefinition
+      if (!def.spec || !def.id || !def.steps) throw new Error('不是合法的工作流 JSON')
+      isEditing.value = false
+      formError.value = ''
+      defToForm(def)
+      stepOpen.value = form.steps.map(() => true)
+      showForm.value = true
+    } catch (err: any) {
+      toast('导入失败', err?.message || '解析 JSON 失败', 'danger')
+    }
+  }
+  reader.readAsText(file)
+  ;(event.target as HTMLInputElement).value = ''
 }
 
 function formatJson() {
@@ -564,7 +604,9 @@ onMounted(loadData)
         </div>
       </div>
       <div class="spacer"></div>
+      <button class="btn btn-ghost" @click="triggerImport"><Upload :size="15" /> 导入</button>
       <button class="btn btn-primary" @click="openCreate"><Plus :size="15" /> 新建 Profile</button>
+      <input ref="importFileInput" type="file" accept=".json,application/json" style="display:none" @change="handleImportFile" />
     </section>
 
     <section class="panel wf-list">
@@ -595,6 +637,7 @@ onMounted(loadData)
             <button class="btn btn-ghost btn-sm btn-purple" @click="openExecute(w)">
               <Play :size="13" /> 执行
             </button>
+            <button class="icon-btn" title="导出" @click="exportWorkflow(w)"><Download :size="15" /></button>
             <button class="icon-btn" title="编辑" @click="openEdit(w)"><Pencil :size="15" /></button>
             <button class="icon-btn wf-del" title="删除" @click="workflowToDelete = w"><Trash2 :size="15" /></button>
           </div>
