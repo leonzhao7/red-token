@@ -14,6 +14,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  ChevronsDownUp,
+  ChevronsUpDown,
   ArrowUp,
   ArrowDown,
   X,
@@ -325,6 +327,14 @@ function formatJson() {
 function addStep() {
   form.steps.push(emptyStep())
   stepOpen.value.push(true)
+}
+
+function expandAll() {
+  stepOpen.value = form.steps.map(() => true)
+}
+
+function collapseAll() {
+  stepOpen.value = form.steps.map(() => false)
 }
 
 function removeStep(index: number) {
@@ -669,6 +679,8 @@ onMounted(loadData)
         <div class="wf-sec-head">
           <span class="wf-sec-title">步骤 <em class="wf-hint">{{ form.steps.length }} 个</em></span>
           <div class="spacer"></div>
+          <button v-if="form.steps.length" class="btn btn-ghost btn-sm" @click="collapseAll"><ChevronsUpDown :size="13" /> 全部收起</button>
+          <button v-if="form.steps.length" class="btn btn-ghost btn-sm" @click="expandAll"><ChevronsDownUp :size="13" /> 全部展开</button>
           <button class="btn btn-ghost btn-sm" @click="fillExample"><Sparkles :size="13" /> 填充示例</button>
           <button class="btn btn-primary btn-sm" @click="addStep"><Plus :size="13" /> 添加步骤</button>
         </div>
@@ -769,12 +781,13 @@ onMounted(loadData)
         </div>
 
         <div class="field">
-          <label class="field-label">Output <em class="wf-hint">递归 alias 模板</em></label>
-          <textarea v-model="form.output" class="textarea mono wf-output" spellcheck="false" @focus="onFocus"></textarea>
-          <div class="wf-json-bar">
-            <button class="btn btn-ghost btn-sm" @click="formatJson"><Braces :size="13" /> 格式化</button>
+          <div class="wf-out-head">
+            <label class="field-label">Output <em class="wf-hint">递归 alias 模板</em></label>
             <span v-if="formError" class="wf-json-err"><AlertTriangle :size="12" /> {{ formError }}</span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" @click="formatJson"><Braces :size="13" /> 格式化</button>
           </div>
+          <textarea v-model="form.output" class="textarea mono wf-output" spellcheck="false" @focus="onFocus"></textarea>
         </div>
       </div>
       <template #footer>
@@ -1019,7 +1032,7 @@ onMounted(loadData)
 
 .wf-output { min-height: 150px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
 .wf-aliases { min-height: 84px; font-size: 12px; line-height: 1.5; background: var(--bg-soft); }
-.wf-json-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-out-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .wf-json-err { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--danger); }
 
 .wf-run-state {
