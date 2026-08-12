@@ -84,7 +84,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	var received atomic.Bool
 	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := http.StatusOK
-		body := `{"user_id":"user-1","username":"alice","balance":12.5,"used_balance":3,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","total_cost":3}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4}]}`
+		body := `{"user_id":"user-1","username":"alice","balance":12.5,"used_balance":3,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","total_cost":3},{"id":"key-2","name":"secondary","key":"existing-secondary","group":"secondary","total_cost":0}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4}]}`
 		if r.URL.Scheme != "https" || r.URL.Host != "selected-console.test" || r.URL.Path != "/snapshot" {
 			status = http.StatusNotFound
 			body = `{"error":"wrong target"}`
@@ -122,6 +122,19 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 			"Cookie":    "session=console",
 			"X-Console": "configured",
 		},
+		APIKeys: []domain.BackendAPIKey{{
+			APIKey:       "sk-value",
+			Name:         "old-main-name",
+			Group:        "old-main-group",
+			Models:       []string{"configured-main-model"},
+			ModelMapping: map[string]string{"configured-main-model": "provider-main-model"},
+		}, {
+			APIKey:       "existing-secondary",
+			Name:         "secondary",
+			Group:        "secondary",
+			Models:       []string{"upstream-only-model"},
+			ModelMapping: map[string]string{"upstream-only-model": "provider-model"},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("create backend: %v", err)
@@ -165,8 +178,14 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get updated backend: %v", err)
 	}
-	if updatedBackend.APIKey != "sk-value" || len(updatedBackend.APIKeys) != 1 || len(updatedBackend.APIKeys[0].Models) != 1 || updatedBackend.APIKeys[0].Models[0] != "model-a" {
+	if updatedBackend.APIKey != "sk-value" || len(updatedBackend.APIKeys) != 2 {
 		t.Fatalf("workflow did not update backend api keys: %+v", updatedBackend.APIKeys)
+	}
+	if len(updatedBackend.APIKeys[0].Models) != 1 || updatedBackend.APIKeys[0].Models[0] != "configured-main-model" || updatedBackend.APIKeys[0].ModelMapping["configured-main-model"] != "provider-main-model" {
+		t.Fatalf("workflow changed the primary API key routing configuration: %+v", updatedBackend.APIKeys[0])
+	}
+	if len(updatedBackend.APIKeys[1].Models) != 1 || updatedBackend.APIKeys[1].Models[0] != "upstream-only-model" || updatedBackend.APIKeys[1].ModelMapping["upstream-only-model"] != "provider-model" {
+		t.Fatalf("workflow changed the secondary API key routing configuration: %+v", updatedBackend.APIKeys[1])
 	}
 	account := decodeJSONMap(updatedBackend.ConsoleAccountJSON)
 	if account["id"] != "user-1" || account["username"] != "alice" || account["balance"] != 12.5 || account["total_actual_cost"] != 3.0 {

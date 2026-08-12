@@ -360,11 +360,11 @@ func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatter
 		return domain.Backend{}, err
 	}
 
-	modelsByGroup, pricingJSON, err := workflowOutputPricingJSON(output["models"], focusPatterns)
+	pricingJSON, err := workflowOutputPricingJSON(output["models"], focusPatterns)
 	if err != nil {
 		return domain.Backend{}, err
 	}
-	apiKeys, err := workflowOutputAPIKeys(output["api_keys"], modelsByGroup)
+	apiKeys, err := workflowOutputAPIKeys(output["api_keys"], backend.APIKeys)
 	if err != nil {
 		return domain.Backend{}, err
 	}
@@ -374,10 +374,14 @@ func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatter
 	return backend, nil
 }
 
-func workflowOutputAPIKeys(value any, modelsByGroup map[string][]string) ([]domain.BackendAPIKey, error) {
+func workflowOutputAPIKeys(value any, existing []domain.BackendAPIKey) ([]domain.BackendAPIKey, error) {
 	items, ok := value.([]any)
 	if !ok {
 		return nil, errors.New("workflow output api_keys must be an array")
+	}
+	existingByAPIKey := make(map[string]domain.BackendAPIKey, len(existing))
+	for _, apiKey := range existing {
+		existingByAPIKey[apiKey.APIKey] = apiKey
 	}
 	keys := make([]domain.BackendAPIKey, 0, len(items))
 	for index, item := range items {
@@ -394,28 +398,41 @@ func workflowOutputAPIKeys(value any, modelsByGroup map[string][]string) ([]doma
 		if strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("workflow output api_keys[%d].key is required", index)
 		}
+		models := []string{}
+		modelMapping := map[string]string{}
+		if previous, exists := existingByAPIKey[key]; exists {
+			models = append([]string(nil), previous.Models...)
+			modelMapping = copyStringMap(previous.ModelMapping)
+		}
 		keys = append(keys, domain.BackendAPIKey{
 			APIKey:       key,
 			Name:         name,
 			Group:        group,
-			Models:       append([]string(nil), modelsByGroup[group]...),
-			ModelMapping: map[string]string{},
+			Models:       append([]string(nil), models...),
+			ModelMapping: modelMapping,
 		})
 	}
 	return keys, nil
 }
 
-func workflowOutputPricingJSON(value any, focusPatterns string) (map[string][]string, string, error) {
+func copyStringMap(values map[string]string) map[string]string {
+	copy := make(map[string]string, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
+}
+
+func workflowOutputPricingJSON(value any, focusPatterns string) (string, error) {
 	items, ok := value.([]any)
 	if !ok {
-		return nil, "", errors.New("workflow output models must be an array")
+		return "", errors.New("workflow output models must be an array")
 	}
 	models := make([]any, 0, len(items))
-	modelsByGroup := make(map[string][]string)
 	for index, item := range items {
 		object, ok := item.(map[string]any)
 		if !ok {
-			return nil, "", fmt.Errorf("workflow output models[%d] must be an object", index)
+			return "", fmt.Errorf("workflow output models[%d] must be an object", index)
 		}
 		name, _ := object["name"].(string)
 		if strings.TrimSpace(focusPatterns) != "" && !modelNameMatchesFocusPatterns(name, focusPatterns) {
@@ -423,27 +440,23 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (map[string][]st
 		}
 		groups, ok := object["cheapest_groups"].([]any)
 		if !ok {
-			return nil, "", fmt.Errorf("workflow output models[%d].cheapest_groups must be an array", index)
+			return "", fmt.Errorf("workflow output models[%d].cheapest_groups must be an array", index)
 		}
 		inPrice, ok := workflowOutputNumber(object["in_price"])
 		if !ok {
-			return nil, "", fmt.Errorf("workflow output models[%d].in_price is not a number", index)
+			return "", fmt.Errorf("workflow output models[%d].in_price is not a number", index)
 		}
 		outPrice, ok := workflowOutputNumber(object["out_price"])
 		if !ok {
-			return nil, "", fmt.Errorf("workflow output models[%d].out_price is not a number", index)
+			return "", fmt.Errorf("workflow output models[%d].out_price is not a number", index)
 		}
 		groupNames := make([]any, 0, len(groups))
 		for groupIndex, group := range groups {
 			groupName, ok := group.(string)
 			if !ok {
-				return nil, "", fmt.Errorf("workflow output models[%d].cheapest_groups[%d] must be a string", index, groupIndex)
+				return "", fmt.Errorf("workflow output models[%d].cheapest_groups[%d] must be a string", index, groupIndex)
 			}
 			groupNames = append(groupNames, groupName)
-		}
-		for _, group := range groupNames {
-			groupName := group.(string)
-			modelsByGroup[groupName] = append(modelsByGroup[groupName], name)
 		}
 		models = append(models, map[string]any{
 			"model_name":    name,
@@ -456,9 +469,9 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (map[string][]st
 	pricing := map[string]any{"code": 0, "message": "workflow", "data": models}
 	encoded, err := json.Marshal(pricing)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-	return modelsByGroup, string(encoded), nil
+	return string(encoded), nil
 }
 
 func workflowOutputNumber(value any) (float64, bool) {
