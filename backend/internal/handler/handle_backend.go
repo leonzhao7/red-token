@@ -792,7 +792,16 @@ func (h *BackendHandler) handleWorkflowConsoleSync(w http.ResponseWriter, r *htt
 		writeConsoleSyncError(w, http.StatusInternalServerError, "workflow handler unavailable", recorder, stream)
 		return
 	}
-	outcome, err := h.workflowHandler.runCheckinWorkflow(r.Context(), backend, workflowID, nil, recorder, nil)
+	debugLogs := &workflowDebugLogCollector{Logs: []service.GeneralWorkflowDebugLog{}}
+	if stream != nil {
+		debugLogs.OnRecord = func(log service.GeneralWorkflowDebugLog) {
+			stream.write(map[string]any{
+				"type": "workflow_log",
+				"log":  log,
+			})
+		}
+	}
+	outcome, err := h.workflowHandler.runCheckinWorkflow(r.Context(), backend, workflowID, nil, recorder, debugLogs)
 	if err != nil {
 		status := http.StatusBadGateway
 		var runErr *workflowRunError

@@ -111,6 +111,17 @@ export interface BackendConsoleRequestLog {
   body: string
 }
 
+export interface BackendWorkflowDebugLog {
+  time: string
+  level: 'debug' | 'info' | 'warn' | 'error' | string
+  step_id?: string
+  step_name?: string
+  phase: string
+  message: string
+  duration_ms?: number
+  details?: Record<string, unknown>
+}
+
 export interface BackendSyncResponse {
   backend: BackendResponse
   status?: Record<string, unknown>
@@ -118,10 +129,12 @@ export interface BackendSyncResponse {
   account?: Record<string, unknown>
   pricing?: Record<string, unknown>
   requests: BackendConsoleRequestLog[]
+  debug_logs?: BackendWorkflowDebugLog[]
 }
 
 export type BackendConsoleStreamEvent =
   | { type: 'request'; request: BackendConsoleRequestLog }
+  | { type: 'workflow_log'; log: BackendWorkflowDebugLog }
   | { type: 'complete'; response: BackendSyncResponse }
   | { type: 'error'; status?: number; message?: string; requests?: BackendConsoleRequestLog[] }
 
@@ -213,7 +226,11 @@ export function syncBackend(id: number, audit = true) {
 export async function syncBackendStream(
   id: number,
   onRequest: (request: BackendConsoleRequestLog) => void,
-  options: { audit?: boolean; checkin?: boolean } = {}
+  options: {
+    audit?: boolean
+    checkin?: boolean
+    onWorkflowLog?: (log: BackendWorkflowDebugLog) => void
+  } = {}
 ): Promise<BackendSyncResponse> {
   const audit = options.audit !== false
   const params = new URLSearchParams({ stream: '1' })
@@ -257,6 +274,8 @@ export async function syncBackendStream(
         const event: BackendConsoleStreamEvent = JSON.parse(trimmed)
         if (event.type === 'request') {
           onRequest(event.request)
+        } else if (event.type === 'workflow_log') {
+          options.onWorkflowLog?.(event.log)
         } else if (event.type === 'complete') {
           finalResponse = event.response
         } else if (event.type === 'error') {
@@ -276,6 +295,7 @@ export async function syncBackendStream(
     try {
       const event: BackendConsoleStreamEvent = JSON.parse(buffer.trim())
       if (event.type === 'request') onRequest(event.request)
+      else if (event.type === 'workflow_log') options.onWorkflowLog?.(event.log)
       else if (event.type === 'complete') finalResponse = event.response
       else if (event.type === 'error') {
         const err = new ApiError(event.message || 'Console sync failed', event.status || 0)

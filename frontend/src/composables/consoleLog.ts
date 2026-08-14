@@ -1,19 +1,26 @@
 import { ref } from 'vue'
 
-export interface ConsoleRequestLogRow {
+export interface ConsoleLogRow {
   id: string
   backendName: string
   time: string
+  kind: 'request' | 'workflow'
   method?: string
   path: string
   statusCode: number | null
   body: string
+  level?: string
+  phase?: string
+  stepId?: string
+  stepName?: string
+  message?: string
+  durationMs?: number
 }
 
 /* ---- module-level reactive state ---- */
 export const consoleLogVisible = ref(false)
 export const consoleLogTitle = ref('')
-export const consoleLogRows = ref<ConsoleRequestLogRow[]>([])
+export const consoleLogRows = ref<ConsoleLogRow[]>([])
 export const consoleLogShowName = ref(false)
 export const expandedLogRowIds = ref<Set<string>>(new Set())
 
@@ -50,19 +57,51 @@ export function appendLogRow(
   req: { time: string; method?: string; path: string; status_code: number; body: string },
   backendName: string
 ) {
-  consoleLogRows.value = [...consoleLogRows.value, {
+  consoleLogRows.value.push({
     id: `log-${nextLogRowId++}`,
     backendName,
     time: formatLogTime(req.time),
+    kind: 'request',
     method: req.method,
     path: req.path,
     statusCode: Number.isFinite(req.status_code) ? req.status_code : null,
     body: req.body || ''
-  }]
+  })
+}
+
+/** Append a workflow execution event to the same console activity stream. */
+export function appendWorkflowLogRow(
+  log: {
+    time: string
+    level: string
+    step_id?: string
+    step_name?: string
+    phase: string
+    message: string
+    duration_ms?: number
+    details?: Record<string, unknown>
+  },
+  backendName: string
+) {
+  consoleLogRows.value.push({
+    id: `log-${nextLogRowId++}`,
+    backendName,
+    time: formatLogTime(log.time),
+    kind: 'workflow',
+    path: '',
+    statusCode: null,
+    body: log.details ? JSON.stringify(log.details) : '',
+    level: log.level || 'info',
+    phase: log.phase,
+    stepId: log.step_id,
+    stepName: log.step_name,
+    message: log.message,
+    durationMs: log.duration_ms
+  })
 }
 
 /** Replace all rows */
-export function setConsoleLogRows(rows: ConsoleRequestLogRow[]) {
+export function setConsoleLogRows(rows: ConsoleLogRow[]) {
   consoleLogRows.value = rows
   expandedLogRowIds.value = new Set()
 }

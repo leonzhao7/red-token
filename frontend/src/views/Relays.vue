@@ -95,14 +95,14 @@ function setBusy(id: string, busy: boolean) {
 import {
   openConsoleLog,
   appendLogRow,
-  setConsoleLogRows,
+  appendWorkflowLogRow,
   consoleLogRows,
   consoleLogTitle,
   consoleLogShowName,
   expandedLogRowIds,
   hideConsoleLog,
   showConsoleLog,
-  type ConsoleRequestLogRow
+  type ConsoleLogRow
 } from '../composables/consoleLog'
 
 function errorMessage(error: unknown) {
@@ -494,7 +494,11 @@ async function syncRelay(
   try {
     const response = await syncBackendStream(Number(r.id), (req) => {
       appendLogRow(req, r.name)
-    }, { audit, checkin })
+    }, {
+      audit,
+      checkin,
+      onWorkflowLog: (log) => appendWorkflowLogRow(log, r.name)
+    })
     upsertRelay(response.backend)
     if (!quiet) toast('中转站同步完成', `${r.name} · 账户与 API Key 已刷新`, 'success')
     return true
@@ -525,7 +529,7 @@ async function checkinAll() {
   expandedLogRowIds.value = new Set()
   showConsoleLog()
 
-  const failedRows: ConsoleRequestLogRow[] = []
+  const failedRows: ConsoleLogRow[] = []
   let successCount = 0
 
   for (const relay of todo) {
@@ -539,7 +543,10 @@ async function checkinAll() {
     } else {
       // Collect failed requests (status >= 400 or no response) from this relay
       for (const row of consoleLogRows.value) {
-        if (!row.statusCode || row.statusCode >= 400) {
+        if (
+          (row.kind === 'request' && (!row.statusCode || row.statusCode >= 400)) ||
+          (row.kind === 'workflow' && row.level === 'error')
+        ) {
           failedRows.push(row)
         }
       }

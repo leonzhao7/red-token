@@ -964,6 +964,14 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 {"type":"request","request":{"time":"...","method":"GET","path":"/api/status","status_code":200,"body":"{...}"}}
 ```
 
+配置了签到工作流时，工作流执行消息也会按发生顺序实时写入同一响应流：
+
+```json
+{"type":"workflow_log","log":{"time":"...","level":"info","step_id":"account","step_name":"读取账户","phase":"step_start","message":"step execution started"}}
+```
+
+`workflow_log.log` 与工作流执行接口返回的 `debug_logs[]` 结构相同，包含步骤、阶段、级别、消息、耗时和可选详情。普通 `new-api`/`sub2api` 内置同步流程不产生此事件。
+
 完成事件：
 
 ```json

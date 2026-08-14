@@ -78,7 +78,8 @@ type workflowExecuteResponse struct {
 }
 
 type workflowDebugLogCollector struct {
-	Logs []service.GeneralWorkflowDebugLog
+	Logs     []service.GeneralWorkflowDebugLog
+	OnRecord func(service.GeneralWorkflowDebugLog)
 }
 
 func (c *workflowDebugLogCollector) Record(log service.GeneralWorkflowDebugLog) {
@@ -86,6 +87,9 @@ func (c *workflowDebugLogCollector) Record(log service.GeneralWorkflowDebugLog) 
 		return
 	}
 	c.Logs = append(c.Logs, log)
+	if c.OnRecord != nil {
+		c.OnRecord(log)
+	}
 }
 
 func (h *WorkflowHandler) HandleListWorkflows(w http.ResponseWriter, r *http.Request) {

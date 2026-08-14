@@ -14,6 +14,7 @@ import (
 
 	"red-token/internal/config"
 	"red-token/internal/domain"
+	"red-token/internal/service"
 	"red-token/internal/store"
 )
 
@@ -237,6 +238,85 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	}
 	if updatedBackend.ConsoleAccountJSON != backendAfterSuccess.ConsoleAccountJSON || updatedBackend.ConsolePricingJSON != backendAfterSuccess.ConsolePricingJSON || updatedBackend.APIKey != backendAfterSuccess.APIKey {
 		t.Fatalf("failed workflow changed backend data: before=%+v after=%+v", backendAfterSuccess, updatedBackend)
+	}
+}
+
+func TestWorkflowConsoleSyncStreamsWorkflowLogsWithRequests(t *testing.T) {
+	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"user_id":"user-1","username":"alice","balance":12.5,"used_balance":3,"api_keys":[],"models":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+
+	st := openWorkflowHandlerStore(t)
+	definition := json.RawMessage(workflowTestDefinition("sync-workflow"))
+	if _, err := st.CreateHTTPWorkflow(context.Background(), "sync-workflow", "Sync workflow", definition); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	backend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:                   "workflow-backend",
+		BackendType:            domain.BackendTypeNewAPI,
+		ConsoleURL:             "https://workflow-console.test",
+		ConsoleCheckinWorkflow: "sync-workflow",
+		ConsoleAccountJSON:     `{"id":"account-42"}`,
+	})
+	if err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+
+	workflowHandler := NewWorkflowHandler(st)
+	workflowHandler.SetConfig(&config.Config{BackendConsoleUserAgent: "Workflow-Test/1.0"})
+	workflowHandler.SetHTTPClient(client)
+	backendHandler := NewBackendHandler(st)
+	backendHandler.SetWorkflowHandler(workflowHandler)
+	backendHandler.SetConsoleHTTPClient(client)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /admin/api/backends/{id}/console/sync", backendHandler.HandleBackendConsoleSync)
+	request := httptest.NewRequest(http.MethodPost, "/admin/api/backends/"+jsonInt64(backend.ID)+"/console/sync?stream=1&checkin=1", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("sync status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	lines := strings.Split(strings.TrimSpace(response.Body.String()), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected workflow log, request, and completion events, got %d: %s", len(lines), response.Body.String())
+	}
+	var eventTypes []string
+	workflowLogCount := 0
+	requestCount := 0
+	for index, line := range lines {
+		var event struct {
+			Type     string                          `json:"type"`
+			Log      service.GeneralWorkflowDebugLog `json:"log"`
+			Response *map[string]any                 `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode stream line %d: %v; line=%s", index, err, line)
+		}
+		eventTypes = append(eventTypes, event.Type)
+		switch event.Type {
+		case "workflow_log":
+			workflowLogCount++
+			if event.Log.Message == "" || event.Log.Phase == "" {
+				t.Fatalf("workflow log missing message or phase: %+v", event.Log)
+			}
+		case "request":
+			requestCount++
+		case "complete":
+			if event.Response == nil {
+				t.Fatal("completion event missing response")
+			}
+		}
+	}
+	if eventTypes[0] != "workflow_log" || eventTypes[len(eventTypes)-1] != "complete" || workflowLogCount == 0 || requestCount != 1 {
+		t.Fatalf("unexpected stream event sequence: %v", eventTypes)
 	}
 }
 
