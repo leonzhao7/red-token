@@ -574,7 +574,7 @@ if .data.value == null then "fallback" else .data.value end
 | to_entries
 | map({
     id: .key,
-    total_cost: (.value.total_actual_cost // 0)
+    used_quota: (.value.used_quota // .value.total_actual_cost // 0)
   })
 ```
 
@@ -602,8 +602,10 @@ $vars.api_keys_base
 | map(
     . as $key
     | $key + {
-        total_cost: (
-          $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0
+        used_quota: (
+          $response.body.data.stats[($key.id | tostring)].used_quota
+          // $response.body.data.stats[($key.id | tostring)].total_actual_cost
+          // 0
         )
       }
   )
@@ -617,7 +619,7 @@ INDEX(.data.usage[]; (.id | tostring)) as $usage
 | map(
     . as $key
     | $key + {
-        total_cost: ($usage[($key.id | tostring)].total_cost // 0)
+        used_quota: ($usage[($key.id | tostring)].used_quota // 0)
       }
   )
 ```
@@ -627,9 +629,9 @@ INDEX(.data.usage[]; (.id | tostring)) as $usage
 ### 10.7 聚合
 
 ```jq
-[.data.items[].total_cost] | add // 0
-.data.items | map(.total_cost) | min
-.data.items | map(.total_cost) | max
+[.data.items[].used_quota] | add // 0
+.data.items | map(.used_quota) | min
+.data.items | map(.used_quota) | max
 .data.items | length
 .data.items | any(.enabled)
 .data.items | all(.enabled)
@@ -641,7 +643,7 @@ INDEX(.data.usage[]; (.id | tostring)) as $usage
 .data.items
 | sort_by(.group)
 | group_by(.group)
-| map({group: .[0].group, total_cost: (map(.total_cost) | add // 0)})
+| map({group: .[0].group, used_quota: (map(.used_quota) | add // 0)})
 ```
 
 ### 10.8 最小值和并列结果
@@ -664,7 +666,8 @@ $vars.model_rows
         name: $model.name,
         cheapest_groups: [$groups[] | select(.ratio == $min_ratio) | .name],
         in_price: $model.in_price,
-        out_price: $model.out_price
+        out_price: $model.out_price,
+        price_type: $model.price_type
       }
   )
 ```
@@ -724,31 +727,36 @@ $vars.model_rows
 
 所有 step 成功后，递归渲染顶层 `output`。输出不得直接读取最后一个 HTTP 响应，只能引用 alias，因此输出不依赖 step 排列之外的隐式状态。
 
-sub2api 签到工作流的固定输出 Schema 为：
+签到工作流的固定输出 Schema 为：
 
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["user_id", "username", "balance", "used_balance", "api_keys", "models"],
+  "required": ["user_id", "username", "quota", "used_quota", "today_reward", "api_keys", "models"],
   "properties": {
     "user_id": { "type": "string" },
     "username": { "type": "string" },
-    "balance": { "type": "number" },
-    "used_balance": { "type": "number", "minimum": 0 },
+    "quota": { "type": "number", "minimum": 0 },
+    "used_quota": { "type": "number", "minimum": 0 },
+    "today_reward": { "type": "number", "minimum": 0 },
     "api_keys": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name", "key", "group", "total_cost"],
+        "required": ["id", "name", "key", "group", "used_quota"],
         "properties": {
           "id": { "type": "string" },
           "name": { "type": "string" },
           "key": { "type": "string" },
           "group": { "type": "string" },
-          "total_cost": { "type": "number", "minimum": 0 }
+          "used_quota": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
         }
       }
     },
@@ -757,7 +765,7 @@ sub2api 签到工作流的固定输出 Schema 为：
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "cheapest_groups", "in_price", "out_price"],
+        "required": ["name", "cheapest_groups", "in_price", "out_price", "price_type"],
         "properties": {
           "name": { "type": "string" },
           "cheapest_groups": {
@@ -766,7 +774,8 @@ sub2api 签到工作流的固定输出 Schema 为：
             "uniqueItems": true
           },
           "in_price": { "type": "number", "minimum": 0 },
-          "out_price": { "type": "number", "minimum": 0 }
+          "out_price": { "type": "number", "minimum": 0 },
+          "price_type": { "type": "integer", "enum": [0, 1] }
         }
       }
     }
@@ -778,11 +787,13 @@ sub2api 签到工作流的固定输出 Schema 为：
 
 - 顶层以及数组元素都不得包含未声明字段。
 - `user_id`、`username`、Key 的 `id`、`name`、`key`、`group` 和模型 `name` 必须是字符串。
-- `balance`、`used_balance`、`total_cost`、`in_price` 和 `out_price` 必须是有限 JSON number；JSON Schema 验证前还必须执行第 8.2 节的有限数检查。
+- `quota`、`used_quota`、`today_reward`、Key 的 `used_quota`、`in_price` 和 `out_price` 必须是有限 JSON number；JSON Schema 验证前还必须执行第 8.2 节的有限数检查。
 - `api_keys` 和 `models` 必须始终是数组；无数据时使用空数组。
 - `cheapest_groups` 必须始终是字符串数组；不存在可用分组时使用空数组。
 - 同一个输出中，非空 Key ID 应当唯一，模型 name 应当唯一，单个模型中的 group 应当唯一。
-- `total_cost`、`in_price` 和 `out_price` 不得小于零。
+- 所有数值字段均不得小于零；Key 的 `used_quota` 必须是 JavaScript 安全整数。
+- `price_type` 必须是整数 `0`（按量）或 `1`（按次）。按次模型仍使用固定结构，价格缓存以 `in_price` 作为每次价格，`out_price` 仍为必填数值字段。
+- `balance`、`used_balance` 和 `total_cost` 是旧输出字段，不再支持；出现这些字段会导致 Schema 校验失败。
 
 输出配置通常只负责字段装配：
 
@@ -790,12 +801,15 @@ sub2api 签到工作流的固定输出 Schema 为：
 "output": {
   "user_id": "{{user_id}}",
   "username": "{{username}}",
-  "balance": "{{balance}}",
-  "used_balance": "{{used_balance}}",
+  "quota": "{{quota}}",
+  "used_quota": "{{used_quota}}",
+  "today_reward": "{{today_reward}}",
   "api_keys": "{{api_keys}}",
   "models": "{{models}}"
 }
 ```
+
+创建或更新工作流时会校验 `output` 的顶层字段集合，缺少固定字段或包含旧字段、其他未知字段时拒绝保存。数组成员的字段和具体值类型在工作流执行、模板渲染完成后校验。
 
 签到时间、运行状态、工作流版本、错误日志和 HTTP 审计记录属于运行元数据，不属于上述业务输出。
 
@@ -822,7 +836,8 @@ sub2api 签到工作流的固定输出 Schema 为：
       "extract": [
         { "alias": "user_id", "expression": ".data.id | tostring" },
         { "alias": "username", "expression": ".data.email // .data.username // \"\"" },
-        { "alias": "balance", "expression": "(.data.free_balance // .data.balance // 0) | tonumber" }
+        { "alias": "quota", "expression": "(.data.quota // .data.free_balance // .data.balance // 0) | tonumber" },
+        { "alias": "today_reward", "expression": "(.data.today_reward // .data.checkin_reward // 0) | tonumber" }
       ]
     },
     {
@@ -841,7 +856,7 @@ sub2api 签到工作流的固定输出 Schema 为：
       "extract": [
         {
           "alias": "api_keys_base",
-          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \"\"), key: (.key // \"\"), group: (.group.name // .group // \"default\")}]"
+          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \"\"), key: (.key // \"\"), group: (.group.name // .group // \"default\"), used_quota: ((.used_quota // 0) | tonumber | floor)}]"
         },
         {
           "alias": "key_ids",
@@ -864,11 +879,11 @@ sub2api 签到工作流的固定输出 Schema 为：
       "extract": [
         {
           "alias": "api_keys",
-          "expression": "$vars.api_keys_base | map(. as $key | $key + {total_cost: (($response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber)})"
+          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber | floor)})"
         },
         {
-          "alias": "used_balance",
-          "expression": "$vars.api_keys | map(.total_cost) | add // 0"
+          "alias": "used_quota",
+          "expression": "$vars.api_keys | map(.used_quota) | add // 0"
         }
       ]
     },
@@ -888,11 +903,11 @@ sub2api 签到工作流的固定输出 Schema 为：
         },
         {
           "alias": "model_rows",
-          "expression": "[.data[] | {name: (.model_name // .name), groups: (.enable_groups // []), in_price: ((.input_price // 0) | tonumber), out_price: ((.output_price // 0) | tonumber)}]"
+          "expression": "[.data[] | ((.price_type // .quota_type // 0) | tonumber) as $price_type | {name: (.model_name // .name), groups: (.enable_groups // []), in_price: ((if $price_type == 1 then (.price // .model_price // 0) else (.input_price // 0) end) | tonumber), out_price: ((if $price_type == 1 then (.price // .model_price // 0) else (.output_price // 0) end) | tonumber), price_type: $price_type}]"
         },
         {
           "alias": "models",
-          "expression": "$vars.model_rows | map(. as $model | [$model.groups[] | {name: ., ratio: ($vars.group_ratios[.] // 1)}] as $groups | ($groups | map(.ratio) | min // null) as $min_ratio | {name: $model.name, cheapest_groups: (if $min_ratio == null then [] else [$groups[] | select(.ratio == $min_ratio) | .name] end), in_price: $model.in_price, out_price: $model.out_price})"
+          "expression": "$vars.model_rows | map(. as $model | [$model.groups[] | {name: ., ratio: ($vars.group_ratios[.] // 1)}] as $groups | ($groups | map(.ratio) | min // null) as $min_ratio | {name: $model.name, cheapest_groups: (if $min_ratio == null then [] else [$groups[] | select(.ratio == $min_ratio) | .name] end), in_price: $model.in_price, out_price: $model.out_price, price_type: $model.price_type})"
         }
       ]
     }
@@ -900,8 +915,9 @@ sub2api 签到工作流的固定输出 Schema 为：
   "output": {
     "user_id": "{{user_id}}",
     "username": "{{username}}",
-    "balance": "{{balance}}",
-    "used_balance": "{{used_balance}}",
+    "quota": "{{quota}}",
+    "used_quota": "{{used_quota}}",
+    "today_reward": "{{today_reward}}",
     "api_keys": "{{api_keys}}",
     "models": "{{models}}"
   }
@@ -926,7 +942,7 @@ sub2api 签到工作流的固定输出 Schema 为：
 
 失败时不得持久化部分业务输出。宿主可以持久化独立的运行日志和 HTTP 审计记录，但必须对 Authorization、Cookie、API Key、请求 body 和响应 body 中的敏感字段进行脱敏。
 
-只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`balance`、`used_balance`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
+只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`quota`、`used_quota`、`today_reward`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
 
 ## 14. 版本兼容
 

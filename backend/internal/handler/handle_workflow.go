@@ -339,13 +339,17 @@ func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatter
 	}
 	userID, _ := output["user_id"].(string)
 	username, _ := output["username"].(string)
-	balance, ok := workflowOutputNumber(output["balance"])
+	quota, ok := workflowOutputNumber(output["quota"])
 	if !ok {
-		return domain.Backend{}, errors.New("workflow output balance is not a number")
+		return domain.Backend{}, errors.New("workflow output quota is not a number")
 	}
-	usedBalance, ok := workflowOutputNumber(output["used_balance"])
+	usedQuota, ok := workflowOutputNumber(output["used_quota"])
 	if !ok {
-		return domain.Backend{}, errors.New("workflow output used_balance is not a number")
+		return domain.Backend{}, errors.New("workflow output used_quota is not a number")
+	}
+	todayReward, ok := workflowOutputNumber(output["today_reward"])
+	if !ok {
+		return domain.Backend{}, errors.New("workflow output today_reward is not a number")
 	}
 
 	executedAt := time.Now().UTC().Format(time.RFC3339Nano)
@@ -355,8 +359,12 @@ func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatter
 	if strings.TrimSpace(fmt.Sprint(account["email"])) == "" || fmt.Sprint(account["email"]) == "<nil>" {
 		account["email"] = username
 	}
-	account["balance"] = balance
-	account["total_actual_cost"] = usedBalance
+	delete(account, "balance")
+	delete(account, "total_actual_cost")
+	delete(account, "last_checkin_reward")
+	account["quota"] = quota
+	account["used_quota"] = usedQuota
+	account["today_reward"] = todayReward
 	account["last_checkin_at"] = executedAt
 	account["last_workflow_at"] = executedAt
 	accountJSON, err := json.Marshal(account)
@@ -402,6 +410,10 @@ func workflowOutputAPIKeys(value any, existing []domain.BackendAPIKey) ([]domain
 		if strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("workflow output api_keys[%d].key is required", index)
 		}
+		usedQuota, ok := workflowOutputNonNegativeInt64(object["used_quota"])
+		if !ok {
+			return nil, fmt.Errorf("workflow output api_keys[%d].used_quota must be a non-negative safe integer", index)
+		}
 		models := []string{}
 		modelMapping := map[string]string{}
 		if previous, exists := existingByAPIKey[key]; exists {
@@ -414,6 +426,7 @@ func workflowOutputAPIKeys(value any, existing []domain.BackendAPIKey) ([]domain
 			Group:        group,
 			Models:       append([]string(nil), models...),
 			ModelMapping: modelMapping,
+			UsedQuota:    usedQuota,
 		})
 	}
 	return keys, nil
@@ -454,6 +467,11 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (string, error) 
 		if !ok {
 			return "", fmt.Errorf("workflow output models[%d].out_price is not a number", index)
 		}
+		priceTypeValue, ok := workflowOutputNumber(object["price_type"])
+		if !ok || math.Trunc(priceTypeValue) != priceTypeValue || priceTypeValue < 0 || priceTypeValue > 1 {
+			return "", fmt.Errorf("workflow output models[%d].price_type must be 0 or 1", index)
+		}
+		priceType := int(priceTypeValue)
 		groupNames := make([]any, 0, len(groups))
 		for groupIndex, group := range groups {
 			groupName, ok := group.(string)
@@ -462,13 +480,20 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (string, error) 
 			}
 			groupNames = append(groupNames, groupName)
 		}
-		models = append(models, map[string]any{
+		model := map[string]any{
 			"model_name":    name,
 			"enable_groups": groupNames,
 			"input_price":   inPrice,
 			"output_price":  outPrice,
+			"price_type":    priceType,
+			"quota_type":    priceType,
 			"billing_mode":  "token",
-		})
+		}
+		if priceType == 1 {
+			model["model_price"] = inPrice
+			model["billing_mode"] = "fixed"
+		}
+		models = append(models, model)
 	}
 	pricing := map[string]any{"code": 0, "message": "workflow", "data": models}
 	encoded, err := json.Marshal(pricing)
@@ -492,6 +517,14 @@ func workflowOutputNumber(value any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func workflowOutputNonNegativeInt64(value any) (int64, bool) {
+	number, ok := workflowOutputNumber(value)
+	if !ok || number < 0 || math.Trunc(number) != number || number > 1<<53-1 {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 func (h *WorkflowHandler) HandleGetWorkflowResult(w http.ResponseWriter, r *http.Request) {
@@ -521,6 +554,9 @@ func readWorkflowDefinition(w http.ResponseWriter, r *http.Request) (service.Gen
 	definition, err := service.ParseGeneralWorkflow(body)
 	if err != nil {
 		return service.GeneralWorkflowDefinition{}, nil, err
+	}
+	if err := service.ValidateCheckinWorkflowOutputTemplate(definition.Output); err != nil {
+		return service.GeneralWorkflowDefinition{}, nil, fmt.Errorf("validate workflow output: %w", err)
 	}
 	canonical, err := json.Marshal(definition)
 	if err != nil {

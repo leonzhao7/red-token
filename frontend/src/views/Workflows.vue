@@ -77,6 +77,7 @@ interface StepForm {
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+const WORKFLOW_OUTPUT_FIELDS = ['api_keys', 'models', 'quota', 'today_reward', 'used_quota', 'user_id', 'username']
 
 const showForm = ref(false)
 const isEditing = ref(false)
@@ -135,7 +136,8 @@ const SAMPLE_DEFINITION = `{
       "extract": [
         { "alias": "user_id", "expression": ".data.id | tostring" },
         { "alias": "username", "expression": ".data.email // .data.username // \\"\\"" },
-        { "alias": "balance", "expression": "(.data.free_balance // .data.balance // 0) | tonumber" }
+        { "alias": "quota", "expression": "(.data.quota // .data.free_balance // .data.balance // 0) | tonumber" },
+        { "alias": "today_reward", "expression": "(.data.today_reward // .data.checkin_reward // 0) | tonumber" }
       ]
     },
     {
@@ -150,7 +152,7 @@ const SAMPLE_DEFINITION = `{
       "extract": [
         {
           "alias": "api_keys_base",
-          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \\"\\"), key: (.key // \\"\\"), group: (.group.name // .group // \\"default\\")}]"
+          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \\"\\"), key: (.key // \\"\\"), group: (.group.name // .group // \\"default\\"), used_quota: ((.used_quota // 0) | tonumber | floor)}]"
         },
         {
           "alias": "key_ids",
@@ -171,11 +173,11 @@ const SAMPLE_DEFINITION = `{
       "extract": [
         {
           "alias": "api_keys",
-          "expression": "$vars.api_keys_base | map(. as $key | $key + {total_cost: (($response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber)})"
+          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber | floor)})"
         },
         {
-          "alias": "used_balance",
-          "expression": "$vars.api_keys | map(.total_cost) | add // 0"
+          "alias": "used_quota",
+          "expression": "$vars.api_keys | map(.used_quota) | add // 0"
         }
       ]
     },
@@ -195,11 +197,11 @@ const SAMPLE_DEFINITION = `{
         },
         {
           "alias": "model_rows",
-          "expression": "[.data[] | {name: (.model_name // .name), groups: (.enable_groups // []), in_price: ((.input_price // 0) | tonumber), out_price: ((.output_price // 0) | tonumber)}]"
+          "expression": "[.data[] | ((.price_type // .quota_type // 0) | tonumber) as $price_type | {name: (.model_name // .name), groups: (.enable_groups // []), in_price: ((if $price_type == 1 then (.price // .model_price // 0) else (.input_price // 0) end) | tonumber), out_price: ((if $price_type == 1 then (.price // .model_price // 0) else (.output_price // 0) end) | tonumber), price_type: $price_type}]"
         },
         {
           "alias": "models",
-          "expression": "$vars.model_rows | map(. as $model | [$model.groups[] | {name: ., ratio: ($vars.group_ratios[.] // 1)}] as $groups | ($groups | map(.ratio) | min // null) as $min_ratio | {name: $model.name, cheapest_groups: (if $min_ratio == null then [] else [$groups[] | select(.ratio == $min_ratio) | .name] end), in_price: $model.in_price, out_price: $model.out_price})"
+          "expression": "$vars.model_rows | map(. as $model | [$model.groups[] | {name: ., ratio: ($vars.group_ratios[.] // 1)}] as $groups | ($groups | map(.ratio) | min // null) as $min_ratio | {name: $model.name, cheapest_groups: (if $min_ratio == null then [] else [$groups[] | select(.ratio == $min_ratio) | .name] end), in_price: $model.in_price, out_price: $model.out_price, price_type: $model.price_type})"
         }
       ]
     }
@@ -207,8 +209,9 @@ const SAMPLE_DEFINITION = `{
   "output": {
     "user_id": "{{user_id}}",
     "username": "{{username}}",
-    "balance": "{{balance}}",
-    "used_balance": "{{used_balance}}",
+    "quota": "{{quota}}",
+    "used_quota": "{{used_quota}}",
+    "today_reward": "{{today_reward}}",
     "api_keys": "{{api_keys}}",
     "models": "{{models}}"
   }
@@ -500,7 +503,16 @@ function validateForm(): string[] {
     })
   })
   try {
-    JSON.parse(form.output)
+    const output = JSON.parse(form.output)
+    if (!output || typeof output !== 'object' || Array.isArray(output)) {
+      errors.push('Output 必须是对象')
+    } else {
+      const fields = Object.keys(output).sort()
+      const missing = WORKFLOW_OUTPUT_FIELDS.filter((field) => !fields.includes(field))
+      const unknown = fields.filter((field) => !WORKFLOW_OUTPUT_FIELDS.includes(field))
+      if (missing.length) errors.push(`Output 缺少固定字段：${missing.join(', ')}`)
+      if (unknown.length) errors.push(`Output 包含不支持的字段：${unknown.join(', ')}`)
+    }
   } catch {
     errors.push('Output 不是合法 JSON')
   }

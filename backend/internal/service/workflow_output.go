@@ -9,8 +9,9 @@ import (
 var checkinWorkflowOutputFields = map[string]struct{}{
 	"user_id":      {},
 	"username":     {},
-	"balance":      {},
-	"used_balance": {},
+	"quota":        {},
+	"used_quota":   {},
+	"today_reward": {},
 	"api_keys":     {},
 	"models":       {},
 }
@@ -20,7 +21,7 @@ var checkinWorkflowAPIKeyFields = map[string]struct{}{
 	"name":       {},
 	"key":        {},
 	"group":      {},
-	"total_cost": {},
+	"used_quota": {},
 }
 
 var checkinWorkflowModelFields = map[string]struct{}{
@@ -28,6 +29,22 @@ var checkinWorkflowModelFields = map[string]struct{}{
 	"cheapest_groups": {},
 	"in_price":        {},
 	"out_price":       {},
+	"price_type":      {},
+}
+
+// ValidateCheckinWorkflowOutputTemplate validates the fixed top-level
+// contract before a workflow definition is persisted. Nested values may still
+// be alias templates, so their concrete types are validated after execution.
+func ValidateCheckinWorkflowOutputTemplate(raw json.RawMessage) error {
+	var output any
+	if err := json.Unmarshal(raw, &output); err != nil {
+		return fmt.Errorf("decode output template: %w", err)
+	}
+	object, ok := output.(map[string]any)
+	if !ok {
+		return fmt.Errorf("$: expected object, got %T", output)
+	}
+	return validateWorkflowObjectFields("$", object, checkinWorkflowOutputFields)
 }
 
 // ValidateCheckinWorkflowOutput enforces the fixed business snapshot defined
@@ -46,11 +63,10 @@ func ValidateCheckinWorkflowOutput(value any) error {
 			return err
 		}
 	}
-	if _, err := requireWorkflowNumber(output, "balance", "$.balance", false); err != nil {
-		return err
-	}
-	if _, err := requireWorkflowNumber(output, "used_balance", "$.used_balance", true); err != nil {
-		return err
+	for _, field := range []string{"quota", "used_quota", "today_reward"} {
+		if _, err := requireWorkflowNumber(output, field, "$."+field, true); err != nil {
+			return err
+		}
 	}
 
 	apiKeysValue, exists := output["api_keys"]
@@ -80,7 +96,7 @@ func ValidateCheckinWorkflowOutput(value any) error {
 				return err
 			}
 		}
-		if _, err := requireWorkflowNumber(item, "total_cost", path+".total_cost", true); err != nil {
+		if _, err := requireWorkflowInteger(item, "used_quota", path+".used_quota", 0, maxSafeWorkflowInteger); err != nil {
 			return err
 		}
 		if id != "" {
@@ -142,9 +158,14 @@ func ValidateCheckinWorkflowOutput(value any) error {
 				return err
 			}
 		}
+		if _, err := requireWorkflowInteger(item, "price_type", path+".price_type", 0, 1); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+const maxSafeWorkflowInteger = 1<<53 - 1
 
 func validateWorkflowObjectFields(path string, object map[string]any, allowed map[string]struct{}) error {
 	for field := range object {
@@ -185,6 +206,20 @@ func requireWorkflowNumber(object map[string]any, field, path string, nonNegativ
 		return 0, fmt.Errorf("%s must be greater than or equal to zero", path)
 	}
 	return number, nil
+}
+
+func requireWorkflowInteger(object map[string]any, field, path string, minValue, maxValue int64) (int64, error) {
+	number, err := requireWorkflowNumber(object, field, path, minValue >= 0)
+	if err != nil {
+		return 0, err
+	}
+	if math.Trunc(number) != number {
+		return 0, fmt.Errorf("%s: expected integer", path)
+	}
+	if number < float64(minValue) || number > float64(maxValue) {
+		return 0, fmt.Errorf("%s must be between %d and %d", path, minValue, maxValue)
+	}
+	return int64(number), nil
 }
 
 func workflowNumber(value any) (float64, bool) {

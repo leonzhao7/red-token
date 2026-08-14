@@ -65,18 +65,18 @@ func TestHTTPWorkflowStoreCRUDResultsAndCascades(t *testing.T) {
 		t.Fatalf("expected missing update to return sql.ErrNoRows, got %v", err)
 	}
 
-	firstResult, err := st.UpsertHTTPWorkflowResult(ctx, "first", backend.ID, json.RawMessage(`{"balance":1}`))
+	firstResult, err := st.UpsertHTTPWorkflowResult(ctx, "first", backend.ID, json.RawMessage(`{"quota":1}`))
 	if err != nil {
 		t.Fatalf("create workflow result: %v", err)
 	}
-	if firstResult.WorkflowID != "first" || firstResult.BackendID != backend.ID || string(firstResult.Output) != `{"balance":1}` {
+	if firstResult.WorkflowID != "first" || firstResult.BackendID != backend.ID || string(firstResult.Output) != `{"quota":1}` {
 		t.Fatalf("unexpected first result: %+v", firstResult)
 	}
-	secondResult, err := st.UpsertHTTPWorkflowResult(ctx, "first", backend.ID, json.RawMessage(`{"balance":2}`))
+	secondResult, err := st.UpsertHTTPWorkflowResult(ctx, "first", backend.ID, json.RawMessage(`{"quota":2}`))
 	if err != nil {
 		t.Fatalf("update workflow result: %v", err)
 	}
-	if string(secondResult.Output) != `{"balance":2}` {
+	if string(secondResult.Output) != `{"quota":2}` {
 		t.Fatalf("result was not replaced: %s", secondResult.Output)
 	}
 	if _, err := st.UpsertHTTPWorkflowResult(ctx, "first", backend.ID+999, json.RawMessage(`{}`)); err == nil {
@@ -121,7 +121,7 @@ func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T
 		APIKeys: []domain.BackendAPIKey{{
 			APIKey: "old-key", Group: "old", Models: []string{"old-model"}, ModelMapping: map[string]string{},
 		}},
-		ConsoleAccountJSON: `{"balance":1}`,
+		ConsoleAccountJSON: `{"quota":1}`,
 		ConsolePricingJSON: `{"data":[]}`,
 	})
 	if err != nil {
@@ -133,9 +133,9 @@ func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T
 	}
 	updated := backend
 	updated.APIKeys = []domain.BackendAPIKey{{APIKey: "new-key", Group: "new", Models: []string{"new-model"}}}
-	updated.ConsoleAccountJSON = `{"balance":9}`
+	updated.ConsoleAccountJSON = `{"quota":9}`
 	updated.ConsolePricingJSON = `{"data":[{"model_name":"new-model"}]}`
-	output := json.RawMessage(`{"balance":9}`)
+	output := json.RawMessage(`{"quota":9}`)
 	gotBackend, gotResult, err := st.ApplyHTTPWorkflowResult(ctx, workflow.ID, updated, output)
 	if err != nil {
 		t.Fatalf("apply workflow result: %v", err)
@@ -149,8 +149,8 @@ func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T
 
 	rollbackCandidate := gotBackend
 	rollbackCandidate.APIKeys = []domain.BackendAPIKey{{APIKey: "should-rollback", Group: "rollback", Models: []string{"rollback-model"}}}
-	rollbackCandidate.ConsoleAccountJSON = `{"balance":999}`
-	if _, _, err := st.ApplyHTTPWorkflowResult(ctx, "missing-workflow", rollbackCandidate, json.RawMessage(`{"balance":999}`)); err == nil {
+	rollbackCandidate.ConsoleAccountJSON = `{"quota":999}`
+	if _, _, err := st.ApplyHTTPWorkflowResult(ctx, "missing-workflow", rollbackCandidate, json.RawMessage(`{"quota":999}`)); err == nil {
 		t.Fatal("expected missing workflow foreign key to fail")
 	}
 	afterRollback, err := st.GetBackend(ctx, backend.ID)
