@@ -28,9 +28,16 @@ export interface WorkflowWhen {
   goto: string
 }
 
+export interface WorkflowForeach {
+  alias: string
+  as: string
+  index_as?: string
+}
+
 export interface WorkflowStep {
   id: string
   name: string
+  foreach?: WorkflowForeach
   request: WorkflowRequest
   expect?: string | WorkflowExpect
   when?: WorkflowWhen

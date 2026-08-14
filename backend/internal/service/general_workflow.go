@@ -26,15 +26,17 @@ import (
 )
 
 const (
-	GeneralWorkflowSpecV1             = "http-workflow/v1"
-	GeneralWorkflowSpecV2             = "http-workflow/v2"
-	GeneralWorkflowSpec               = GeneralWorkflowSpecV2
-	defaultGeneralWorkflowBodyLimit   = int64(10 << 20)
-	defaultGeneralWorkflowHTTPTimeout = 30 * time.Second
-	defaultGeneralWorkflowJQTimeout   = 5 * time.Second
-	defaultGeneralWorkflowVisitLimit  = 100
-	generalWorkflowDebugPreviewBytes  = 64 << 10
-	maxSafeJSONInteger                = int64(1<<53 - 1)
+	GeneralWorkflowSpecV1              = "http-workflow/v1"
+	GeneralWorkflowSpecV2              = "http-workflow/v2"
+	GeneralWorkflowSpecV3              = "http-workflow/v3"
+	GeneralWorkflowSpec                = GeneralWorkflowSpecV3
+	defaultGeneralWorkflowBodyLimit    = int64(10 << 20)
+	defaultGeneralWorkflowHTTPTimeout  = 30 * time.Second
+	defaultGeneralWorkflowJQTimeout    = 5 * time.Second
+	defaultGeneralWorkflowVisitLimit   = 100
+	defaultGeneralWorkflowForeachLimit = 1000
+	generalWorkflowDebugPreviewBytes   = 64 << 10
+	maxSafeJSONInteger                 = int64(1<<53 - 1)
 )
 
 var (
@@ -75,10 +77,17 @@ type GeneralWorkflowDefinition struct {
 type GeneralWorkflowStep struct {
 	ID      string                      `json:"id"`
 	Name    string                      `json:"name"`
+	Foreach *GeneralWorkflowForeach     `json:"foreach,omitempty"`
 	Request GeneralWorkflowRequest      `json:"request"`
 	Expect  *GeneralWorkflowExpect      `json:"expect,omitempty"`
 	Extract []GeneralWorkflowExtraction `json:"extract,omitempty"`
 	When    *GeneralWorkflowWhen        `json:"when,omitempty"`
+}
+
+type GeneralWorkflowForeach struct {
+	Alias   string `json:"alias"`
+	As      string `json:"as"`
+	IndexAs string `json:"index_as,omitempty"`
 }
 
 type GeneralWorkflowExpect struct {
@@ -342,6 +351,26 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 				return err
 			}
 		}
+		if foreachValue, exists := step["foreach"]; exists {
+			foreach, ok := foreachValue.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s/foreach must be an object", path)
+			}
+			for _, field := range []string{"alias", "as"} {
+				if _, err := requiredGeneralWorkflowString(foreach, field, path+"/foreach/"+field); err != nil {
+					return err
+				}
+			}
+			if _, exists := foreach["index_as"]; exists {
+				indexAs, err := requiredGeneralWorkflowString(foreach, "index_as", path+"/foreach/index_as")
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(indexAs) == "" {
+					return fmt.Errorf("%s/foreach/index_as must not be empty", path)
+				}
+			}
+		}
 		requestValue, exists := step["request"]
 		if !exists {
 			return fmt.Errorf("%s/request is required", path)
@@ -470,7 +499,7 @@ func ValidateGeneralWorkflow(definition GeneralWorkflowDefinition) error {
 }
 
 func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGeneralWorkflow, error) {
-	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 {
+	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 {
 		return compiledGeneralWorkflow{}, fmt.Errorf("unsupported spec %q", definition.Spec)
 	}
 	if !generalWorkflowIDPattern.MatchString(definition.ID) {
@@ -510,6 +539,28 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		if strings.TrimSpace(step.Name) == "" {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: step name is required", index)
 		}
+		if step.Foreach != nil {
+			if definition.Spec != GeneralWorkflowSpecV3 {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach requires spec %q", index, GeneralWorkflowSpecV3)
+			}
+			if err := validateGeneralWorkflowAlias(step.Foreach.Alias); err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] foreach alias: %w", index, err)
+			}
+			if err := validateGeneralWorkflowAlias(step.Foreach.As); err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] foreach as: %w", index, err)
+			}
+			if step.Foreach.IndexAs != "" {
+				if err := validateGeneralWorkflowAlias(step.Foreach.IndexAs); err != nil {
+					return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] foreach index_as: %w", index, err)
+				}
+			}
+			if step.Foreach.Alias == step.Foreach.As || step.Foreach.IndexAs != "" && step.Foreach.Alias == step.Foreach.IndexAs {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach alias must differ from iteration aliases", index)
+			}
+			if step.Foreach.IndexAs != "" && step.Foreach.As == step.Foreach.IndexAs {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach as and index_as must differ", index)
+			}
+		}
 		if err := validateGeneralWorkflowRequest(step.Request); err != nil {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] request: %w", index, err)
 		}
@@ -536,8 +587,8 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		}
 		var when *gojq.Code
 		if step.When != nil {
-			if definition.Spec != GeneralWorkflowSpecV2 {
-				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when requires spec %q", index, GeneralWorkflowSpecV2)
+			if definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when requires spec %q or later", index, GeneralWorkflowSpecV2)
 			}
 			if strings.TrimSpace(step.When.Expression) == "" || strings.TrimSpace(step.When.Goto) == "" {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when expression and goto are required", index)
@@ -556,12 +607,22 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 			whenGotoIndex:    -1,
 			extract:          make([]compiledGeneralWorkflowExtraction, 0, len(step.Extract)),
 		}
+		extractAliases := make(map[string]struct{}, len(step.Extract))
 		for extractIndex, extraction := range step.Extract {
 			if err := validateGeneralWorkflowAlias(extraction.Alias); err != nil {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] extract[%d]: %w", index, extractIndex, err)
 			}
 			if strings.TrimSpace(extraction.Expression) == "" {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] extract[%d]: expression is required", index, extractIndex)
+			}
+			if step.Foreach != nil {
+				if extraction.Alias == step.Foreach.As || step.Foreach.IndexAs != "" && extraction.Alias == step.Foreach.IndexAs {
+					return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] extract[%d]: alias %q conflicts with a foreach iteration alias", index, extractIndex, extraction.Alias)
+				}
+				if _, duplicate := extractAliases[extraction.Alias]; duplicate {
+					return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] extract[%d]: duplicate foreach extract alias %q", index, extractIndex, extraction.Alias)
+				}
+				extractAliases[extraction.Alias] = struct{}{}
 			}
 			code, err := compileGeneralWorkflowJQ(extraction.Expression)
 			if err != nil {
@@ -805,6 +866,7 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 	stepIndex := 0
 	executionCount := 0
 	stepVisits := make([]int, len(compiled.steps))
+stepLoop:
 	for stepIndex < len(compiled.steps) {
 		executionCount++
 		stepVisits[stepIndex]++
@@ -814,103 +876,193 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 		step := compiled.steps[stepIndex]
 		stepStartedAt := time.Now()
 		stepLog := GeneralWorkflowDebugLog{StepID: step.definition.ID, StepName: step.definition.Name}
-		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_start", "step execution started", nil, 0))
-		request, err := workflow.renderRequest(step.definition.Request, aliases, baseHeaders)
-		if err != nil {
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "render request", Err: err}
-		}
-		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "request", "HTTP request rendered", map[string]any{
-			"method":   request.method,
-			"path":     request.path,
-			"query":    generalWorkflowDebugValue("query", request.query),
-			"headers":  generalWorkflowHeaderObject(request.headers),
-			"has_body": request.hasBody,
-			"body":     generalWorkflowDebugValue("body", request.body),
-		}, 0))
-		requestStartedAt := time.Now()
-		response, err := workflow.doRequest(ctx, baseURL, request, options.Recorder)
-		if err != nil {
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "request", Err: err}
-		}
-		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "response", "HTTP response received", map[string]any{
-			"status_code": response.envelope["status"],
-			"headers":     response.envelope["headers"],
-			"has_body":    response.envelope["has_body"],
-			"body":        generalWorkflowDebugValue("body", response.body),
-		}, time.Since(requestStartedAt).Milliseconds()))
-		status, ok := response.envelope["status"].(int)
-		if !ok {
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: errors.New("response status is unavailable")}
-		}
-		if route, matched := step.expectRoutes[status]; matched {
-			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "expect_goto", "response status matched expect route; skipping extract and jumping to target", map[string]any{
-				"response_status": status,
-				"goto":            route.definition.Goto,
-			}, time.Since(stepStartedAt).Milliseconds()))
-			stepIndex = route.gotoIndex
-			continue
-		}
-		if step.expect != nil {
-			expected, err := workflow.runJQ(ctx, step.expect, response.body, response.envelope, request.jqValue, aliases, runtime)
-			if err != nil {
-				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate expect", Err: err}
+		foreachItems := []any{nil}
+		stepDetails := map[string]any(nil)
+		if step.definition.Foreach != nil {
+			foreach := step.definition.Foreach
+			source, exists := aliases[foreach.Alias]
+			if !exists {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "foreach", Err: fmt.Errorf("source alias %q does not exist", foreach.Alias)}
 			}
-			accepted, ok := expected.(bool)
-			if !ok || !accepted {
-				terminalErrorLogged = true
-				expectSource := "$response.status >= 200 and $response.status < 300"
-				if step.definition.Expect != nil {
-					expectSource = step.definition.Expect.Expression
-				}
-				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "expect", fmt.Sprintf("expect expression rejected the response (HTTP %d)", status), map[string]any{
-					"expression":      expectSource,
-					"result_type":     generalWorkflowJSONType(expected),
-					"result":          expected,
-					"response_status": status,
-				}, time.Since(stepStartedAt).Milliseconds()))
-				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: fmt.Errorf("expression returned %s instead of true", generalWorkflowJSONType(expected))}
+			var ok bool
+			foreachItems, ok = source.([]any)
+			if !ok {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "foreach", Err: fmt.Errorf("source alias %q must be an array, got %s", foreach.Alias, generalWorkflowJSONType(source))}
 			}
-		} else if _, accepted := step.acceptedStatuses[status]; (status < 200 || status >= 300) && !accepted {
-			terminalErrorLogged = true
-			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "expect", fmt.Sprintf("response status HTTP %d did not match a route and is not 2xx", status), map[string]any{
-				"response_status": status,
-				"response_body":   generalWorkflowDebugValue("body", response.body),
-			}, time.Since(stepStartedAt).Milliseconds()))
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: fmt.Errorf("HTTP %d did not match an expect route", status)}
-		} else {
-			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "expect", "response status is accepted; continuing to extract", map[string]any{"response_status": status}, time.Since(stepStartedAt).Milliseconds()))
+			if len(foreachItems) > defaultGeneralWorkflowForeachLimit {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "foreach", Err: fmt.Errorf("source alias %q has %d items; limit is %d", foreach.Alias, len(foreachItems), defaultGeneralWorkflowForeachLimit)}
+			}
+			stepDetails = map[string]any{"foreach_alias": foreach.Alias, "item_count": len(foreachItems)}
 		}
+		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_start", "step execution started", stepDetails, 0))
 
-		stagedAliases, err := cloneGeneralWorkflowObject(aliases)
-		if err != nil {
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "stage aliases", Err: err}
+		aggregatedAliases := make(map[string][]any, len(step.extract))
+		if step.definition.Foreach != nil {
+			for _, extraction := range step.extract {
+				aggregatedAliases[extraction.definition.Alias] = []any{}
+			}
 		}
-		for _, extraction := range step.extract {
-			value, err := workflow.runJQ(ctx, extraction.code, response.body, response.envelope, request.jqValue, stagedAliases, runtime)
-			if err != nil {
-				terminalErrorLogged = true
-				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "extract", "alias extraction failed", map[string]any{
-					"alias":      extraction.definition.Alias,
-					"expression": extraction.definition.Expression,
-					"error":      err.Error(),
-				}, time.Since(stepStartedAt).Milliseconds()))
-				return GeneralWorkflowResult{}, &GeneralWorkflowError{
-					StepID: step.definition.ID,
-					Phase:  fmt.Sprintf("extract alias %q", extraction.definition.Alias),
-					Err:    err,
+		var lastRequest renderedGeneralWorkflowRequest
+		var lastResponse generalWorkflowHTTPResponse
+		for iterationIndex, foreachItem := range foreachItems {
+			iterationAliases := aliases
+			if step.definition.Foreach != nil {
+				iterationAliases, err = cloneGeneralWorkflowObject(aliases)
+				if err != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "stage foreach aliases", Err: err}
+				}
+				iterationAliases[step.definition.Foreach.As] = foreachItem
+				if step.definition.Foreach.IndexAs != "" {
+					iterationAliases[step.definition.Foreach.IndexAs] = iterationIndex
 				}
 			}
-			stagedAliases[extraction.definition.Alias] = value
-			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "extract", "alias extracted", map[string]any{
-				"alias":       extraction.definition.Alias,
-				"expression":  extraction.definition.Expression,
-				"result_type": generalWorkflowJSONType(value),
-				"result":      generalWorkflowDebugValue(extraction.definition.Alias, value),
-			}, 0))
+			withIteration := func(details map[string]any) map[string]any {
+				if step.definition.Foreach == nil {
+					return details
+				}
+				if details == nil {
+					details = map[string]any{}
+				}
+				details["iteration_index"] = iterationIndex
+				details["iteration_item"] = generalWorkflowDebugValue(step.definition.Foreach.As, foreachItem)
+				return details
+			}
+			iterationError := func(iterationErr error) error {
+				if step.definition.Foreach == nil {
+					return iterationErr
+				}
+				return fmt.Errorf("foreach iteration %d: %w", iterationIndex, iterationErr)
+			}
+			if step.definition.Foreach != nil {
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "foreach_iteration", "foreach iteration started", withIteration(nil), 0))
+			}
+
+			request, err := workflow.renderRequest(step.definition.Request, iterationAliases, baseHeaders)
+			if err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "render request", Err: iterationError(err)}
+			}
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "request", "HTTP request rendered", withIteration(map[string]any{
+				"method":   request.method,
+				"path":     request.path,
+				"query":    generalWorkflowDebugValue("query", request.query),
+				"headers":  generalWorkflowHeaderObject(request.headers),
+				"has_body": request.hasBody,
+				"body":     generalWorkflowDebugValue("body", request.body),
+			}), 0))
+			requestStartedAt := time.Now()
+			response, err := workflow.doRequest(ctx, baseURL, request, options.Recorder)
+			if err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "request", Err: iterationError(err)}
+			}
+			lastRequest = request
+			lastResponse = response
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "response", "HTTP response received", withIteration(map[string]any{
+				"status_code": response.envelope["status"],
+				"headers":     response.envelope["headers"],
+				"has_body":    response.envelope["has_body"],
+				"body":        generalWorkflowDebugValue("body", response.body),
+			}), time.Since(requestStartedAt).Milliseconds()))
+			status, ok := response.envelope["status"].(int)
+			if !ok {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: iterationError(errors.New("response status is unavailable"))}
+			}
+			if route, matched := step.expectRoutes[status]; matched {
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "expect_goto", "response status matched expect route; skipping extract and jumping to target", withIteration(map[string]any{
+					"response_status": status,
+					"goto":            route.definition.Goto,
+				}), time.Since(stepStartedAt).Milliseconds()))
+				stepIndex = route.gotoIndex
+				continue stepLoop
+			}
+			if step.expect != nil {
+				expected, err := workflow.runJQ(ctx, step.expect, response.body, response.envelope, request.jqValue, iterationAliases, runtime)
+				if err != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate expect", Err: iterationError(err)}
+				}
+				accepted, ok := expected.(bool)
+				if !ok || !accepted {
+					terminalErrorLogged = true
+					expectSource := "$response.status >= 200 and $response.status < 300"
+					if step.definition.Expect != nil {
+						expectSource = step.definition.Expect.Expression
+					}
+					workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "expect", fmt.Sprintf("expect expression rejected the response (HTTP %d)", status), withIteration(map[string]any{
+						"expression":      expectSource,
+						"result_type":     generalWorkflowJSONType(expected),
+						"result":          expected,
+						"response_status": status,
+					}), time.Since(stepStartedAt).Milliseconds()))
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: iterationError(fmt.Errorf("expression returned %s instead of true", generalWorkflowJSONType(expected)))}
+				}
+			} else if _, accepted := step.acceptedStatuses[status]; (status < 200 || status >= 300) && !accepted {
+				terminalErrorLogged = true
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "expect", fmt.Sprintf("response status HTTP %d did not match a route and is not 2xx", status), withIteration(map[string]any{
+					"response_status": status,
+					"response_body":   generalWorkflowDebugValue("body", response.body),
+				}), time.Since(stepStartedAt).Milliseconds()))
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: iterationError(fmt.Errorf("HTTP %d did not match an expect route", status))}
+			} else {
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "expect", "response status is accepted; continuing to extract", withIteration(map[string]any{"response_status": status}), time.Since(stepStartedAt).Milliseconds()))
+			}
+
+			stagedAliases, err := cloneGeneralWorkflowObject(iterationAliases)
+			if err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "stage aliases", Err: iterationError(err)}
+			}
+			for _, extraction := range step.extract {
+				value, err := workflow.runJQ(ctx, extraction.code, response.body, response.envelope, request.jqValue, stagedAliases, runtime)
+				if err != nil {
+					terminalErrorLogged = true
+					workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "extract", "alias extraction failed", withIteration(map[string]any{
+						"alias":      extraction.definition.Alias,
+						"expression": extraction.definition.Expression,
+						"error":      err.Error(),
+					}), time.Since(stepStartedAt).Milliseconds()))
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{
+						StepID: step.definition.ID,
+						Phase:  fmt.Sprintf("extract alias %q", extraction.definition.Alias),
+						Err:    iterationError(err),
+					}
+				}
+				stagedAliases[extraction.definition.Alias] = value
+				if step.definition.Foreach != nil {
+					aggregatedAliases[extraction.definition.Alias] = append(aggregatedAliases[extraction.definition.Alias], value)
+				}
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "extract", "alias extracted", withIteration(map[string]any{
+					"alias":       extraction.definition.Alias,
+					"expression":  extraction.definition.Expression,
+					"result_type": generalWorkflowJSONType(value),
+					"result":      generalWorkflowDebugValue(extraction.definition.Alias, value),
+				}), 0))
+			}
+			if step.definition.Foreach == nil {
+				aliases = stagedAliases
+			} else {
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "foreach_iteration", "foreach iteration completed", withIteration(nil), time.Since(requestStartedAt).Milliseconds()))
+			}
 		}
-		aliases = stagedAliases
+		if step.definition.Foreach != nil {
+			stagedAliases, err := cloneGeneralWorkflowObject(aliases)
+			if err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "commit foreach aliases", Err: err}
+			}
+			for _, extraction := range step.extract {
+				stagedAliases[extraction.definition.Alias] = aggregatedAliases[extraction.definition.Alias]
+			}
+			aliases = stagedAliases
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "foreach_commit", "foreach extract aliases committed", map[string]any{
+				"item_count": len(foreachItems),
+				"aliases":    sortedGeneralWorkflowKeysFromSlices(aggregatedAliases),
+			}, time.Since(stepStartedAt).Milliseconds()))
+		}
 		if step.when != nil {
-			condition, err := workflow.runJQ(ctx, step.when, response.body, response.envelope, request.jqValue, aliases, runtime)
+			var whenResponse any = lastResponse.envelope
+			var whenRequest any = lastRequest.jqValue
+			if step.definition.Foreach != nil && len(foreachItems) == 0 {
+				whenResponse = nil
+				whenRequest = nil
+			}
+			condition, err := workflow.runJQ(ctx, step.when, lastResponse.body, whenResponse, whenRequest, aliases, runtime)
 			if err != nil {
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate when after extract", Err: err}
 			}
@@ -922,7 +1074,7 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_goto", "step condition matched after alias extraction; jumping to target", map[string]any{
 					"expression":      step.definition.When.Expression,
 					"result":          true,
-					"response_status": response.envelope["status"],
+					"response_status": lastResponse.envelope["status"],
 					"goto":            step.definition.When.Goto,
 				}, time.Since(stepStartedAt).Milliseconds()))
 				stepIndex = step.whenGotoIndex
@@ -1012,6 +1164,15 @@ func generalWorkflowStepName(definition GeneralWorkflowDefinition, stepID string
 }
 
 func sortedGeneralWorkflowKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedGeneralWorkflowKeysFromSlices(values map[string][]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

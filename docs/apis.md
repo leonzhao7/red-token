@@ -1091,9 +1091,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 ## 7. HTTP 工作流管理
 
-工作流配置使用 [`http-workflow/v1`](http_workflow.md) 或 `http-workflow/v2` 语义。需要基于当前响应状态码执行条件跳转时使用 v2；创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库保存通过语法及表达式编译校验后的规范化配置。
+工作流配置使用 [`http-workflow/v1`](http_workflow.md)、`http-workflow/v2` 或 `http-workflow/v3` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或 v3；需要对数组 alias 逐项串行发送请求时使用 v3。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库保存通过语法及表达式编译校验后的规范化配置。
 
-工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、`console_authorization`、SOCKS5 代理和全局控制台 User-Agent。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。
+工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、`console_authorization`、SOCKS5 代理和全局控制台 User-Agent。对于 `new-api` 后端，如果 Headers 中没有显式配置 `New-Api-User`，还会从 `console_account_json.id` 自动注入该请求头。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。
 
 ### 7.1 工作流列表
 

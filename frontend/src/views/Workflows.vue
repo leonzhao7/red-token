@@ -59,6 +59,9 @@ interface ExpectRouteRow {
 interface StepForm {
   id: string
   name: string
+  foreachAlias: string
+  foreachAs: string
+  foreachIndexAs: string
   method: string
   path: string
   query: KvRow[]
@@ -91,6 +94,9 @@ function emptyStep(): StepForm {
   return {
     id: '',
     name: '',
+    foreachAlias: '',
+    foreachAs: '',
+    foreachIndexAs: '',
     method: 'GET',
     path: '',
     query: [emptyKv()],
@@ -113,7 +119,7 @@ function emptyExtract(): ExtractRow {
 }
 
 const SAMPLE_DEFINITION = `{
-  "spec": "http-workflow/v2",
+  "spec": "http-workflow/v3",
   "id": "sub2api-default-checkin-profile",
   "name": "sub2api 默认签到",
   "steps": [
@@ -241,6 +247,9 @@ function defToForm(def: WorkflowDefinition) {
   form.steps = def.steps.map((step) => ({
     id: step.id,
     name: step.name,
+    foreachAlias: step.foreach?.alias || '',
+    foreachAs: step.foreach?.as || '',
+    foreachIndexAs: step.foreach?.index_as || '',
     method: step.request.method,
     path: step.request.path,
     query: objToKv(step.request.query),
@@ -435,6 +444,18 @@ function validateForm(): string[] {
     else if (stepIds.has(st.id.trim())) errors.push(`${label}：步骤 ID「${st.id.trim()}」重复`)
     else stepIds.add(st.id.trim())
     if (!st.name.trim()) errors.push(`${label}：步骤名称不能为空`)
+    const foreachAlias = st.foreachAlias.trim()
+    const foreachAs = st.foreachAs.trim()
+    const foreachIndexAs = st.foreachIndexAs.trim()
+    if (foreachAlias || foreachAs || foreachIndexAs) {
+      if (!foreachAlias) errors.push(`${label}：Foreach 缺少来源 Alias`)
+      else if (!ALIAS_RE.test(foreachAlias)) errors.push(`${label}：Foreach 来源 Alias「${foreachAlias}」格式非法`)
+      if (!foreachAs) errors.push(`${label}：Foreach 缺少元素 Alias`)
+      else if (!ALIAS_RE.test(foreachAs)) errors.push(`${label}：Foreach 元素 Alias「${foreachAs}」格式非法`)
+      if (foreachIndexAs && !ALIAS_RE.test(foreachIndexAs)) errors.push(`${label}：Foreach 下标 Alias「${foreachIndexAs}」格式非法`)
+      if (foreachAlias && (foreachAlias === foreachAs || foreachAlias === foreachIndexAs)) errors.push(`${label}：Foreach 来源 Alias 不能与迭代 Alias 相同`)
+      if (foreachIndexAs && foreachAs === foreachIndexAs) errors.push(`${label}：Foreach 元素 Alias 和下标 Alias 不能相同`)
+    }
     if (!st.path.trim()) errors.push(`${label}：path 不能为空`)
     else if (!st.path.trim().startsWith('/')) errors.push(`${label}：path 必须以 / 开头`)
     if (st.body.trim()) {
@@ -462,13 +483,19 @@ function validateForm(): string[] {
     if (acceptedStatuses.some((value) => !/^\d+$/.test(value) || Number(value) < 100 || Number(value) > 599)) {
       errors.push(`${label}：Expect 成功状态码包含非法 HTTP 状态码`)
     }
-    if (st.legacyExpect) errors.push(`${label}：该步骤仍使用 v1 字符串 Expect，请删除旧表达式并迁移为 v2 状态码路由后保存`)
+    if (st.legacyExpect) errors.push(`${label}：该步骤仍使用 v1 字符串 Expect，请删除旧表达式并迁移为 v3 状态码路由后保存`)
+    const extractAliases = new Set<string>()
     st.extract.forEach((ex, j) => {
       if (!ex.alias.trim()) {
         errors.push(`${label}：第 ${j + 1} 条提取缺少别名`)
         return
       }
       if (!ALIAS_RE.test(ex.alias.trim())) errors.push(`${label}：提取别名「${ex.alias.trim()}」格式非法，需匹配 ^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+      if ((foreachAs && ex.alias.trim() === foreachAs) || (foreachIndexAs && ex.alias.trim() === foreachIndexAs)) {
+        errors.push(`${label}：提取别名「${ex.alias.trim()}」与 Foreach 迭代 Alias 冲突`)
+      }
+      if (foreachAlias && extractAliases.has(ex.alias.trim())) errors.push(`${label}：Foreach 的提取别名「${ex.alias.trim()}」重复`)
+      extractAliases.add(ex.alias.trim())
       if (!ex.expression.trim()) errors.push(`${label}：别名「${ex.alias.trim()}」缺少 jq 表达式`)
     })
   })
@@ -494,6 +521,13 @@ function formToDef(): WorkflowDefinition {
       id: st.id.trim(),
       name: st.name.trim(),
       request: request as WorkflowStep['request']
+    }
+    const foreachAlias = st.foreachAlias.trim()
+    const foreachAs = st.foreachAs.trim()
+    const foreachIndexAs = st.foreachIndexAs.trim()
+    if (foreachAlias && foreachAs) {
+      step.foreach = { alias: foreachAlias, as: foreachAs }
+      if (foreachIndexAs) step.foreach.index_as = foreachIndexAs
     }
     const when = st.when.trim()
     const whenGoto = st.whenGoto.trim()
@@ -522,7 +556,7 @@ function formToDef(): WorkflowDefinition {
     return step
   })
   return {
-    spec: 'http-workflow/v2',
+    spec: 'http-workflow/v3',
     id: form.id.trim(),
     name: form.name.trim(),
     steps,
@@ -784,8 +818,18 @@ onMounted(loadData)
                   <select v-model="st.method" class="select wf-method-select">
                     <option v-for="m in methodOptions()" :key="m" :value="m">{{ m }}</option>
                   </select>
-                  <input v-model="st.path" class="input mono" placeholder="/api/v1/auth/me" spellcheck="false" />
+                  <input v-model="st.path" class="input mono" placeholder="/api/v1/auth/me" spellcheck="false" @focus="onFocus" />
                 </div>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label">Foreach <em class="wf-hint">来源是数组 Alias；留空表示本步骤只执行一次</em></label>
+              <div class="wf-foreach-line">
+                <input v-model="st.foreachAlias" class="input mono" placeholder="来源 Alias，如 items" spellcheck="false" />
+                <span class="wf-goto-arrow mono">→</span>
+                <input v-model="st.foreachAs" class="input mono" placeholder="元素 Alias，如 item" spellcheck="false" />
+                <input v-model="st.foreachIndexAs" class="input mono" placeholder="下标 Alias（可选）" spellcheck="false" />
               </div>
             </div>
 
@@ -1064,6 +1108,7 @@ onMounted(loadData)
 .wf-form { display: flex; flex-direction: column; gap: 14px; }
 .wf-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .wf-hint { font-style: normal; font-size: 11px; color: var(--text-faint); font-weight: 500; margin-left: 6px; }
+.wf-foreach-line { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 8px; }
 
 .wf-sec-head { display: flex; align-items: center; gap: 10px; }
 .wf-sec-head.sub { margin: 2px 0 4px; }
@@ -1200,6 +1245,8 @@ onMounted(loadData)
 
 @media (max-width: 720px) {
   .wf-form-grid, .wf-grid-2 { grid-template-columns: 1fr; }
+  .wf-foreach-line { grid-template-columns: 1fr; }
+  .wf-foreach-line .wf-goto-arrow { display: none; }
   .wf-row { flex-wrap: wrap; }
 }
 </style>

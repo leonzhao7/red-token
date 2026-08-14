@@ -156,6 +156,155 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowForeachRendersObjectMembersAndAggregatesExtracts(t *testing.T) {
+	var paths []string
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		body := `{"ok":true}`
+		switch request.URL.Path {
+		case "/items":
+			body = `{"data":[{"key":"123"},{"key":"abc"}]}`
+		case "/api/123/usage":
+			body = `{"usage":12}`
+		case "/api/abc/usage":
+			body = `{"usage":34}`
+		case "/done":
+		default:
+			t.Fatalf("unexpected request path %q", request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v3","id":"foreach-objects","name":"Foreach objects",
+  "steps":[
+    {"id":"list","name":"List","request":{"method":"GET","path":"/items"},"extract":[{"alias":"items","expression":".data"}]},
+    {
+      "id":"usage","name":"Usage",
+      "foreach":{"alias":"items","as":"item","index_as":"item_index"},
+      "request":{"method":"GET","path":"/api/{{item#/key}}/usage"},
+      "extract":[
+        {"alias":"usage_rows","expression":"{key:$vars.item.key,index:$vars.item_index,usage:.usage}"},
+        {"alias":"usage_labels","expression":"($vars.usage_rows.key + \"=\" + ($vars.usage_rows.usage | tostring))"}
+      ],
+      "when":{"expression":"$vars.usage_rows | length == 2","goto":"done"}
+    },
+    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"done","name":"Done","request":{"method":"GET","path":"/done"}}
+  ],
+  "output":{"rows":"{{usage_rows}}","labels":"{{usage_labels}}"}
+}`)
+	var logs []GeneralWorkflowDebugLog
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL:  "https://example.com",
+		DebugLog: func(log GeneralWorkflowDebugLog) { logs = append(logs, log) },
+	})
+	if err != nil {
+		t.Fatalf("execute foreach workflow: %v", err)
+	}
+	if want := []string{"/items", "/api/123/usage", "/api/abc/usage", "/done"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("unexpected request order: got %#v want %#v", paths, want)
+	}
+	rows, ok := result.Aliases["usage_rows"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("expected two aggregated usage rows, got %#v", result.Aliases["usage_rows"])
+	}
+	first := rows[0].(map[string]any)
+	second := rows[1].(map[string]any)
+	if first["key"] != "123" || first["index"] != 0 || first["usage"] != 12 || second["key"] != "abc" || second["index"] != 1 || second["usage"] != 34 {
+		t.Fatalf("unexpected aggregated rows: %#v", rows)
+	}
+	if want := []any{"123=12", "abc=34"}; !reflect.DeepEqual(result.Aliases["usage_labels"], want) {
+		t.Fatalf("unexpected aggregated labels: %#v", result.Aliases["usage_labels"])
+	}
+	if _, exists := result.Aliases["item"]; exists {
+		t.Fatalf("foreach item alias leaked into result: %#v", result.Aliases)
+	}
+	if _, exists := result.Aliases["item_index"]; exists {
+		t.Fatalf("foreach index alias leaked into result: %#v", result.Aliases)
+	}
+	iterationLogs := 0
+	for _, log := range logs {
+		if log.Phase == "foreach_iteration" && log.Message == "foreach iteration started" {
+			iterationLogs++
+			if _, exists := log.Details["iteration_index"]; !exists {
+				t.Fatalf("foreach log is missing iteration index: %#v", log)
+			}
+		}
+	}
+	if iterationLogs != 2 {
+		t.Fatalf("expected two foreach iteration logs, got %d", iterationLogs)
+	}
+}
+
+func TestGeneralWorkflowForeachEmptyArrayCommitsEmptyExtracts(t *testing.T) {
+	var paths []string
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: request}, nil
+	})}})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v3","id":"foreach-empty","name":"Foreach empty",
+  "steps":[
+    {"id":"usage","name":"Usage","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api/{{item#/key}}/usage"},"extract":[{"alias":"usage_rows","expression":".usage"}],"when":{"expression":"($vars.usage_rows == []) and (. == null) and ($response == null) and ($request == null)","goto":"done"}},
+    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"done","name":"Done","request":{"method":"GET","path":"/done"}}
+  ],
+  "output":{"rows":"{{usage_rows}}"}
+}`)
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL:        "https://example.com",
+		InitialAliases: map[string]any{"items": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("execute empty foreach workflow: %v", err)
+	}
+	if want := []string{"/done"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("empty foreach sent an iteration request: got %#v want %#v", paths, want)
+	}
+	if rows, ok := result.Aliases["usage_rows"].([]any); !ok || len(rows) != 0 {
+		t.Fatalf("empty foreach did not commit an empty aggregate: %#v", result.Aliases["usage_rows"])
+	}
+}
+
+func TestGeneralWorkflowForeachExpectRouteDiscardsPartialAggregates(t *testing.T) {
+	var paths []string
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		status := http.StatusOK
+		body := `{"usage":12}`
+		if request.URL.Path == "/api/abc/usage" {
+			status = http.StatusConflict
+			body = `{"error":"conflict"}`
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v3","id":"foreach-route","name":"Foreach route",
+  "steps":[
+    {"id":"usage","name":"Usage","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api/{{item#/key}}/usage"},"expect":{"routes":[{"statuses":[409],"goto":"fallback"}]},"extract":[{"alias":"usage_rows","expression":".usage"}]},
+    {"id":"fallback","name":"Fallback","request":{"method":"GET","path":"/fallback/{{usage_rows#/0}}"}}
+  ],
+  "output":{"rows":"{{usage_rows}}"}
+}`)
+	oldRows := []any{"old"}
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://example.com",
+		InitialAliases: map[string]any{
+			"items":      []any{map[string]any{"key": "123"}, map[string]any{"key": "abc"}},
+			"usage_rows": oldRows,
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute routed foreach workflow: %v", err)
+	}
+	if want := []string{"/api/123/usage", "/api/abc/usage", "/fallback/old"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("unexpected routed request order: got %#v want %#v", paths, want)
+	}
+	if !reflect.DeepEqual(result.Aliases["usage_rows"], oldRows) {
+		t.Fatalf("partial foreach aggregate was committed: %#v", result.Aliases["usage_rows"])
+	}
+}
+
 func TestGeneralWorkflowGotoOnResponseStatusContinuesFromTarget(t *testing.T) {
 	var paths []string
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -427,6 +576,21 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			want:       "when requires spec \"http-workflow/v2\"",
 		},
 		{
+			name:       "v2 foreach",
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/"}}],"output":{}}`,
+			want:       "foreach requires spec \"http-workflow/v3\"",
+		},
+		{
+			name:       "foreach alias collision",
+			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","steps":[{"id":"step","name":"Step","foreach":{"alias":"items","as":"items"},"request":{"method":"GET","path":"/"}}],"output":{}}`,
+			want:       "foreach alias must differ",
+		},
+		{
+			name:       "foreach extract alias collision",
+			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","steps":[{"id":"step","name":"Step","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/"},"extract":[{"alias":"item","expression":"."}]}],"output":{}}`,
+			want:       "conflicts with a foreach iteration alias",
+		},
+		{
 			name:       "invalid expect status",
 			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[99],"goto":"step"}]}}],"output":{}}`,
 			want:       "HTTP status code",
@@ -479,6 +643,39 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", test.want, err)
 			}
 		})
+	}
+}
+
+func TestGeneralWorkflowForeachValidatesRuntimeSource(t *testing.T) {
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v3","id":"foreach-source","name":"Foreach source",
+  "steps":[{"id":"request","name":"Request","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api"}}],
+  "output":{}
+}`)
+	requests := 0
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: request}, nil
+	})}})
+
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL:        "https://example.com",
+		InitialAliases: map[string]any{"items": map[string]any{"key": "123"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `source alias "items" must be an array`) {
+		t.Fatalf("expected non-array foreach source error, got %v", err)
+	}
+
+	tooMany := make([]any, defaultGeneralWorkflowForeachLimit+1)
+	_, err = workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL:        "https://example.com",
+		InitialAliases: map[string]any{"items": tooMany},
+	})
+	if err == nil || !strings.Contains(err.Error(), "limit is 1000") {
+		t.Fatalf("expected foreach item limit error, got %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("invalid foreach sources sent %d requests", requests)
 	}
 }
 

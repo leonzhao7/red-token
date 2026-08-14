@@ -561,6 +561,11 @@ func workflowConsoleHeaders(backend domain.Backend) http.Header {
 	for key, value := range service.NewAPIConsoleHeaders(backend) {
 		headers.Set(key, value)
 	}
+	if backend.BackendType == domain.BackendTypeNewAPI && headers.Get("New-Api-User") == "" {
+		if accountID := consoleStoredAccountID(backend); accountID != "" {
+			headers.Set("New-Api-User", accountID)
+		}
+	}
 	if authorization := strings.TrimSpace(backend.ConsoleAuthorization); authorization != "" {
 		headers.Set("Authorization", authorization)
 	}
