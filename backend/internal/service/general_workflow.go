@@ -26,10 +26,13 @@ import (
 )
 
 const (
-	GeneralWorkflowSpec               = "http-workflow/v1"
+	GeneralWorkflowSpecV1             = "http-workflow/v1"
+	GeneralWorkflowSpecV2             = "http-workflow/v2"
+	GeneralWorkflowSpec               = GeneralWorkflowSpecV2
 	defaultGeneralWorkflowBodyLimit   = int64(10 << 20)
 	defaultGeneralWorkflowHTTPTimeout = 30 * time.Second
 	defaultGeneralWorkflowJQTimeout   = 5 * time.Second
+	defaultGeneralWorkflowVisitLimit  = 100
 	generalWorkflowDebugPreviewBytes  = 64 << 10
 	maxSafeJSONInteger                = int64(1<<53 - 1)
 )
@@ -73,8 +76,57 @@ type GeneralWorkflowStep struct {
 	ID      string                      `json:"id"`
 	Name    string                      `json:"name"`
 	Request GeneralWorkflowRequest      `json:"request"`
-	Expect  string                      `json:"expect,omitempty"`
+	Expect  *GeneralWorkflowExpect      `json:"expect,omitempty"`
 	Extract []GeneralWorkflowExtraction `json:"extract,omitempty"`
+	When    *GeneralWorkflowWhen        `json:"when,omitempty"`
+}
+
+type GeneralWorkflowExpect struct {
+	Expression       string
+	Routes           []GeneralWorkflowStatusRoute
+	AcceptedStatuses []int
+}
+
+type GeneralWorkflowStatusRoute struct {
+	Statuses []int  `json:"statuses"`
+	Goto     string `json:"goto"`
+}
+
+type GeneralWorkflowWhen struct {
+	Expression string `json:"expression"`
+	Goto       string `json:"goto"`
+}
+
+func (expect *GeneralWorkflowExpect) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return errors.New("expect is required")
+	}
+	if data[0] == '"' {
+		return json.Unmarshal(data, &expect.Expression)
+	}
+	var object struct {
+		Routes           []GeneralWorkflowStatusRoute `json:"routes"`
+		AcceptedStatuses []int                        `json:"accepted_statuses"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&object); err != nil {
+		return err
+	}
+	expect.Routes = object.Routes
+	expect.AcceptedStatuses = object.AcceptedStatuses
+	return nil
+}
+
+func (expect GeneralWorkflowExpect) MarshalJSON() ([]byte, error) {
+	if expect.Expression != "" {
+		return json.Marshal(expect.Expression)
+	}
+	return json.Marshal(struct {
+		Routes           []GeneralWorkflowStatusRoute `json:"routes,omitempty"`
+		AcceptedStatuses []int                        `json:"accepted_statuses,omitempty"`
+	}{Routes: expect.Routes, AcceptedStatuses: expect.AcceptedStatuses})
 }
 
 type GeneralWorkflowRequest struct {
@@ -156,9 +208,18 @@ type compiledGeneralWorkflow struct {
 }
 
 type compiledGeneralWorkflowStep struct {
-	definition GeneralWorkflowStep
-	expect     *gojq.Code
-	extract    []compiledGeneralWorkflowExtraction
+	definition       GeneralWorkflowStep
+	expect           *gojq.Code
+	expectRoutes     map[int]compiledGeneralWorkflowStatusRoute
+	acceptedStatuses map[int]struct{}
+	when             *gojq.Code
+	whenGotoIndex    int
+	extract          []compiledGeneralWorkflowExtraction
+}
+
+type compiledGeneralWorkflowStatusRoute struct {
+	definition GeneralWorkflowStatusRoute
+	gotoIndex  int
 }
 
 type compiledGeneralWorkflowExtraction struct {
@@ -302,12 +363,67 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 			}
 		}
 		if expect, exists := step["expect"]; exists {
-			text, ok := expect.(string)
-			if !ok {
-				return fmt.Errorf("%s/expect must be a string", path)
+			switch expect := expect.(type) {
+			case string:
+				if strings.TrimSpace(expect) == "" {
+					return fmt.Errorf("%s/expect must not be empty", path)
+				}
+			case map[string]any:
+				routes := []any{}
+				if routesValue, exists := expect["routes"]; exists {
+					var ok bool
+					routes, ok = routesValue.([]any)
+					if !ok {
+						return fmt.Errorf("%s/expect/routes must be an array", path)
+					}
+				}
+				for routeIndex, routeValue := range routes {
+					routePath := fmt.Sprintf("%s/expect/routes/%d", path, routeIndex)
+					route, ok := routeValue.(map[string]any)
+					if !ok {
+						return fmt.Errorf("%s must be an object", routePath)
+					}
+					if _, err := requiredGeneralWorkflowString(route, "goto", routePath+"/goto"); err != nil {
+						return err
+					}
+					statuses, ok := route["statuses"].([]any)
+					if !ok || len(statuses) == 0 {
+						return fmt.Errorf("%s/statuses must be a non-empty integer array", routePath)
+					}
+					for statusIndex, status := range statuses {
+						if number, ok := status.(int64); !ok || number < 100 || number > 599 {
+							return fmt.Errorf("%s/statuses/%d must be an HTTP status code", routePath, statusIndex)
+						}
+					}
+				}
+				accepted, hasAccepted := expect["accepted_statuses"]
+				if len(routes) == 0 && !hasAccepted {
+					return fmt.Errorf("%s/expect requires routes or accepted_statuses", path)
+				}
+				if hasAccepted {
+					statuses, ok := accepted.([]any)
+					if !ok || len(statuses) == 0 {
+						return fmt.Errorf("%s/expect/accepted_statuses must be a non-empty integer array", path)
+					}
+					for statusIndex, status := range statuses {
+						if number, ok := status.(int64); !ok || number < 100 || number > 599 {
+							return fmt.Errorf("%s/expect/accepted_statuses/%d must be an HTTP status code", path, statusIndex)
+						}
+					}
+				}
+			default:
+				return fmt.Errorf("%s/expect must be a string or object", path)
 			}
-			if strings.TrimSpace(text) == "" {
-				return fmt.Errorf("%s/expect must not be empty", path)
+		}
+		if when, exists := step["when"]; exists {
+			object, ok := when.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s/when must be an object", path)
+			}
+			for _, field := range []string{"expression", "goto"} {
+				if _, err := requiredGeneralWorkflowString(object, field, path+"/when/"+field); err != nil {
+					return err
+				}
 			}
 		}
 		extractValue, exists := step["extract"]
@@ -354,7 +470,7 @@ func ValidateGeneralWorkflow(definition GeneralWorkflowDefinition) error {
 }
 
 func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGeneralWorkflow, error) {
-	if definition.Spec != GeneralWorkflowSpec {
+	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 {
 		return compiledGeneralWorkflow{}, fmt.Errorf("unsupported spec %q", definition.Spec)
 	}
 	if !generalWorkflowIDPattern.MatchString(definition.ID) {
@@ -382,7 +498,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		steps:      make([]compiledGeneralWorkflowStep, 0, len(definition.Steps)),
 		output:     output,
 	}
-	stepIDs := make(map[string]struct{}, len(definition.Steps))
+	stepIDs := make(map[string]int, len(definition.Steps))
 	for index, step := range definition.Steps {
 		if !generalWorkflowIDPattern.MatchString(step.ID) {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: invalid step id %q", index, step.ID)
@@ -390,26 +506,55 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		if _, exists := stepIDs[step.ID]; exists {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: duplicate step id %q", index, step.ID)
 		}
-		stepIDs[step.ID] = struct{}{}
+		stepIDs[step.ID] = index
 		if strings.TrimSpace(step.Name) == "" {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: step name is required", index)
 		}
 		if err := validateGeneralWorkflowRequest(step.Request); err != nil {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] request: %w", index, err)
 		}
-
-		expectSource := strings.TrimSpace(step.Expect)
-		if expectSource == "" {
-			expectSource = "$response.status >= 200 and $response.status < 300"
+		var expect *gojq.Code
+		expectRoutes := make(map[int]compiledGeneralWorkflowStatusRoute)
+		if definition.Spec == GeneralWorkflowSpecV1 && step.Expect != nil && (len(step.Expect.Routes) > 0 || len(step.Expect.AcceptedStatuses) > 0) {
+			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: structured expect requires spec %q", index, GeneralWorkflowSpecV2)
 		}
-		expect, err := compileGeneralWorkflowJQ(expectSource)
-		if err != nil {
-			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect: %w", index, err)
+		if step.Expect != nil && step.Expect.Expression != "" {
+			if definition.Spec != GeneralWorkflowSpecV1 {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: string expect requires spec %q", index, GeneralWorkflowSpecV1)
+			}
+			expect, err = compileGeneralWorkflowJQ(step.Expect.Expression)
+			if err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect: %w", index, err)
+			}
+		} else if definition.Spec == GeneralWorkflowSpecV1 {
+			expect, err = compileGeneralWorkflowJQ("$response.status >= 200 and $response.status < 300")
+			if err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect: %w", index, err)
+			}
+		} else if step.Expect != nil && len(step.Expect.Routes) == 0 && len(step.Expect.AcceptedStatuses) == 0 {
+			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: expect requires routes or accepted_statuses", index)
+		}
+		var when *gojq.Code
+		if step.When != nil {
+			if definition.Spec != GeneralWorkflowSpecV2 {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when requires spec %q", index, GeneralWorkflowSpecV2)
+			}
+			if strings.TrimSpace(step.When.Expression) == "" || strings.TrimSpace(step.When.Goto) == "" {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when expression and goto are required", index)
+			}
+			when, err = compileGeneralWorkflowJQ(step.When.Expression)
+			if err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] when: %w", index, err)
+			}
 		}
 		compiledStep := compiledGeneralWorkflowStep{
-			definition: step,
-			expect:     expect,
-			extract:    make([]compiledGeneralWorkflowExtraction, 0, len(step.Extract)),
+			definition:       step,
+			expect:           expect,
+			expectRoutes:     expectRoutes,
+			acceptedStatuses: make(map[int]struct{}),
+			when:             when,
+			whenGotoIndex:    -1,
+			extract:          make([]compiledGeneralWorkflowExtraction, 0, len(step.Extract)),
 		}
 		for extractIndex, extraction := range step.Extract {
 			if err := validateGeneralWorkflowAlias(extraction.Alias); err != nil {
@@ -428,6 +573,45 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 			})
 		}
 		compiled.steps = append(compiled.steps, compiledStep)
+	}
+	for index := range compiled.steps {
+		step := &compiled.steps[index]
+		if step.definition.Expect != nil {
+			for statusIndex, status := range step.definition.Expect.AcceptedStatuses {
+				if status < 100 || status > 599 {
+					return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect accepted_statuses[%d] invalid HTTP status %d", index, statusIndex, status)
+				}
+				if _, duplicate := step.acceptedStatuses[status]; duplicate {
+					return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] duplicate accepted status %d", index, status)
+				}
+				step.acceptedStatuses[status] = struct{}{}
+			}
+			for routeIndex, route := range step.definition.Expect.Routes {
+				target, ok := stepIDs[route.Goto]
+				if !ok {
+					return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect routes[%d] target %q does not exist", index, routeIndex, route.Goto)
+				}
+				for _, status := range route.Statuses {
+					if status < 100 || status > 599 {
+						return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect routes[%d] invalid HTTP status %d", index, routeIndex, status)
+					}
+					if _, duplicate := step.expectRoutes[status]; duplicate {
+						return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] duplicate expect status %d", index, status)
+					}
+					if _, accepted := step.acceptedStatuses[status]; accepted {
+						return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] expect status %d cannot be both accepted and routed", index, status)
+					}
+					step.expectRoutes[status] = compiledGeneralWorkflowStatusRoute{definition: route, gotoIndex: target}
+				}
+			}
+		}
+		if step.definition.When != nil {
+			target, ok := stepIDs[step.definition.When.Goto]
+			if !ok {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] when target %q does not exist", index, step.definition.When.Goto)
+			}
+			step.whenGotoIndex = target
+		}
 	}
 	return compiled, nil
 }
@@ -618,7 +802,16 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 		},
 	})
 
-	for _, step := range compiled.steps {
+	stepIndex := 0
+	executionCount := 0
+	stepVisits := make([]int, len(compiled.steps))
+	for stepIndex < len(compiled.steps) {
+		executionCount++
+		stepVisits[stepIndex]++
+		if stepVisits[stepIndex] > defaultGeneralWorkflowVisitLimit {
+			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: compiled.steps[stepIndex].definition.ID, Phase: "control flow", Err: fmt.Errorf("step visit limit exceeded (%d); possible goto loop", defaultGeneralWorkflowVisitLimit)}
+		}
+		step := compiled.steps[stepIndex]
 		stepStartedAt := time.Now()
 		stepLog := GeneralWorkflowDebugLog{StepID: step.definition.ID, StepName: step.definition.Name}
 		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_start", "step execution started", nil, 0))
@@ -645,36 +838,47 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 			"has_body":    response.envelope["has_body"],
 			"body":        generalWorkflowDebugValue("body", response.body),
 		}, time.Since(requestStartedAt).Milliseconds()))
-		expected, err := workflow.runJQ(ctx, step.expect, response.body, response.envelope, request.jqValue, aliases, runtime)
-		if err != nil {
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate expect", Err: err}
+		status, ok := response.envelope["status"].(int)
+		if !ok {
+			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: errors.New("response status is unavailable")}
 		}
-		expectSource := strings.TrimSpace(step.definition.Expect)
-		if expectSource == "" {
-			expectSource = "$response.status >= 200 and $response.status < 300"
+		if route, matched := step.expectRoutes[status]; matched {
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "expect_goto", "response status matched expect route; skipping extract and jumping to target", map[string]any{
+				"response_status": status,
+				"goto":            route.definition.Goto,
+			}, time.Since(stepStartedAt).Milliseconds()))
+			stepIndex = route.gotoIndex
+			continue
 		}
-		accepted, ok := expected.(bool)
-		expectLevel := "debug"
-		expectMessage := "expect expression returned true"
-		expectDetails := map[string]any{
-			"expression":  expectSource,
-			"result_type": generalWorkflowJSONType(expected),
-			"result":      expected,
-		}
-		if !ok || !accepted {
-			expectLevel = "error"
-			expectMessage = fmt.Sprintf("expect expression rejected the response (HTTP %v)", response.envelope["status"])
-			expectDetails["response_status"] = response.envelope["status"]
-			expectDetails["response_body"] = generalWorkflowDebugValue("body", response.body)
-			terminalErrorLogged = true
-		}
-		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, expectLevel, "expect", expectMessage, expectDetails, time.Since(stepStartedAt).Milliseconds()))
-		if !ok || !accepted {
-			return GeneralWorkflowResult{}, &GeneralWorkflowError{
-				StepID: step.definition.ID,
-				Phase:  "expect",
-				Err:    fmt.Errorf("expression returned %s instead of true", generalWorkflowJSONType(expected)),
+		if step.expect != nil {
+			expected, err := workflow.runJQ(ctx, step.expect, response.body, response.envelope, request.jqValue, aliases, runtime)
+			if err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate expect", Err: err}
 			}
+			accepted, ok := expected.(bool)
+			if !ok || !accepted {
+				terminalErrorLogged = true
+				expectSource := "$response.status >= 200 and $response.status < 300"
+				if step.definition.Expect != nil {
+					expectSource = step.definition.Expect.Expression
+				}
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "expect", fmt.Sprintf("expect expression rejected the response (HTTP %d)", status), map[string]any{
+					"expression":      expectSource,
+					"result_type":     generalWorkflowJSONType(expected),
+					"result":          expected,
+					"response_status": status,
+				}, time.Since(stepStartedAt).Milliseconds()))
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: fmt.Errorf("expression returned %s instead of true", generalWorkflowJSONType(expected))}
+			}
+		} else if _, accepted := step.acceptedStatuses[status]; (status < 200 || status >= 300) && !accepted {
+			terminalErrorLogged = true
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "error", "expect", fmt.Sprintf("response status HTTP %d did not match a route and is not 2xx", status), map[string]any{
+				"response_status": status,
+				"response_body":   generalWorkflowDebugValue("body", response.body),
+			}, time.Since(stepStartedAt).Milliseconds()))
+			return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "expect", Err: fmt.Errorf("HTTP %d did not match an expect route", status)}
+		} else {
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "expect", "response status is accepted; continuing to extract", map[string]any{"response_status": status}, time.Since(stepStartedAt).Milliseconds()))
 		}
 
 		stagedAliases, err := cloneGeneralWorkflowObject(aliases)
@@ -705,9 +909,34 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 			}, 0))
 		}
 		aliases = stagedAliases
+		if step.when != nil {
+			condition, err := workflow.runJQ(ctx, step.when, response.body, response.envelope, request.jqValue, aliases, runtime)
+			if err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "evaluate when after extract", Err: err}
+			}
+			matched, ok := condition.(bool)
+			if !ok {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "when after extract", Err: fmt.Errorf("expression returned %s instead of boolean", generalWorkflowJSONType(condition))}
+			}
+			if matched {
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_goto", "step condition matched after alias extraction; jumping to target", map[string]any{
+					"expression":      step.definition.When.Expression,
+					"result":          true,
+					"response_status": response.envelope["status"],
+					"goto":            step.definition.When.Goto,
+				}, time.Since(stepStartedAt).Milliseconds()))
+				stepIndex = step.whenGotoIndex
+				continue
+			}
+			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "step_when", "step condition remained false after alias extraction", map[string]any{
+				"expression": step.definition.When.Expression,
+				"result":     false,
+			}, time.Since(stepStartedAt).Milliseconds()))
+		}
 		workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "step_complete", "step execution completed", map[string]any{
 			"alias_count": len(aliases),
 		}, time.Since(stepStartedAt).Milliseconds()))
+		stepIndex++
 	}
 
 	output, err := renderGeneralWorkflowTemplate(compiled.output, aliases)
@@ -748,8 +977,9 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 		Message:    "workflow execution completed",
 		DurationMS: time.Since(workflowStartedAt).Milliseconds(),
 		Details: map[string]any{
-			"alias_count": len(resultAliases),
-			"step_count":  len(compiled.steps),
+			"alias_count":     len(resultAliases),
+			"step_count":      len(compiled.steps),
+			"execution_count": executionCount,
 		},
 	})
 	return GeneralWorkflowResult{Output: output, Aliases: resultAliases}, nil

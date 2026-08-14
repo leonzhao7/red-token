@@ -10,7 +10,7 @@ import (
 	"red-token/internal/domain"
 )
 
-// HTTPWorkflow is a validated http-workflow/v1 definition stored by its
+// HTTPWorkflow is a validated http-workflow definition stored by its
 // stable, configuration-supplied ID.
 type HTTPWorkflow struct {
 	ID         string          `json:"id"`

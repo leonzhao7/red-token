@@ -6,7 +6,7 @@
 
 ## 1. 设计目标
 
-HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。
+HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。`http-workflow/v2` 还支持基于当前响应的条件跳转。
 
 规范遵循以下原则：
 
@@ -15,7 +15,7 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 - alias 是不可细分赋值的完整 JSON 值；不存在数组专用或对象专用的写入动作。
 - `{{...}}` 只负责引用已有 alias，不承担查询、计算、循环或关联语义。
 - 最终输出由固定模板生成，并由宿主定义的 JSON Schema 校验。
-- 工作流只描述有限、顺序的 HTTP JSON 请求，不描述定时调度、重试、并发、分支或任意循环。
+- 工作流只描述有限、顺序的 HTTP JSON 请求；v2 可使用有限的条件跳转，不支持并发或任意循环。
 
 分页可以由宿主生成多个静态 step，或由将来的工作流编排规范描述，不在本规范中增加分页专用字段。
 
@@ -25,7 +25,7 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 
 ```json
 {
-  "spec": "http-workflow/v1",
+  "spec": "http-workflow/v2",
   "id": "example-workflow",
   "name": "示例工作流",
   "steps": [
@@ -38,7 +38,6 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
         "query": {},
         "headers": {}
       },
-      "expect": "$response.status >= 200 and $response.status < 300",
       "extract": [
         {
           "alias": "user_id",
@@ -57,7 +56,7 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
-| `spec` | string | 是 | 规范版本；本规范固定为 `http-workflow/v1` |
+| `spec` | string | 是 | 规范版本；支持 `http-workflow/v1` 和支持条件跳转的 `http-workflow/v2` |
 | `id` | string | 是 | 工作流稳定标识 |
 | `name` | string | 是 | 展示名称，不参与执行 |
 | `steps` | array | 是 | 按数组顺序执行的 step；可以为空 |
@@ -72,8 +71,9 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 | `id` | string | 是 | 当前工作流内唯一的稳定标识 |
 | `name` | string | 是 | 展示名称，不参与执行 |
 | `request` | object | 是 | HTTP 请求模板 |
-| `expect` | string | 否 | jq 布尔表达式；省略时只接受 `200..299` |
+| `expect` | string（v1）/ object（v2） | 否 | v1 为 jq 布尔表达式；v2 为响应状态码跳转路由，未命中时只接受 `200..299` |
 | `extract` | array | 否 | 有序的 alias 赋值列表；省略等价于空数组 |
+| `when` | object | 否（v2） | 当前 step 的 alias 全部提取并提交后执行的 jq 条件及跳转目标 |
 
 所有 step 具有完全相同的字段语义。不得根据 `step.id` 或 `step.name` 启用隐式行为。
 
@@ -115,15 +115,15 @@ response request runtime vars
 
 执行过程如下：
 
-1. 按 `steps` 数组顺序处理 step。
-2. 使用当前 alias store 渲染 `request`。
-3. 发送 HTTP 请求并读取完整响应。
-4. 将非空响应体解析为 JSON。
-5. 求值 `expect`。
-6. 按顺序求值 `extract` 中的赋值。
-7. 当前 step 的所有赋值成功后，一次性提交到 alias store。
-8. 所有 step 成功后，使用 alias store 渲染 `output`。
-9. 使用宿主输出 Schema 校验结果；校验成功后才允许持久化。
+1. 从 `steps` 数组第一个 step 开始，按当前索引执行。
+2. 使用当前 alias store 渲染 `request`，发送 HTTP 请求并读取完整响应。
+3. 将非空响应体解析为 JSON；响应状态码自动放入 `$response.status`。
+4. v2 按 `expect.routes` 查找响应状态码。命中时跳转到指定 step，当前响应的 `extract` 和 `when` 均不执行；未命中且状态码既不是 `2xx`、也不在 `expect.accepted_statuses` 中时流程失败。
+5. 状态码未命中路由且被接受时，按顺序求值 `extract`；所有赋值成功后一次性提交到 alias store。
+6. v2 若配置 `when`，使用提交后的 alias store 求值；结果为 true 时跳转到 `when.goto`，为 false 时顺序执行下一步。
+7. 跳转到的 step 仍按相同规则执行；所有 step 成功后渲染并校验 `output`。
+
+`goto` 可以向前或向后跳转，因此可以表达受条件控制的重试或回退流程。为防止配置形成无限循环，同一个 step 在一次运行中最多进入 100 次；超过限制时本次工作流失败。
 
 Step 是 alias store 的事务边界。当前 step 中较早的赋值对后续赋值可见，但任一赋值失败时，当前 step 的所有赋值都必须回滚。为避免修改只读输入，每次表达式求值都会得到一个新的 `$vars` 快照；它包含此前已成功求值的临时赋值，但表达式对 `$vars` 产生的任何 jq 内部更新都不会反向修改 alias store。
 
@@ -288,7 +288,7 @@ JSON body 可以是 object、array、string、number、boolean 或 null。它必
 
 ## 8. jq 表达式
 
-`expect` 和 `extract[].expression` 遵循 jq 1.7 语义。不得再叠加自定义 JSONPath、字段映射、数组 action 或 join DSL。
+v1 的 `expect`、v2 的 `when.expression` 和所有 `extract[].expression` 遵循 jq 1.7 语义。v2 的 `expect` 是结构化 HTTP 状态码路由，不是 jq 表达式。
 
 ### 8.1 求值上下文
 
@@ -318,7 +318,7 @@ JSON body 可以是 object、array、string、number、boolean 或 null。它必
 
 ### 8.2 结果物化
 
-jq filter 可能产生零个、一个或多个结果。Alias 赋值和 `expect` 都要求表达式恰好产生一个结果：
+jq filter 可能产生零个、一个或多个结果。Alias 赋值、v1 `expect` 和 v2 `when.expression` 都要求表达式恰好产生一个结果：
 
 - 零个结果：错误。
 - 一个结果：使用该 JSON 值。
@@ -329,6 +329,39 @@ jq filter 可能产生零个、一个或多个结果。Alias 赋值和 `expect` 
 JSON number 的计算必须避免实现相关的静默截断。实现至少应完整保留 IEEE 754 binary64 能精确表达的整数范围，即 `[-9007199254740991, 9007199254740991]`。超出实现精确范围且未以字符串表示的数字必须报错，不能舍入后继续执行。金额是否允许小数、保留多少位以及舍入方式属于最终输出 Schema 的业务约束。
 
 ### 8.3 Expect
+
+v2 的 `expect` 配置示例：
+
+```json
+{
+  "expect": {
+    "accepted_statuses": [409],
+    "routes": [
+      { "statuses": [401, 403], "goto": "refresh_token" },
+      { "statuses": [429], "goto": "wait_and_retry" }
+    ]
+  }
+}
+```
+
+路由按状态码精确匹配；同一 step 不得重复配置相同状态码。命中路由时不执行当前 step 的 `extract`。没有命中时，`2xx` 和 `accepted_statuses` 中列出的状态码继续执行 `extract`，其他状态码导致工作流失败。一个状态码不能同时出现在路由和 `accepted_statuses` 中。
+
+### 8.4 When
+
+v2 的 `when` 在当前 step 所有 alias 成功提交后执行：
+
+```json
+{
+  "when": {
+    "expression": "$vars.a == true",
+    "goto": "request2"
+  }
+}
+```
+
+`when.expression` 必须恰好返回 boolean。true 跳转，false 顺序执行下一步。
+
+v1 的 `expect` 仍保持原有语义：
 
 省略 `expect` 等价于：
 
@@ -825,7 +858,8 @@ sub2api 签到工作流的固定输出 Schema 为：
 - Alias 模板求值失败。
 - HTTP 传输失败。
 - 非空响应体不是合法 JSON。
-- `expect` 未返回唯一的 true。
+- v1 `expect` 或 v2 `when.expression` 未返回唯一的 boolean；v1 `expect` 未返回 true。
+- v2 响应状态码未命中 `expect.routes` 且不是 `2xx`。
 - Extract 表达式失败、没有结果或产生多个未收集结果。
 - Alias 结果不是合法 JSON 值。
 - 最终 output 模板求值失败。
@@ -837,7 +871,7 @@ sub2api 签到工作流的固定输出 Schema 为：
 
 ## 14. 版本兼容
 
-`spec` 决定完整语义，不允许通过字段组合猜测版本。
+`spec` 决定完整语义，不允许通过字段组合猜测版本。`http-workflow/v1` 使用字符串 `expect` 且不认识 `when`；结构化状态码路由和 alias 条件跳转必须使用 `http-workflow/v2`。
 
 同一 major 版本内可以增加不改变现有配置含义的 jq 示例和说明，但不得增加会被旧读取方静默忽略的配置字段。新增字段、改变默认值、改变模板规则或改变 jq 求值上下文时，必须发布新的规范版本。
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -155,6 +156,171 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowGotoOnResponseStatusContinuesFromTarget(t *testing.T) {
+	var paths []string
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		status := http.StatusOK
+		if request.URL.Path == "/first" {
+			status = http.StatusUnauthorized
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v2","id":"goto-status","name":"Goto status",
+  "steps":[
+    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"expect":{"routes":[{"statuses":[401],"goto":"target"}]},"extract":[{"alias":"must_not_run","expression":"error(\"expect route must skip extract\")"}]},
+    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"target","name":"Target","request":{"method":"GET","path":"/target"}},
+    {"id":"tail","name":"Tail","request":{"method":"GET","path":"/tail"}}
+  ],
+  "output":{}
+}`)
+	var logs []GeneralWorkflowDebugLog
+	if _, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL:  "https://example.com",
+		DebugLog: func(log GeneralWorkflowDebugLog) { logs = append(logs, log) },
+	}); err != nil {
+		t.Fatalf("execute goto workflow: %v", err)
+	}
+	if want := []string{"/first", "/target", "/tail"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("unexpected request order: got %#v want %#v", paths, want)
+	}
+	for _, log := range logs {
+		if log.Phase == "expect_goto" && log.Details["goto"] == "target" {
+			return
+		}
+	}
+	t.Fatal("expected expect_goto debug log")
+}
+
+func TestGeneralWorkflowWhenFalseContinuesCurrentStep(t *testing.T) {
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: generalWorkflowJSONClient(`{"value":7}`, http.StatusOK)})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v2","id":"when-false","name":"When false",
+  "steps":[
+    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"when":{"expression":"$vars.value == 99","goto":"tail"},"extract":[{"alias":"value","expression":".value"}]},
+    {"id":"tail","name":"Tail","request":{"method":"GET","path":"/tail"}}
+  ],
+  "output":{"value":"{{value}}"}
+}`)
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("execute when-false workflow: %v", err)
+	}
+	output := result.Output.(map[string]any)
+	if value := fmt.Sprint(output["value"]); value != "7" {
+		t.Fatalf("current step extract did not run: %#v", output)
+	}
+}
+
+func TestGeneralWorkflowWhenRoutesUsingExtractedAlias(t *testing.T) {
+	for _, a := range []bool{true, false} {
+		t.Run(strconv.FormatBool(a), func(t *testing.T) {
+			var paths []string
+			workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				paths = append(paths, request.URL.Path)
+				body := `{"ok":true}`
+				if request.URL.Path == "/first" {
+					body = fmt.Sprintf(`{"a":%t}`, a)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})}})
+			definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v2","id":"when-alias","name":"When alias",
+  "steps":[
+    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"extract":[{"alias":"a","expression":".a"}],"when":{"expression":"$vars.a == true","goto":"request2"}},
+    {"id":"request3","name":"Request 3","request":{"method":"GET","path":"/request3"},"when":{"expression":"true","goto":"end"}},
+    {"id":"request2","name":"Request 2","request":{"method":"GET","path":"/request2"}},
+    {"id":"end","name":"End","request":{"method":"GET","path":"/end"}}
+  ],
+  "output":{"a":"{{a}}"}
+}`)
+			result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
+			if err != nil {
+				t.Fatalf("execute alias when workflow: %v", err)
+			}
+			want := []string{"/first", "/request3", "/end"}
+			if a {
+				want = []string{"/first", "/request2", "/end"}
+			}
+			if !reflect.DeepEqual(paths, want) {
+				t.Fatalf("unexpected request order: got %#v want %#v", paths, want)
+			}
+			if result.Aliases["a"] != a {
+				t.Fatalf("expected extracted alias before goto: %#v", result.Aliases)
+			}
+		})
+	}
+}
+
+func TestGeneralWorkflowExpectUnmatchedNon2xxFailsWithoutExtract(t *testing.T) {
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: generalWorkflowJSONClient(`{"a":true}`, http.StatusInternalServerError)})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v2","id":"expect-failure","name":"Expect failure",
+  "steps":[
+    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"expect":{"routes":[{"statuses":[401],"goto":"tail"}]},"extract":[{"alias":"a","expression":".a"}]},
+    {"id":"tail","name":"Tail","request":{"method":"GET","path":"/tail"}}
+  ],
+  "output":{}
+}`)
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500 did not match") {
+		t.Fatalf("expected unmatched non-2xx failure, got result=%#v err=%v", result, err)
+	}
+}
+
+func TestGeneralWorkflowAcceptedStatusContinuesToExtractAndWhen(t *testing.T) {
+	var paths []string
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		status := http.StatusOK
+		body := `{"ok":true}`
+		if request.URL.Path == "/first" {
+			status = http.StatusConflict
+			body = `{"a":true}`
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v2","id":"accepted-status","name":"Accepted status",
+  "steps":[
+    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"expect":{"accepted_statuses":[409]},"extract":[{"alias":"a","expression":".a"}],"when":{"expression":"$vars.a == true","goto":"target"}},
+    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"target","name":"Target","request":{"method":"GET","path":"/target"}}
+  ],
+  "output":{"a":"{{a}}"}
+}`)
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("execute accepted status workflow: %v", err)
+	}
+	if want := []string{"/first", "/target"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("unexpected request order: got %#v want %#v", paths, want)
+	}
+	if result.Aliases["a"] != true {
+		t.Fatalf("accepted status did not continue through extract: %#v", result.Aliases)
+	}
+}
+
+func TestGeneralWorkflowGotoLoopIsBounded(t *testing.T) {
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: generalWorkflowJSONClient(`{}`, http.StatusOK)})
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v2","id":"goto-loop","name":"Goto loop",
+  "steps":[{"id":"loop","name":"Loop","request":{"method":"GET","path":"/loop"},"when":{"expression":"true","goto":"loop"}}],
+  "output":{}
+}`)
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "step visit limit exceeded") {
+		t.Fatalf("expected bounded goto loop failure, got %v", err)
+	}
+}
+
 func TestGeneralWorkflowDebugLogsIncludeFailureContext(t *testing.T) {
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{
 		HTTPClient: generalWorkflowJSONClient(`{"ok":false,"message":"upstream rejected","api_key":"response-secret"}`, http.StatusBadRequest),
@@ -254,6 +420,36 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			name:       "forbidden jq",
 			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"extract":[{"alias":"value","expression":"now"}]}],"output":{}}`,
 			want:       "not allowed",
+		},
+		{
+			name:       "v1 when",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"when":{"expression":"true","goto":"step"}}],"output":{}}`,
+			want:       "when requires spec \"http-workflow/v2\"",
+		},
+		{
+			name:       "invalid expect status",
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[99],"goto":"step"}]}}],"output":{}}`,
+			want:       "HTTP status code",
+		},
+		{
+			name:       "v1 structured expect",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[401],"goto":"step"}]}}],"output":{}}`,
+			want:       "structured expect requires spec \"http-workflow/v2\"",
+		},
+		{
+			name:       "v2 string expect",
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":"true"}],"output":{}}`,
+			want:       "string expect requires spec \"http-workflow/v1\"",
+		},
+		{
+			name:       "accepted and routed status conflict",
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"accepted_statuses":[409],"routes":[{"statuses":[409],"goto":"step"}]}}],"output":{}}`,
+			want:       "cannot be both accepted and routed",
+		},
+		{
+			name:       "missing when target",
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"when":{"expression":"true","goto":"missing"}}],"output":{}}`,
+			want:       "does not exist",
 		},
 		{
 			name:       "null query",

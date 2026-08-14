@@ -13,11 +13,27 @@ export interface WorkflowExtraction {
   expression: string
 }
 
+export interface WorkflowStatusRoute {
+  statuses: number[]
+  goto: string
+}
+
+export interface WorkflowExpect {
+  routes?: WorkflowStatusRoute[]
+  accepted_statuses?: number[]
+}
+
+export interface WorkflowWhen {
+  expression: string
+  goto: string
+}
+
 export interface WorkflowStep {
   id: string
   name: string
   request: WorkflowRequest
-  expect?: string
+  expect?: string | WorkflowExpect
+  when?: WorkflowWhen
   extract?: WorkflowExtraction[]
 }
 

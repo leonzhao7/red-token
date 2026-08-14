@@ -52,6 +52,10 @@ interface ExtractRow {
   alias: string
   expression: string
 }
+interface ExpectRouteRow {
+  statuses: string
+  goto: string
+}
 interface StepForm {
   id: string
   name: string
@@ -59,7 +63,11 @@ interface StepForm {
   path: string
   query: KvRow[]
   body: string
-  expect: string
+  when: string
+  whenGoto: string
+  acceptedStatuses: string
+  expectRoutes: ExpectRouteRow[]
+  legacyExpect: string
   extract: ExtractRow[]
 }
 
@@ -87,7 +95,11 @@ function emptyStep(): StepForm {
     path: '',
     query: [emptyKv()],
     body: '',
-    expect: '',
+    when: '',
+    whenGoto: '',
+    acceptedStatuses: '',
+    expectRoutes: [],
+    legacyExpect: '',
     extract: [emptyExtract()]
   }
 }
@@ -101,7 +113,7 @@ function emptyExtract(): ExtractRow {
 }
 
 const SAMPLE_DEFINITION = `{
-  "spec": "http-workflow/v1",
+  "spec": "http-workflow/v2",
   "id": "sub2api-default-checkin-profile",
   "name": "sub2api 默认签到",
   "steps": [
@@ -114,7 +126,6 @@ const SAMPLE_DEFINITION = `{
         "query": {},
         "headers": {}
       },
-      "expect": "$response.status >= 200 and $response.status < 300 and ((.code? // 0) == 0)",
       "extract": [
         { "alias": "user_id", "expression": ".data.id | tostring" },
         { "alias": "username", "expression": ".data.email // .data.username // \\"\\"" },
@@ -234,7 +245,13 @@ function defToForm(def: WorkflowDefinition) {
     path: step.request.path,
     query: objToKv(step.request.query),
     body: 'body' in step.request ? JSON.stringify(step.request.body, null, 2) : '',
-    expect: step.expect || '',
+    when: step.when?.expression || '',
+    whenGoto: step.when?.goto || '',
+    acceptedStatuses: typeof step.expect === 'object' ? (step.expect.accepted_statuses || []).join(',') : '',
+    expectRoutes: typeof step.expect === 'object'
+      ? (step.expect.routes || []).map((route) => ({ statuses: route.statuses.join(','), goto: route.goto }))
+      : [],
+    legacyExpect: typeof step.expect === 'string' ? step.expect : '',
     extract: (step.extract || []).map((e) => ({ alias: e.alias, expression: e.expression }))
   }))
   form.output = JSON.stringify(def.output, null, 2)
@@ -363,6 +380,14 @@ function addExtract(step: StepForm) {
   step.extract.push(emptyExtract())
 }
 
+function addExpectRoute(step: StepForm) {
+  step.expectRoutes.push({ statuses: '', goto: '' })
+}
+
+function removeExpectRoute(step: StepForm, index: number) {
+  step.expectRoutes.splice(index, 1)
+}
+
 function removeExtract(step: StepForm, index: number) {
   step.extract.splice(index, 1)
 }
@@ -419,6 +444,25 @@ function validateForm(): string[] {
         errors.push(`${label}：Body 不是合法 JSON`)
       }
     }
+    const when = st.when.trim()
+    const whenGoto = st.whenGoto.trim()
+    if ((when === '') !== (whenGoto === '')) errors.push(`${label}：When 条件和跳转目标必须同时配置`)
+    if (whenGoto && !form.steps.some((candidate) => candidate.id.trim() === whenGoto)) {
+      errors.push(`${label}：When 跳转目标步骤「${whenGoto}」不存在`)
+    }
+    st.expectRoutes.forEach((route, routeIndex) => {
+      const routeLabel = `${label}：Expect 路由 ${routeIndex + 1}`
+      const statuses = route.statuses.split(',').map((value) => value.trim()).filter(Boolean)
+      if (!statuses.length) errors.push(`${routeLabel} 缺少状态码`)
+      else if (statuses.some((value) => !/^\d+$/.test(value) || Number(value) < 100 || Number(value) > 599)) errors.push(`${routeLabel} 包含非法 HTTP 状态码`)
+      if (!route.goto.trim()) errors.push(`${routeLabel} 缺少跳转目标`)
+      else if (!form.steps.some((candidate) => candidate.id.trim() === route.goto.trim())) errors.push(`${routeLabel} 目标步骤「${route.goto.trim()}」不存在`)
+    })
+    const acceptedStatuses = st.acceptedStatuses.split(',').map((value) => value.trim()).filter(Boolean)
+    if (acceptedStatuses.some((value) => !/^\d+$/.test(value) || Number(value) < 100 || Number(value) > 599)) {
+      errors.push(`${label}：Expect 成功状态码包含非法 HTTP 状态码`)
+    }
+    if (st.legacyExpect) errors.push(`${label}：该步骤仍使用 v1 字符串 Expect，请删除旧表达式并迁移为 v2 状态码路由后保存`)
     st.extract.forEach((ex, j) => {
       if (!ex.alias.trim()) {
         errors.push(`${label}：第 ${j + 1} 条提取缺少别名`)
@@ -451,14 +495,34 @@ function formToDef(): WorkflowDefinition {
       name: st.name.trim(),
       request: request as WorkflowStep['request']
     }
-    const expect = st.expect.trim()
-    if (expect) step.expect = expect
+    const when = st.when.trim()
+    const whenGoto = st.whenGoto.trim()
+    if (when && whenGoto) {
+      step.when = { expression: when, goto: whenGoto }
+    }
+    const routes = st.expectRoutes
+      .filter((route) => route.statuses.trim() && route.goto.trim())
+      .map((route) => ({
+        statuses: route.statuses.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value)),
+        goto: route.goto.trim()
+      }))
+    const acceptedStatuses = st.acceptedStatuses
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value))
+    if (routes.length || acceptedStatuses.length) {
+      step.expect = {}
+      if (routes.length) step.expect.routes = routes
+      if (acceptedStatuses.length) step.expect.accepted_statuses = acceptedStatuses
+    }
     const extract = st.extract.filter((e) => e.alias.trim()).map((e) => ({ alias: e.alias.trim(), expression: e.expression.trim() }))
     if (extract.length) step.extract = extract
     return step
   })
   return {
-    spec: 'http-workflow/v1',
+    spec: 'http-workflow/v2',
     id: form.id.trim(),
     name: form.name.trim(),
     steps,
@@ -748,14 +812,46 @@ onMounted(loadData)
             </div>
 
             <div class="field">
-              <label class="field-label">Expect <em class="wf-hint">jq 布尔表达式，留空则默认 2xx</em></label>
-              <input
-                v-model="st.expect"
-                class="input mono"
-                placeholder='$response.status >= 200 and $response.status < 300 and ((.code? // 0) == 0)'
-                spellcheck="false"
-                @focus="onFocus"
-              />
+              <div class="wf-sec-head sub">
+                <span class="wf-sec-title">Expect 状态码路由 <em class="wf-hint">响应到达后、Extract 前判断；未命中时仅 2xx 继续</em></span>
+                <div class="spacer"></div>
+                <button class="btn btn-ghost btn-sm" @click="addExpectRoute(st)"><ListPlus :size="13" /> 添加路由</button>
+              </div>
+              <div v-if="st.legacyExpect" class="wf-extract-empty wf-legacy-expect">
+                v1 Expect：<span class="mono">{{ st.legacyExpect }}</span>
+                <button class="btn btn-ghost btn-sm" @click="st.legacyExpect = ''">确认删除并迁移</button>
+              </div>
+              <div class="wf-extract-row">
+                <span class="wf-extract-alias">额外成功状态码</span>
+                <input v-model="st.acceptedStatuses" class="input mono" placeholder="如 409；多个用逗号分隔" spellcheck="false" />
+              </div>
+              <div v-if="!st.expectRoutes.length" class="wf-extract-empty">未配置状态码路由；响应为 2xx 时继续 Extract，非 2xx 时流程失败</div>
+              <div v-for="(route, routeIndex) in st.expectRoutes" :key="routeIndex" class="wf-extract-row">
+                <input v-model="route.statuses" class="input mono" placeholder="状态码，如 401,403" spellcheck="false" />
+                <span class="wf-goto-arrow mono">→</span>
+                <input v-model="route.goto" class="input mono wf-goto" placeholder="目标步骤 ID" spellcheck="false" />
+                <button class="icon-btn wf-del" title="移除" @click="removeExpectRoute(st, routeIndex)"><X :size="13" /></button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label">When Alias 条件 <em class="wf-hint">Extract 全部成功并提交 Alias 后判断</em></label>
+              <div class="wf-req-line">
+                <input
+                  v-model="st.when"
+                  class="input mono"
+                  placeholder='$vars.a == true'
+                  spellcheck="false"
+                  @focus="onFocus"
+                />
+                <span class="wf-goto-arrow mono">→</span>
+                <input
+                  v-model="st.whenGoto"
+                  class="input mono wf-goto"
+                  placeholder="目标步骤 ID"
+                  spellcheck="false"
+                />
+              </div>
             </div>
 
             <div class="wf-extract">
@@ -1029,6 +1125,9 @@ onMounted(loadData)
 .wf-extract-empty { font-size: 12px; color: var(--text-faint); padding: 6px 2px; }
 .wf-extract-row { display: flex; gap: 6px; }
 .wf-extract-alias { width: 160px; flex: none; }
+.wf-goto-arrow { color: var(--text-faint); padding: 0 4px; }
+.wf-goto { width: 180px; flex: none; }
+.wf-legacy-expect { display: flex; align-items: center; gap: 8px; color: var(--warning); }
 
 .wf-output { min-height: 150px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
 .wf-aliases { min-height: 84px; font-size: 12px; line-height: 1.5; background: var(--bg-soft); }
