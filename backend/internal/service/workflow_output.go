@@ -10,6 +10,7 @@ var checkinWorkflowOutputFields = map[string]struct{}{
 	"user_id":      {},
 	"username":     {},
 	"quota":        {},
+	"quota_unit":   {},
 	"used_quota":   {},
 	"today_reward": {},
 	"api_keys":     {},
@@ -58,7 +59,7 @@ func ValidateCheckinWorkflowOutput(value any) error {
 	if err := validateWorkflowObjectFields("$", output, checkinWorkflowOutputFields); err != nil {
 		return err
 	}
-	for _, field := range []string{"user_id", "username"} {
+	for _, field := range []string{"user_id", "username", "quota_unit"} {
 		if _, err := requireWorkflowString(output, field, "$."+field); err != nil {
 			return err
 		}
@@ -68,7 +69,6 @@ func ValidateCheckinWorkflowOutput(value any) error {
 			return err
 		}
 	}
-
 	apiKeysValue, exists := output["api_keys"]
 	if !exists {
 		return fmt.Errorf("$.api_keys is required")

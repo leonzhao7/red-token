@@ -734,11 +734,12 @@ $vars.model_rows
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["user_id", "username", "quota", "used_quota", "today_reward", "api_keys", "models"],
+  "required": ["user_id", "username", "quota", "quota_unit", "used_quota", "today_reward", "api_keys", "models"],
   "properties": {
     "user_id": { "type": "string" },
     "username": { "type": "string" },
     "quota": { "type": "number", "minimum": 0 },
+    "quota_unit": { "type": "string" },
     "used_quota": { "type": "number", "minimum": 0 },
     "today_reward": { "type": "number", "minimum": 0 },
     "api_keys": {
@@ -786,7 +787,7 @@ $vars.model_rows
 约束如下：
 
 - 顶层以及数组元素都不得包含未声明字段。
-- `user_id`、`username`、Key 的 `id`、`name`、`key`、`group` 和模型 `name` 必须是字符串。
+- `user_id`、`username`、`quota_unit`、Key 的 `id`、`name`、`key`、`group` 和模型 `name` 必须是字符串。
 - `quota`、`used_quota`、`today_reward`、Key 的 `used_quota`、`in_price` 和 `out_price` 必须是有限 JSON number；JSON Schema 验证前还必须执行第 8.2 节的有限数检查。
 - `api_keys` 和 `models` 必须始终是数组；无数据时使用空数组。
 - `cheapest_groups` 必须始终是字符串数组；不存在可用分组时使用空数组。
@@ -794,6 +795,7 @@ $vars.model_rows
 - 所有数值字段均不得小于零；Key 的 `used_quota` 必须是 JavaScript 安全整数。
 - `price_type` 必须是整数 `0`（按量）或 `1`（按次）。按次模型仍使用固定结构，价格缓存以 `in_price` 作为每次价格，`out_price` 仍为必填数值字段。
 - `balance`、`used_balance` 和 `total_cost` 是旧输出字段，不再支持；出现这些字段会导致 Schema 校验失败。
+- 持久化时如果 `today_reward` 为 `0`，表示本次没有新的签到奖励，账户和最近成功结果会保留原来的 `today_reward`。
 
 输出配置通常只负责字段装配：
 
@@ -802,6 +804,7 @@ $vars.model_rows
   "user_id": "{{user_id}}",
   "username": "{{username}}",
   "quota": "{{quota}}",
+  "quota_unit": "{{quota_unit}}",
   "used_quota": "{{used_quota}}",
   "today_reward": "{{today_reward}}",
   "api_keys": "{{api_keys}}",
@@ -837,6 +840,7 @@ $vars.model_rows
         { "alias": "user_id", "expression": ".data.id | tostring" },
         { "alias": "username", "expression": ".data.email // .data.username // \"\"" },
         { "alias": "quota", "expression": "(.data.quota // .data.free_balance // .data.balance // 0) | tonumber" },
+        { "alias": "quota_unit", "expression": "(.data.quota_unit // .data.quota_display_type // \"$\") | tostring" },
         { "alias": "today_reward", "expression": "(.data.today_reward // .data.checkin_reward // 0) | tonumber" }
       ]
     },
@@ -916,6 +920,7 @@ $vars.model_rows
     "user_id": "{{user_id}}",
     "username": "{{username}}",
     "quota": "{{quota}}",
+    "quota_unit": "{{quota_unit}}",
     "used_quota": "{{used_quota}}",
     "today_reward": "{{today_reward}}",
     "api_keys": "{{api_keys}}",
@@ -942,7 +947,7 @@ $vars.model_rows
 
 失败时不得持久化部分业务输出。宿主可以持久化独立的运行日志和 HTTP 审计记录，但必须对 Authorization、Cookie、API Key、请求 body 和响应 body 中的敏感字段进行脱敏。
 
-只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`quota`、`used_quota`、`today_reward`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
+只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
 
 ## 14. 版本兼容
 

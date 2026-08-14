@@ -7,11 +7,11 @@ import (
 )
 
 func TestValidateCheckinWorkflowOutputTemplate(t *testing.T) {
-	valid := json.RawMessage(`{"user_id":"{{user_id}}","username":"{{username}}","quota":"{{quota}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}`)
+	valid := json.RawMessage(`{"user_id":"{{user_id}}","username":"{{username}}","quota":"{{quota}}","quota_unit":"{{quota_unit}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}`)
 	if err := ValidateCheckinWorkflowOutputTemplate(valid); err != nil {
 		t.Fatalf("validate output template: %v", err)
 	}
-	legacy := json.RawMessage(`{"user_id":"{{user_id}}","username":"{{username}}","balance":"{{quota}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}`)
+	legacy := json.RawMessage(`{"user_id":"{{user_id}}","username":"{{username}}","balance":"{{quota}}","quota_unit":"{{quota_unit}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}`)
 	if err := ValidateCheckinWorkflowOutputTemplate(legacy); err == nil || !strings.Contains(err.Error(), "$.balance is not allowed") {
 		t.Fatalf("expected legacy balance to be rejected, got %v", err)
 	}
@@ -22,6 +22,7 @@ func TestValidateCheckinWorkflowOutput(t *testing.T) {
 		"user_id":      "user-1",
 		"username":     "alice",
 		"quota":        2400.0,
+		"quota_unit":   "USD",
 		"used_quota":   int64(3),
 		"today_reward": 123.0,
 		"api_keys": []any{
@@ -46,6 +47,13 @@ func TestValidateCheckinWorkflowOutput(t *testing.T) {
 				output["extra"] = true
 			},
 			message: "is not allowed",
+		},
+		{
+			name: "invalid quota unit type",
+			mutate: func(output map[string]any) {
+				output["quota_unit"] = 1
+			},
+			message: "expected string",
 		},
 		{
 			name: "negative usage",
@@ -103,6 +111,7 @@ func cloneWorkflowOutputFixture(source map[string]any) map[string]any {
 		"user_id":      source["user_id"],
 		"username":     source["username"],
 		"quota":        source["quota"],
+		"quota_unit":   source["quota_unit"],
 		"used_quota":   source["used_quota"],
 		"today_reward": source["today_reward"],
 		"api_keys": []any{

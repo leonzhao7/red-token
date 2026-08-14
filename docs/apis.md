@@ -1226,6 +1226,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
     "user_id": "user-1",
     "username": "alice@example.com",
     "quota": 2400,
+    "quota_unit": "USD",
     "used_quota": 0,
     "today_reward": 123,
     "api_keys": [],
@@ -1262,7 +1263,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会在同一个事务中更新所选 backend 的控制台账户摘要、API Key 列表、模型价格缓存，并原子替换 `(workflow_id, backend_id)` 的上一次成功结果。已有 API Key 的 `models` 和 `model_mapping` 按 key 值原样保留，与工作流输出的模型列表及 `cheapest_groups` 无关；账户的 `quota`、`used_quota`、`today_reward`、`username`、`user_id` 和最近成功时间也会同步更新，旧的 `balance` 与 `total_actual_cost` 会被移除。API Key 的 `used_quota` 和模型的 `price_type` 会同步写入后端运行数据。写入 backend 时会使用系统设置 `focus_models` 过滤价格缓存中的模型；该设置为空时不过滤。`aliases`、`requests` 和 `debug_logs` 只随本次响应返回，不属于持久化业务快照。
+只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会在同一个事务中更新所选 backend 的控制台账户摘要、API Key 列表、模型价格缓存，并原子替换 `(workflow_id, backend_id)` 的上一次成功结果。已有 API Key 的 `models` 和 `model_mapping` 按 key 值原样保留，与工作流输出的模型列表及 `cheapest_groups` 无关；账户的 `quota`、`quota_unit`、`used_quota`、`today_reward`、`username`、`user_id` 和最近成功时间也会同步更新，旧的 `balance` 与 `total_actual_cost` 会被移除。若 `today_reward` 为 `0`，则保留账户和上一次成功结果中的原值。API Key 的 `used_quota` 和模型的 `price_type` 会同步写入后端运行数据。写入 backend 时会使用系统设置 `focus_models` 过滤价格缓存中的模型；该设置为空时不过滤。`aliases`、`requests` 和 `debug_logs` 只随本次响应返回，不属于持久化业务快照。
 
 工作流或后端不存在返回 `404`；`backend_id`、`console_url` 或代理配置非法返回 `400`；传输、非 2xx 默认预期、JSON 解析、jq、模板或输出 Schema 失败返回 `502`。`502` 响应包含已执行的 `requests` 和逐阶段 `debug_logs`，且不会覆盖旧的 backend 数据或成功结果。调试日志覆盖工作流校验、请求渲染、HTTP 响应、expect、alias 提取、output 渲染与 Schema 校验；header、query、请求 body 和响应 body 按原值返回，单项预览最多 64 KiB。
 
@@ -1280,6 +1281,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
     "user_id": "user-1",
     "username": "alice@example.com",
     "quota": 2400,
+    "quota_unit": "USD",
     "used_quota": 0,
     "today_reward": 123,
     "api_keys": [],

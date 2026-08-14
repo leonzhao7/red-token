@@ -309,6 +309,7 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 	if err != nil {
 		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusBadGateway, message: err.Error()}
 	}
+	preserveWorkflowTodayReward(result.Output, backend.ConsoleAccountJSON)
 	outputJSON, err := json.Marshal(result.Output)
 	if err != nil {
 		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error()}
@@ -332,6 +333,37 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 	}, nil
 }
 
+func preserveWorkflowTodayReward(value any, existingAccountJSON string) {
+	output, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	todayReward, ok := workflowOutputNumber(output["today_reward"])
+	if !ok || todayReward != 0 {
+		return
+	}
+	account := decodeJSONMap(existingAccountJSON)
+	var previousZero float64
+	hasPreviousZero := false
+	for _, field := range []string{"today_reward", "last_checkin_reward"} {
+		previous, ok := workflowOutputNumber(account[field])
+		if !ok {
+			continue
+		}
+		if previous != 0 {
+			output["today_reward"] = previous
+			return
+		}
+		if !hasPreviousZero {
+			previousZero = previous
+			hasPreviousZero = true
+		}
+	}
+	if hasPreviousZero {
+		output["today_reward"] = previousZero
+	}
+}
+
 func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatterns string) (domain.Backend, error) {
 	output, ok := value.(map[string]any)
 	if !ok {
@@ -339,6 +371,7 @@ func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatter
 	}
 	userID, _ := output["user_id"].(string)
 	username, _ := output["username"].(string)
+	quotaUnit, _ := output["quota_unit"].(string)
 	quota, ok := workflowOutputNumber(output["quota"])
 	if !ok {
 		return domain.Backend{}, errors.New("workflow output quota is not a number")
@@ -363,6 +396,7 @@ func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatter
 	delete(account, "total_actual_cost")
 	delete(account, "last_checkin_reward")
 	account["quota"] = quota
+	account["quota_unit"] = quotaUnit
 	account["used_quota"] = usedQuota
 	account["today_reward"] = todayReward
 	account["last_checkin_at"] = executedAt

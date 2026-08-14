@@ -90,7 +90,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	var received atomic.Bool
 	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := http.StatusOK
-		body := `{"user_id":"user-1","username":"alice","quota":2400,"used_quota":3,"today_reward":123,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","used_quota":3},{"id":"key-2","name":"secondary","key":"existing-secondary","group":"secondary","used_quota":0}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2,"price_type":0},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4,"price_type":0}]}`
+		body := `{"user_id":"user-1","username":"alice","quota":2400,"quota_unit":"USD","used_quota":3,"today_reward":123,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","used_quota":3},{"id":"key-2","name":"secondary","key":"existing-secondary","group":"secondary","used_quota":0}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2,"price_type":0},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4,"price_type":0}]}`
 		expectedNewAPIUser := "account-42"
 		if mode.Load() != 0 {
 			expectedNewAPIUser = "user-1"
@@ -114,6 +114,8 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 			body = `{"error":"temporary"}`
 		case 2:
 			body = `{"user_id":"user-2","username":"broken","quota":8,"api_keys":[],"models":[]}`
+		case 3:
+			body = strings.Replace(body, `"today_reward":123`, `"today_reward":0`, 1)
 		}
 		return &http.Response{
 			StatusCode: status,
@@ -187,7 +189,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	if execution.Output["user_id"] != "user-1" || execution.Aliases["username"] != "alice" || len(execution.Requests) != 1 || execution.ExecutedAt == "" {
 		t.Fatalf("unexpected execution response: %+v", execution)
 	}
-	if execution.Output["quota"] != float64(2400) || execution.Output["used_quota"] != float64(3) || execution.Output["today_reward"] != float64(123) {
+	if execution.Output["quota"] != float64(2400) || execution.Output["quota_unit"] != "USD" || execution.Output["used_quota"] != float64(3) || execution.Output["today_reward"] != float64(123) {
 		t.Fatalf("workflow response did not use the fixed quota output: %+v", execution.Output)
 	}
 	if _, exists := execution.Output["balance"]; exists {
@@ -210,7 +212,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		t.Fatalf("workflow changed the secondary API key routing configuration: %+v", updatedBackend.APIKeys[1])
 	}
 	account := decodeJSONMap(updatedBackend.ConsoleAccountJSON)
-	if account["id"] != "user-1" || account["username"] != "alice" || account["quota"] != 2400.0 || account["used_quota"] != 3.0 || account["today_reward"] != 123.0 {
+	if account["id"] != "user-1" || account["username"] != "alice" || account["quota"] != 2400.0 || account["quota_unit"] != "USD" || account["used_quota"] != 3.0 || account["today_reward"] != 123.0 {
 		t.Fatalf("workflow did not update backend account: %s", updatedBackend.ConsoleAccountJSON)
 	}
 	if _, exists := account["balance"]; exists {
@@ -226,6 +228,20 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	}
 	if pricingModels[0].(map[string]any)["price_type"] != float64(0) || pricingModels[0].(map[string]any)["quota_type"] != float64(0) {
 		t.Fatalf("workflow did not persist model price_type: %s", updatedBackend.ConsolePricingJSON)
+	}
+
+	mode.Store(3)
+	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/execute-workflow/execute", executeBody)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"today_reward":123`) {
+		t.Fatalf("zero workflow reward did not preserve previous value: status=%d body=%s", response.Code, response.Body.String())
+	}
+	updatedBackend, err = st.GetBackend(context.Background(), backend.ID)
+	if err != nil {
+		t.Fatalf("get backend after zero reward workflow: %v", err)
+	}
+	account = decodeJSONMap(updatedBackend.ConsoleAccountJSON)
+	if account["today_reward"] != 123.0 {
+		t.Fatalf("zero workflow reward overwrote account value: %s", updatedBackend.ConsoleAccountJSON)
 	}
 
 	resultPath := "/admin/api/workflows/execute-workflow/results/" + jsonInt64(backend.ID)
@@ -266,7 +282,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 
 func TestWorkflowConsoleSyncStreamsWorkflowLogsWithRequests(t *testing.T) {
 	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		body := `{"user_id":"user-1","username":"alice","quota":2400,"used_quota":3,"today_reward":123,"api_keys":[],"models":[]}`
+		body := `{"user_id":"user-1","username":"alice","quota":2400,"quota_unit":"USD","used_quota":3,"today_reward":123,"api_keys":[],"models":[]}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -368,7 +384,7 @@ func TestWorkflowOutputPricingJSONPersistsFixedPriceType(t *testing.T) {
 }
 
 func workflowTestDefinition(id string) string {
-	return `{"spec":"http-workflow/v1","id":"` + id + `","name":"Workflow test","steps":[{"id":"snapshot","name":"Get snapshot","request":{"method":"GET","path":"/snapshot"},"extract":[{"alias":"user_id","expression":".user_id"},{"alias":"username","expression":".username"},{"alias":"quota","expression":".quota"},{"alias":"used_quota","expression":".used_quota"},{"alias":"today_reward","expression":".today_reward"},{"alias":"api_keys","expression":".api_keys"},{"alias":"models","expression":".models"}]}],"output":{"user_id":"{{user_id}}","username":"{{username}}","quota":"{{quota}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}}`
+	return `{"spec":"http-workflow/v1","id":"` + id + `","name":"Workflow test","steps":[{"id":"snapshot","name":"Get snapshot","request":{"method":"GET","path":"/snapshot"},"extract":[{"alias":"user_id","expression":".user_id"},{"alias":"username","expression":".username"},{"alias":"quota","expression":".quota"},{"alias":"quota_unit","expression":".quota_unit"},{"alias":"used_quota","expression":".used_quota"},{"alias":"today_reward","expression":".today_reward"},{"alias":"api_keys","expression":".api_keys"},{"alias":"models","expression":".models"}]}],"output":{"user_id":"{{user_id}}","username":"{{username}}","quota":"{{quota}}","quota_unit":"{{quota_unit}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}}`
 }
 
 func openWorkflowHandlerStore(t *testing.T) *store.Store {

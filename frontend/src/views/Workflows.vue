@@ -77,7 +77,7 @@ interface StepForm {
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
-const WORKFLOW_OUTPUT_FIELDS = ['api_keys', 'models', 'quota', 'today_reward', 'used_quota', 'user_id', 'username']
+const WORKFLOW_OUTPUT_FIELDS = ['api_keys', 'models', 'quota', 'quota_unit', 'today_reward', 'used_quota', 'user_id', 'username']
 
 const showForm = ref(false)
 const isEditing = ref(false)
@@ -137,6 +137,7 @@ const SAMPLE_DEFINITION = `{
         { "alias": "user_id", "expression": ".data.id | tostring" },
         { "alias": "username", "expression": ".data.email // .data.username // \\"\\"" },
         { "alias": "quota", "expression": "(.data.quota // .data.free_balance // .data.balance // 0) | tonumber" },
+        { "alias": "quota_unit", "expression": "(.data.quota_unit // .data.quota_display_type // \\"$\\") | tostring" },
         { "alias": "today_reward", "expression": "(.data.today_reward // .data.checkin_reward // 0) | tonumber" }
       ]
     },
@@ -210,6 +211,7 @@ const SAMPLE_DEFINITION = `{
     "user_id": "{{user_id}}",
     "username": "{{username}}",
     "quota": "{{quota}}",
+    "quota_unit": "{{quota_unit}}",
     "used_quota": "{{used_quota}}",
     "today_reward": "{{today_reward}}",
     "api_keys": "{{api_keys}}",
