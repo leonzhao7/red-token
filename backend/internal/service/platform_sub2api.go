@@ -98,7 +98,7 @@ type Sub2APISyncOptions struct {
 }
 
 func (p *PlatformSub2API) Sync(ctx context.Context, backend domain.Backend, recorder ConsoleRequestRecorder, options Sub2APISyncOptions) (Sub2APISyncResult, error) {
-	if strings.TrimSpace(backend.ConsoleAuthorization) == "" {
+	if sub2APIConsoleAuthorization(backend) == "" {
 		return Sub2APISyncResult{}, ErrSub2APIConsoleAuthorizationRequired
 	}
 
@@ -205,7 +205,10 @@ func (p *PlatformSub2API) doJSON(ctx context.Context, backend domain.Backend, me
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", p.userAgent)
-	request.Header.Set("Authorization", strings.TrimSpace(backend.ConsoleAuthorization))
+	for key, value := range NewAPIConsoleHeaders(backend) {
+		request.Header.Set(key, value)
+	}
+	request.Header.Set("Authorization", sub2APIConsoleAuthorization(backend))
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -239,6 +242,15 @@ func (p *PlatformSub2API) doJSON(ctx context.Context, backend domain.Backend, me
 		Raw:        raw,
 		Payload:    payload,
 	}, nil
+}
+
+func sub2APIConsoleAuthorization(backend domain.Backend) string {
+	for key, value := range NewAPIConsoleHeaders(backend) {
+		if strings.EqualFold(key, "Authorization") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return strings.TrimSpace(backend.ConsoleAuthorization)
 }
 
 func (p *PlatformSub2API) clientForBackend(backend domain.Backend) (*http.Client, error) {

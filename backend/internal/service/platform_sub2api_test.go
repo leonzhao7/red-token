@@ -100,3 +100,18 @@ func TestSub2APISyncRunsBatchCheckinAfterPreviousLocalDay(t *testing.T) {
 		t.Fatalf("expected last_checkin_at %q, got %v", now.UTC().Format(time.RFC3339), got)
 	}
 }
+
+func TestSub2APIConsoleAuthorizationUsesCommonHeaders(t *testing.T) {
+	backend := domain.Backend{ConsoleHeaders: map[string]string{"Authorization": "Bearer header-token"}}
+	if got := sub2APIConsoleAuthorization(backend); got != "Bearer header-token" {
+		t.Fatalf("expected common Authorization header, got %q", got)
+	}
+	backend.ConsoleAuthorization = "Bearer legacy-token"
+	if got := sub2APIConsoleAuthorization(backend); got != "Bearer header-token" {
+		t.Fatalf("expected common Authorization header to take precedence, got %q", got)
+	}
+	backend.ConsoleHeaders = nil
+	if got := sub2APIConsoleAuthorization(backend); got != "Bearer legacy-token" {
+		t.Fatalf("expected legacy authorization fallback, got %q", got)
+	}
+}

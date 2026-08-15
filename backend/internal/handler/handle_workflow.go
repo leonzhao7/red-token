@@ -435,6 +435,7 @@ func workflowOutputAPIKeys(value any, existing []domain.BackendAPIKey) ([]domain
 		if !ok {
 			return nil, fmt.Errorf("workflow output api_keys[%d] must be an object", index)
 		}
+		id, _ := object["id"].(string)
 		key, _ := object["key"].(string)
 		name, _ := object["name"].(string)
 		group, _ := object["group"].(string)
@@ -451,10 +452,14 @@ func workflowOutputAPIKeys(value any, existing []domain.BackendAPIKey) ([]domain
 		models := []string{}
 		modelMapping := map[string]string{}
 		if previous, exists := existingByAPIKey[key]; exists {
+			if strings.TrimSpace(id) == "" {
+				id = previous.ID
+			}
 			models = append([]string(nil), previous.Models...)
 			modelMapping = copyStringMap(previous.ModelMapping)
 		}
 		keys = append(keys, domain.BackendAPIKey{
+			ID:           id,
 			APIKey:       key,
 			Name:         name,
 			Group:        group,

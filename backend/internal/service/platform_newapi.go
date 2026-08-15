@@ -209,6 +209,7 @@ func (p *PlatformNewAPI) SyncTokens(ctx context.Context, backend domain.Backend,
 			}
 		}
 		tokens = append(tokens, newAPIToken{
+			ID:        strconv.FormatInt(item.ID, 10),
 			APIKey:    apiKey,
 			Name:      item.Name,
 			Group:     item.Group,
@@ -396,6 +397,7 @@ type newAPITokenMetadata struct {
 }
 
 type newAPIToken struct {
+	ID        string
 	APIKey    string
 	Name      string
 	Group     string
@@ -502,6 +504,7 @@ func mergeNewAPITokens(existing []domain.BackendAPIKey, tokens []newAPIToken) []
 	for _, token := range tokens {
 		apiKey := strings.TrimSpace(token.APIKey)
 		if index, ok := indexByKey[apiKey]; ok {
+			merged[index].ID = token.ID
 			merged[index].Name = token.Name
 			merged[index].Group = token.Group
 			merged[index].UsedQuota = token.UsedQuota
@@ -509,6 +512,7 @@ func mergeNewAPITokens(existing []domain.BackendAPIKey, tokens []newAPIToken) []
 		}
 		indexByKey[apiKey] = len(merged)
 		merged = append(merged, domain.BackendAPIKey{
+			ID:           token.ID,
 			APIKey:       apiKey,
 			Name:         token.Name,
 			Group:        token.Group,

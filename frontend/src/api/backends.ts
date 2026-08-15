@@ -3,7 +3,8 @@ export type BackendType = '' | 'new-api' | 'sub2api'
 export type BackendStatus = 'normal' | 'abnormal' | 'disabled'
 
 export interface BackendApiKey {
-  api_key: string
+  id: string
+  key: string
   name: string
   group: string
   models: string[]
@@ -46,31 +47,19 @@ export interface BackendResponse {
   console_url: string
   tags: string[]
   console_username: string
-  console_password?: string
-  new_api_refresh?: string
-  console_authorization?: string
-  console_checkin_path?: string
-  console_checkin_workflow_id?: string
-  channel_url?: string
-  console_cookie?: string
-  console_headers?: Record<string, string>
-  console_account_json: string
-  console_pricing_json: string
+  console_password: string
+  new_api_refresh: string
+  console_checkin_workflow_id: string
+  console_headers: Record<string, string>
+  console_account: string
+  console_models: string
   notes: string
   proxy_id: number
-  proxy?: SocksProxyResponse
   status: BackendStatus
-  consecutive_failures: number
-  recover_at?: string
   weight: number
   created_at: string
   updated_at: string
-  request_count?: number
-  avg_latency_ms?: number
-  last_used_at?: string
-  model_count?: number
-  hourly_requests?: number
-  hourly_failures?: number
+  avg_latency_ms: number
 }
 
 export interface BackendWritePayload {
@@ -84,10 +73,7 @@ export interface BackendWritePayload {
   console_username?: string
   console_password?: string
   new_api_refresh?: string
-  console_authorization?: string
-  console_checkin_path?: string
   console_checkin_workflow_id?: string
-  channel_url?: string
   console_headers?: Record<string, string>
   console_user_id?: string
   notes?: string

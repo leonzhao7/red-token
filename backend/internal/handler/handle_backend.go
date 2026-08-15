@@ -238,24 +238,13 @@ func (h *BackendHandler) HandleListBackends(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	stats, err := h.store.BackendRequestStatsSince(r.Context(), time.Now().UTC().Add(-30*time.Minute))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	hourlyStats, err := h.store.BackendHourlyStatsByIDs(r.Context(), backendIDs(backends), time.Now().UTC().Add(-1*time.Hour))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	summaries, err := h.BackendUsageSummaryMap(r.Context(), backends)
+	averageLatency, err := h.store.BackendAverageLatencyByIDs(r.Context(), backendIDs(backends))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	response := BuildBackendViews(backends, summaries, stats, hourlyStats)
-	writeJSON(w, http.StatusOK, pagedResponse(EnsureBackendViews(response), total, page, limit))
+	writeJSON(w, http.StatusOK, pagedResponse(buildBackendFrontendViews(backends, averageLatency), total, page, limit))
 }
 
 func (h *BackendHandler) HandleExportBackends(w http.ResponseWriter, r *http.Request) {
@@ -364,7 +353,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if backendType != domain.BackendTypeNewAPI {
+	if backendType != domain.BackendTypeNewAPI && backendType != domain.BackendTypeSub2API {
 		consoleHeaders = map[string]string{}
 	}
 	newAPIRefresh := ""
@@ -419,7 +408,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		Message:      "backend created: " + backend.Name,
 		BackendName:  backend.Name,
 	})
-	writeJSON(w, http.StatusCreated, backend)
+	writeJSON(w, http.StatusCreated, buildBackendFrontendView(backend, 0))
 }
 
 func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Request) {
@@ -513,21 +502,21 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 		}
 		patch.NewAPIRefresh = &value
 	}
-	if payload.ConsoleAuthorization != nil {
+	if payload.ConsoleAuthorization != nil || (payload.BackendType != nil && backendType != domain.BackendTypeSub2API) {
 		value := ""
 		if backendType == domain.BackendTypeSub2API {
 			value = strings.TrimSpace(*payload.ConsoleAuthorization)
 		}
 		patch.ConsoleAuthorization = &value
 	}
-	if payload.ConsoleCheckinPath != nil {
+	if payload.ConsoleCheckinPath != nil || (payload.BackendType != nil && backendType != domain.BackendTypeSub2API) {
 		value := ""
 		if backendType == domain.BackendTypeSub2API {
 			value = normalizeConsoleAPIPath(*payload.ConsoleCheckinPath)
 		}
 		patch.ConsoleCheckinPath = &value
 	}
-	if payload.ChannelURL != nil {
+	if payload.ChannelURL != nil || (payload.BackendType != nil && backendType != domain.BackendTypeSub2API) {
 		value := ""
 		if backendType == domain.BackendTypeSub2API {
 			value = normalizeConsoleAPIPath(*payload.ChannelURL)
@@ -556,7 +545,7 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 	}
 	if payload.ConsoleHeaders != nil {
 		value := map[string]string{}
-		if backendType == domain.BackendTypeNewAPI {
+		if backendType == domain.BackendTypeNewAPI || backendType == domain.BackendTypeSub2API {
 			value, err = normalizeConsoleHeaders(*payload.ConsoleHeaders)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
@@ -564,6 +553,10 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 			}
 		}
 		patch.ConsoleHeaders = &value
+		if backendType == domain.BackendTypeSub2API {
+			emptyAuthorization := ""
+			patch.ConsoleAuthorization = &emptyAuthorization
+		}
 		emptyCookie := ""
 		patch.ConsoleCookie = &emptyCookie
 	}
@@ -592,7 +585,7 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, backend)
+	writeJSON(w, http.StatusOK, buildBackendFrontendView(backend, 0))
 }
 
 func (h *BackendHandler) HandleBackendConsoleCheckin(w http.ResponseWriter, r *http.Request) {
@@ -748,7 +741,7 @@ func (h *BackendHandler) HandleBackendConsoleCheckin(w http.ResponseWriter, r *h
 	), consoleResultAttrs(result)...)...)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":  updated,
+		"backend":  buildBackendFrontendView(updated, 0),
 		"checkin":  result.Payload,
 		"account":  decodeJSONMap(accountJSON),
 		"requests": recorder.Requests,
@@ -779,7 +772,7 @@ func (h *BackendHandler) handleWorkflowConsoleCheckin(w http.ResponseWriter, r *
 		slog.String("workflow_id", outcome.WorkflowID),
 	)...)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":    outcome.Backend,
+		"backend":    buildBackendFrontendView(outcome.Backend, 0),
 		"checkin":    outcome.Output,
 		"account":    decodeJSONMap(outcome.Backend.ConsoleAccountJSON),
 		"requests":   outcome.Requests,
@@ -813,7 +806,7 @@ func (h *BackendHandler) handleWorkflowConsoleSync(w http.ResponseWriter, r *htt
 	}
 	h.appendBackendConsoleSyncAudit(r, outcome.Backend)
 	writeConsoleSyncSuccess(w, map[string]any{
-		"backend":    outcome.Backend,
+		"backend":    buildBackendFrontendView(outcome.Backend, 0),
 		"checkin":    outcome.Output,
 		"account":    decodeJSONMap(outcome.Backend.ConsoleAccountJSON),
 		"pricing":    decodeJSONMap(outcome.Backend.ConsolePricingJSON),
@@ -854,7 +847,7 @@ func (h *BackendHandler) HandleBackendConsolePricing(w http.ResponseWriter, r *h
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":  updated,
+		"backend":  buildBackendFrontendView(updated, 0),
 		"pricing":  filteredPricing,
 		"requests": recorder.Requests,
 	})
@@ -1027,7 +1020,7 @@ func (h *BackendHandler) handleNewAPIConsoleSync(w http.ResponseWriter, r *http.
 	h.appendBackendConsoleSyncAudit(r, updated)
 
 	writeConsoleSyncSuccess(w, map[string]any{
-		"backend":  updated,
+		"backend":  buildBackendFrontendView(updated, 0),
 		"status":   statusResult.Payload,
 		"checkin":  checkinPayload,
 		"account":  decodeJSONMap(accountJSON),
@@ -1057,7 +1050,7 @@ func (h *BackendHandler) handleSub2APIConsoleSync(w http.ResponseWriter, r *http
 	h.appendBackendConsoleSyncAudit(r, updated)
 
 	writeConsoleSyncSuccess(w, map[string]any{
-		"backend":  updated,
+		"backend":  buildBackendFrontendView(updated, 0),
 		"checkin":  result.Checkin,
 		"account":  result.Account,
 		"pricing":  result.Pricing,
@@ -1122,7 +1115,7 @@ func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, paylo
 		if err != nil {
 			return nil, fmt.Errorf("backend %q: %w", name, err)
 		}
-		if backendType != domain.BackendTypeNewAPI {
+		if backendType != domain.BackendTypeNewAPI && backendType != domain.BackendTypeSub2API {
 			consoleHeaders = map[string]string{}
 		}
 		newAPIRefresh := ""
@@ -1613,11 +1606,12 @@ func validateBackendAPIKeys(values []domain.BackendAPIKey, legacyAPIKey string, 
 	seen := make(map[string]struct{}, len(values))
 	normalized := make([]domain.BackendAPIKey, 0, len(values))
 	for index, value := range values {
+		value.ID = strings.TrimSpace(value.ID)
 		value.APIKey = strings.TrimSpace(value.APIKey)
 		value.Name = strings.TrimSpace(value.Name)
 		value.Group = strings.TrimSpace(value.Group)
 		if value.APIKey == "" {
-			return nil, fmt.Errorf("api_keys[%d].api_key is required", index)
+			return nil, fmt.Errorf("api_keys[%d].key is required", index)
 		}
 		if value.Group == "" {
 			return nil, fmt.Errorf("api_keys[%d].group is required", index)

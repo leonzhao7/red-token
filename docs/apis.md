@@ -111,7 +111,8 @@ X-Api-Key: tg-xxxxxxxx
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `api_key` | string | 上游 API Key |
+| `id` | string | 上游 Key ID；历史手工数据可以为空 |
+| `key` | string | 上游 API Key |
 | `name` | string | Key 名称；可以为空，前端显示时回退为“未知” |
 | `group` | string | Key 分组，必填 |
 | `models` | string[] | 支持的模型；支持 `*`、`?` 通配模式，至少一项 |
@@ -122,7 +123,8 @@ X-Api-Key: tg-xxxxxxxx
 
 ```json
 {
-  "api_key": "sk-upstream",
+  "id": "56382",
+  "key": "sk-upstream",
   "name": "production-key",
   "group": "default",
   "models": ["gpt-5", "gpt-4.*"],
@@ -150,7 +152,7 @@ X-Api-Key: tg-xxxxxxxx
 
 `password` 为空时可省略。
 
-### 2.3 `Backend`
+### 2.3 前端 `Backend`
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -165,46 +167,34 @@ X-Api-Key: tg-xxxxxxxx
 | `console_username` | string | 控制台用户名 |
 | `console_password` | string | 控制台密码，可省略 |
 | `new_api_refresh` | string | new-api 刷新令牌，可省略 |
-| `console_authorization` | string | sub2api 控制台授权值，可省略 |
-| `console_checkin_path` | string | sub2api 签到路径，可省略 |
-| `channel_url` | string | sub2api 渠道/定价路径，可省略 |
-| `console_cookie` | string | 旧版控制台 Cookie，可省略 |
-| `console_headers` | object<string,string> | new-api 控制台请求头，可省略 |
-| `console_account_json` | string | 控制台账户摘要的 JSON 字符串 |
-| `console_pricing_json` | string | 控制台定价摘要的 JSON 字符串 |
+| `console_headers` | object<string,string> | 控制台请求头 |
+| `console_account` | string | 已归一化账户对象的 JSON 字符串；额度均为最终金额 |
+| `console_models` | string | 已归一化模型数组的 JSON 字符串；价格均为最终价格 |
 | `notes` | string | 备注 |
 | `proxy_id` | integer | SOCKS5 代理 ID；`0` 表示直连 |
-| `proxy` | `SocksProxy` | 绑定代理，可省略 |
 | `status` | string | `normal`、`abnormal` 或 `disabled` |
-| `consecutive_failures` | integer | 连续失败次数 |
-| `recover_at` | string | 自动恢复时间，可省略 |
 | `weight` | integer | 调度权重，最小为 `1`，数值越大优先级越高 |
 | `created_at` | string | 创建时间 |
 | `updated_at` | string | 更新时间 |
+| `avg_latency_ms` | number | 历史平均请求延迟 |
 
-### 2.4 `BackendView`
+账户 JSON 固定使用 `id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`，有值时还包含 `last_checkin_at` 和 `last_workflow_at`。New API 与 Sub2API 的旧账户结构由服务端转换；前端不再读取 `quota_per_unit`。
 
-`BackendView` 包含 `Backend` 的全部字段，并增加：
+模型 JSON 是数组。按量模型使用：
 
 ```json
 {
-  "request_count": 123,
-  "avg_latency_ms": 812.5,
-  "last_used_at": "2026-08-05T08:30:00Z",
-  "model_count": 4,
-  "hourly_requests": 20,
-  "hourly_failures": 2,
-  "recent_stats": {
-    "window_minutes": 30,
-    "successes": 18,
-    "failures": 2
-  }
+  "name": "gpt-5.6-sol",
+  "cheapest_groups": ["default"],
+  "price_type": 0,
+  "in_price": 2.5,
+  "out_price": 20
 }
 ```
 
-`last_used_at` 没有数据时可省略。
+按次模型使用 `price_type: 1` 和最终 `price` 字段。前端不再根据 `model_ratio`、`group_ratio` 或 `quota_per_unit` 二次计算。
 
-### 2.5 `ClientKey`
+### 2.4 `ClientKey`
 
 ```json
 {
@@ -679,9 +669,53 @@ X-Api-Key: tg-xxxxxxxx
 
 请求：无请求体；支持通用分页参数。
 
-响应 `200`：通用分页结构，`items` 为 `BackendView[]`。
+响应 `200`：通用分页结构，`items` 使用统一的前端 `Backend` 格式。列表不再包含请求数、小时统计、近期成功/失败数、恢复状态或代理详情。
 
-注意：当前列表响应直接嵌入 `Backend`，可能包含未脱敏的 `api_keys`、控制台密码、刷新令牌、授权头、控制台请求头及绑定代理密码。
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "name": "lyclaude",
+      "protocol": "both",
+      "backend_type": "new-api",
+      "base_url": "https://free.lyclaude.site/v1",
+      "api_keys": [
+        {
+          "id": "56382",
+          "key": "sk-upstream",
+          "name": "wahaha",
+          "group": "default",
+          "models": ["gpt-5.6-sol", "claude-opus-4-6"],
+          "model_mapping": {"claude-opus-4-6": "claude-opus-5"},
+          "used_quota": 0
+        }
+      ],
+      "console_url": "https://free.lyclaude.site",
+      "console_username": "user@example.com",
+      "console_password": "password",
+      "console_checkin_workflow_id": "new-api-default",
+      "console_headers": {"Cookie": "session=..."},
+      "console_models": "[{\"cheapest_groups\":[\"default\"],\"in_price\":2.5,\"name\":\"gpt-5.6-sol\",\"out_price\":20,\"price_type\":0}]",
+      "console_account": "{\"id\":\"49722\",\"quota\":2600,\"quota_unit\":\"USD\",\"today_reward\":0,\"used_quota\":0,\"username\":\"\"}",
+      "new_api_refresh": "refresh-token",
+      "notes": "",
+      "proxy_id": 0,
+      "status": "normal",
+      "weight": 88,
+      "created_at": "2026-06-23T05:37:56Z",
+      "updated_at": "2026-08-14T17:28:31Z",
+      "avg_latency_ms": 2655.9,
+      "tags": []
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "limit": 10
+}
+```
+
+该管理接口包含未脱敏的 API Key、控制台密码、刷新令牌和控制台请求头，只能暴露在受保护的管理端。
 
 ### 6.2 后端详情
 
@@ -715,7 +749,8 @@ X-Api-Key: tg-xxxxxxxx
   "base_url": "https://api.example.com",
   "api_keys": [
     {
-      "api_key": "sk-upstream",
+      "id": "56382",
+      "key": "sk-upstream",
       "name": "production-key",
       "group": "default",
       "models": ["gpt-5", "gpt-4.*"],
@@ -753,7 +788,7 @@ X-Api-Key: tg-xxxxxxxx
 | `protocol` | 否 | `anthropic`/`claude` -> `anthropic`；`both`/`dual` 等 -> `both`；其他值 -> `openai` |
 | `backend_type` | 否 | `newapi`/`new_api` -> `new-api`；`sub-2-api`/`sub_2_api` -> `sub2api`；其他非空值 -> `new-api` |
 | `base_url` | 是 | 必须是包含主机的 `http` 或 `https` URL |
-| `api_keys` | 条件必填 | 至少一项；每项必须有 `api_key`、`group` 和非空 `models` |
+| `api_keys` | 条件必填 | 至少一项；每项必须有 `key`、`group` 和非空 `models`；读取时会返回 `id` |
 | `api_key`、`models`、`model_mapping` | 兼容字段 | `api_keys` 为空时，可用这三个旧字段构造默认分组 Key |
 | `console_url` | 否 | 非空时必须是合法 HTTP(S) URL |
 | `proxy_id` | 否 | `0` 为直连；大于 `0` 时代理必须存在；不能小于 `0` |
@@ -761,14 +796,14 @@ X-Api-Key: tg-xxxxxxxx
 
 控制台字段处理：
 
-- `new-api`：保留 `new_api_refresh` 和 `console_headers`；可用 `console_cookie` 生成 `Cookie` 请求头；清空 sub2api 专用字段。
-- `sub2api`：保留 `console_authorization`、`console_checkin_path`、`channel_url`；清空 new-api 请求头和刷新令牌。
+- `new-api`：保留 `new_api_refresh` 和 `console_headers`；可用 `console_cookie` 生成 `Cookie` 请求头。
+- `sub2api`：同样使用 `console_headers`，授权值配置为 `Authorization` 请求头；旧 `console_authorization` 仍兼容读取。刷新令牌会被清空。
 - `console_checkin_path` 和 `channel_url` 非空时会自动补 `/` 前缀。
 - `console_headers` 的名称和值不能为空，名称必须是合法 HTTP Header 名，值不能含非法控制字符。
 - `console_user_id` 会写入 `console_account_json` 的 `id` 字段。
 - 请求中的 `status` 和 `endpoints` 当前会被解析但不会用于创建；新后端状态固定归一化为 `normal`。
 
-响应 `201`：创建后的 `Backend`。
+响应 `201`：创建后的统一前端 `Backend`。
 
 ### 6.4 更新后端
 
@@ -816,7 +851,7 @@ X-Api-Key: tg-xxxxxxxx
 - `endpoints` 当前被解析但不会写入更新补丁。
 - 如果请求体 `{}`，返回当前对象，不产生字段变更。
 
-响应 `200`：更新后的 `Backend`。
+响应 `200`：更新后的统一前端 `Backend`。
 
 错误：无效 ID/字段返回 `400`，不存在返回 `404`。
 

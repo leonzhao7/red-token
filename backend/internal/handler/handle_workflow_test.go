@@ -205,7 +205,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	if len(updatedBackend.APIKeys[0].Models) != 1 || updatedBackend.APIKeys[0].Models[0] != "configured-main-model" || updatedBackend.APIKeys[0].ModelMapping["configured-main-model"] != "provider-main-model" {
 		t.Fatalf("workflow changed the primary API key routing configuration: %+v", updatedBackend.APIKeys[0])
 	}
-	if updatedBackend.APIKeys[0].UsedQuota != 3 || updatedBackend.APIKeys[1].UsedQuota != 0 {
+	if updatedBackend.APIKeys[0].ID != "key-1" || updatedBackend.APIKeys[1].ID != "key-2" || updatedBackend.APIKeys[0].UsedQuota != 3 || updatedBackend.APIKeys[1].UsedQuota != 0 {
 		t.Fatalf("workflow did not persist API key usage: %+v", updatedBackend.APIKeys)
 	}
 	if len(updatedBackend.APIKeys[1].Models) != 1 || updatedBackend.APIKeys[1].Models[0] != "upstream-only-model" || updatedBackend.APIKeys[1].ModelMapping["upstream-only-model"] != "provider-model" {

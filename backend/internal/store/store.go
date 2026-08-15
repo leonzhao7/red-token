@@ -869,6 +869,7 @@ func normalizeBackendAPIKeys(values []domain.BackendAPIKey) []domain.BackendAPIK
 	}
 	normalized := make([]domain.BackendAPIKey, 0, len(values))
 	for _, value := range values {
+		value.ID = strings.TrimSpace(value.ID)
 		value.APIKey = strings.TrimSpace(value.APIKey)
 		value.Name = strings.TrimSpace(value.Name)
 		value.Group = strings.TrimSpace(value.Group)

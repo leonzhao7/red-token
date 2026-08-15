@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ type ClientKey struct {
 }
 
 type BackendAPIKey struct {
+	ID           string            `json:"id,omitempty"`
 	APIKey       string            `json:"api_key"`
 	Name         string            `json:"name"`
 	Group        string            `json:"group"`
@@ -47,33 +49,60 @@ type BackendAPIKey struct {
 	UsedQuota    int64             `json:"used_quota"`
 }
 
+func (k *BackendAPIKey) UnmarshalJSON(data []byte) error {
+	var value struct {
+		ID           string            `json:"id"`
+		Key          string            `json:"key"`
+		APIKey       string            `json:"api_key"`
+		Name         string            `json:"name"`
+		Group        string            `json:"group"`
+		Models       []string          `json:"models"`
+		ModelMapping map[string]string `json:"model_mapping"`
+		UsedQuota    int64             `json:"used_quota"`
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	k.ID = value.ID
+	k.APIKey = value.Key
+	if strings.TrimSpace(k.APIKey) == "" {
+		k.APIKey = value.APIKey
+	}
+	k.Name = value.Name
+	k.Group = value.Group
+	k.Models = value.Models
+	k.ModelMapping = value.ModelMapping
+	k.UsedQuota = value.UsedQuota
+	return nil
+}
+
 type Backend struct {
-	ID                   int64             `json:"id"`
-	Name                 string            `json:"name"`
-	Protocol             string            `json:"protocol"`
-	BackendType          string            `json:"backend_type"`
-	BaseURL              string            `json:"base_url"`
-	APIKeys              []BackendAPIKey   `json:"api_keys"`
-	ConsoleURL           string            `json:"console_url"`
-	Tags                 []string          `json:"tags"`
-	ConsoleUsername      string            `json:"console_username"`
-	ConsolePassword      string            `json:"console_password,omitempty"`
-	NewAPIRefresh        string            `json:"new_api_refresh,omitempty"`
+	ID                     int64             `json:"id"`
+	Name                   string            `json:"name"`
+	Protocol               string            `json:"protocol"`
+	BackendType            string            `json:"backend_type"`
+	BaseURL                string            `json:"base_url"`
+	APIKeys                []BackendAPIKey   `json:"api_keys"`
+	ConsoleURL             string            `json:"console_url"`
+	Tags                   []string          `json:"tags"`
+	ConsoleUsername        string            `json:"console_username"`
+	ConsolePassword        string            `json:"console_password,omitempty"`
+	NewAPIRefresh          string            `json:"new_api_refresh,omitempty"`
 	ConsoleAuthorization   string            `json:"console_authorization,omitempty"`
 	ConsoleCheckinPath     string            `json:"console_checkin_path,omitempty"`
 	ConsoleCheckinWorkflow string            `json:"console_checkin_workflow_id,omitempty"`
 	ChannelURL             string            `json:"channel_url,omitempty"`
-	ConsoleCookie        string            `json:"console_cookie,omitempty"`
-	ConsoleHeaders       map[string]string `json:"console_headers,omitempty"`
-	ConsoleAccountJSON   string            `json:"console_account_json"`
-	ConsolePricingJSON   string            `json:"console_pricing_json"`
-	Notes                string            `json:"notes"`
-	ProxyID              int64             `json:"proxy_id"`
-	Proxy                *SocksProxy       `json:"proxy,omitempty"`
-	Status               string            `json:"status"`
-	ConsecutiveFailures  int               `json:"consecutive_failures"`
-	RecoverAt            *time.Time        `json:"recover_at,omitempty"`
-	Weight               int               `json:"weight"`
+	ConsoleCookie          string            `json:"console_cookie,omitempty"`
+	ConsoleHeaders         map[string]string `json:"console_headers,omitempty"`
+	ConsoleAccountJSON     string            `json:"console_account_json"`
+	ConsolePricingJSON     string            `json:"console_pricing_json"`
+	Notes                  string            `json:"notes"`
+	ProxyID                int64             `json:"proxy_id"`
+	Proxy                  *SocksProxy       `json:"proxy,omitempty"`
+	Status                 string            `json:"status"`
+	ConsecutiveFailures    int               `json:"consecutive_failures"`
+	RecoverAt              *time.Time        `json:"recover_at,omitempty"`
+	Weight                 int               `json:"weight"`
 	// Legacy routing fields are retained internally for old database rows and
 	// direct service callers. API responses use APIKeys as the canonical shape.
 	APIKey       string            `json:"-"`

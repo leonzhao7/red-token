@@ -29,7 +29,6 @@ import {
 import Modal from '../components/Modal.vue'
 import { MODEL_CATALOG } from '../data/mock'
 import { toast } from '../composables/toast'
-import { fixedRequestPricing, tieredExpressionPricing } from '../utils/tieredPricing'
 import {
   ApiError,
   createBackend,
@@ -73,6 +72,7 @@ type RelayView = Omit<Relay, 'status'> & {
   consoleUrl: string
   consoleSyncSupported: boolean
   pricingModels: RelayModel[]
+  quotaUnit: string
   raw: BackendResponse
 }
 
@@ -117,6 +117,16 @@ function parseObject(raw: string | undefined): Record<string, any> {
     return value && typeof value === 'object' ? value : {}
   } catch {
     return {}
+  }
+}
+
+function parseArray(raw: string | undefined): Record<string, any>[] {
+  if (!raw) return []
+  try {
+    const value = JSON.parse(raw)
+    return Array.isArray(value) ? value.filter((item) => item && typeof item === 'object') : []
+  } catch {
+    return []
   }
 }
 
@@ -178,7 +188,7 @@ function parseModelMapping(raw: string) {
 }
 
 function consoleUserIdOf(backend: BackendResponse) {
-  const account = parseObject(backend.console_account_json)
+  const account = parseObject(backend.console_account)
   if (typeof account.id === 'number' && Number.isFinite(account.id) && account.id > 0) return String(Math.trunc(account.id))
   return typeof account.id === 'string' ? account.id.trim() : ''
 }
@@ -188,29 +198,13 @@ function numberValue(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function quotaToCurrency(value: unknown, account: Record<string, any>) {
-  const amount = numberValue(value)
-  const unit = numberValue(account.quota_per_unit) || 500000
-  const exchangeRate = numberValue(account.custom_currency_exchange_rate) || 1
-  return (amount / unit) * exchangeRate
-}
-
 function accountValues(backend: BackendResponse, keys: BackendApiKey[]) {
-  const account = parseObject(backend.console_account_json)
-  const directBalance = account.balance
-  const balance = directBalance !== undefined
-    ? numberValue(directBalance)
-    : quotaToCurrency(account.quota, account)
-  const directUsed = account.total_actual_cost
-  const used = directUsed !== undefined
-    ? numberValue(directUsed)
-    : account.used_quota !== undefined
-      ? quotaToCurrency(account.used_quota, account)
-      : 0
+  const account = parseObject(backend.console_account)
   const keyUsed = keys.reduce((sum, key) => sum + numberValue(key.used_quota), 0)
   return {
-    balance,
-    used: directUsed !== undefined || account.used_quota !== undefined ? used : quotaToCurrency(keyUsed, account),
+    balance: numberValue(account.quota),
+    used: account.used_quota !== undefined ? numberValue(account.used_quota) : keyUsed,
+    quotaUnit: String(account.quota_unit || 'USD').trim() || 'USD',
     username: String(account.username || account.email || account.id || backend.console_username || ''),
     checkinAt: String(account.last_checkin_at || '')
   }
@@ -235,80 +229,28 @@ function platformOf(backend: BackendResponse): PlatformType {
 
 type ModelPricing = { input: number; output: number; group: string; billingType: 'token' | 'fixed' }
 
-function enabledPricingGroups(record: Record<string, any>): string[] {
-  const raw = record.enable_groups
-  const groups = Array.isArray(raw)
-    ? raw.map((group) => String(group).trim())
-    : typeof raw === 'string'
-      ? raw.split(',').map((group) => group.trim())
-      : []
-  return [...new Set(groups.filter(Boolean))]
-}
-
-function cheapestPricingGroup(record: Record<string, any>, ratios: Record<string, unknown> | null) {
-  const groups = enabledPricingGroups(record)
-  if (!groups.length) return { name: '', ratio: 1 }
-
-  let cheapest = { name: groups[0], ratio: 1 }
-  let foundRatio = false
-  for (const name of groups) {
-    const ratio = Number(ratios?.[name])
-    if (!Number.isFinite(ratio) || ratio < 0) continue
-    if (!foundRatio || ratio < cheapest.ratio) {
-      cheapest = { name, ratio }
-      foundRatio = true
-    }
-  }
-  return cheapest
-}
-
 function pricingByModel(backend: BackendResponse) {
   const result = new Map<string, ModelPricing>()
-  const account = parseObject(backend.console_account_json)
-  const unit = numberValue(account.quota_per_unit) || 500000
-  const exchangeRate = numberValue(account.custom_currency_exchange_rate) || 1
-  const pricing = parseObject(backend.console_pricing_json)
-  const groupRatio = pricing.group_ratio && typeof pricing.group_ratio === 'object'
-    ? pricing.group_ratio as Record<string, unknown>
-    : null
-  const records = Array.isArray(pricing.data) ? pricing.data : []
-  for (const item of records) {
-    if (!item || typeof item !== 'object') continue
-    const record = item as Record<string, any>
-    const name = String(record.model_name || record.model || '').trim()
+  for (const record of parseArray(backend.console_models)) {
+    const name = String(record.name || '').trim()
     if (!name) continue
-    const cheapestGroup = cheapestPricingGroup(record, groupRatio)
-    if (numberValue(record.quota_type) === 1) {
-      const fixedPrice = fixedRequestPricing(
-        numberValue(record.model_price),
-        cheapestGroup.ratio
-      )
+    const groups = Array.isArray(record.cheapest_groups)
+      ? record.cheapest_groups.map((group: unknown) => String(group).trim()).filter(Boolean)
+      : []
+    const group = groups.join(', ')
+    if (numberValue(record.price_type) === 1) {
+      const price = numberValue(record.price)
       result.set(name, {
-        input: fixedPrice,
-        output: fixedPrice,
-        group: cheapestGroup.name,
+        input: price,
+        output: price,
+        group,
         billingType: 'fixed'
       })
       continue
     }
-    const directInput = numberValue(record.input_price ?? record.prompt_price ?? record.input_cost)
-    const directOutput = numberValue(record.output_price ?? record.completion_price ?? record.output_cost)
-    if (directInput || directOutput) {
-      result.set(name, { input: directInput, output: directOutput || directInput, group: cheapestGroup.name, billingType: 'token' })
-    } else {
-      const ratio = numberValue(record.model_ratio ?? record.model_price)
-      const tieredPricing = tieredExpressionPricing(record, cheapestGroup.ratio, exchangeRate)
-      if (tieredPricing) {
-        result.set(name, { ...tieredPricing, group: cheapestGroup.name, billingType: 'token' })
-        continue
-      }
-      if (ratio) {
-        const completionRatio = numberValue(record.completion_ratio) || 1
-        const inputPrice = ratio * 1_000_000 / unit * exchangeRate * cheapestGroup.ratio
-        const outputPrice = inputPrice * completionRatio
-        result.set(name, { input: inputPrice, output: outputPrice, group: cheapestGroup.name, billingType: 'token' })
-      }
-    }
+    const input = numberValue(record.in_price)
+    const output = numberValue(record.out_price)
+    result.set(name, { input, output, group, billingType: 'token' })
   }
   return result
 }
@@ -336,7 +278,7 @@ function mapBackend(backend: BackendResponse): RelayView {
       name: key.name || '',
       group: key.group || 'default',
       username: '',
-      key: key.api_key,
+      key: key.key,
       models,
       modelMap: key.model_mapping || {},
       usedTokens: numberValue(key.used_quota)
@@ -367,6 +309,7 @@ function mapBackend(backend: BackendResponse): RelayView {
     proxyId: backend.proxy_id ? String(backend.proxy_id) : '',
     models,
     pricingModels,
+    quotaUnit: account.quotaUnit,
     keys: relayKeys,
     protocol: protocolOf(backend.protocol),
     backendType: backend.backend_type === 'sub2api' || backend.backend_type === 'new-api' ? backend.backend_type : '',
@@ -438,16 +381,30 @@ watch(totalPages, (pages) => {
   if (page.value > pages) page.value = pages
 })
 
-const fmtUsd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-const fmtPrice = (n: number) => {
-  if (n === 0) return '$0'
-  if (n >= 1) return '$' + Number(n.toFixed(2))
-  if (n >= 0.01) return '$' + Number(n.toFixed(3))
-  return '$' + n.toPrecision(3)
+function quotaUnitPrefix(unit: string) {
+  const normalized = unit.trim()
+  const symbols: Record<string, string> = {
+    USD: '$',
+    CNY: '¥',
+    RMB: '¥',
+    EUR: '€',
+    GBP: '£',
+    JPY: '¥',
+    KRW: '₩'
+  }
+  return symbols[normalized.toUpperCase()] || normalized || '$'
 }
-const fmtQuota = (n: number) => fmtUsd(n / 500000)
-const fmtTokens = (n: number) => (n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : (n / 1e6).toFixed(1) + 'M')
+
+const fmtMoney = (n: number, unit: string) =>
+  quotaUnitPrefix(unit) + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+const fmtPrice = (n: number, unit: string) => {
+  const prefix = quotaUnitPrefix(unit)
+  if (n === 0) return prefix + '0'
+  if (n >= 1) return prefix + Number(n.toFixed(2))
+  if (n >= 0.01) return prefix + Number(n.toFixed(3))
+  return prefix + n.toPrecision(3)
+}
 
 const hostOf = (url: string) => {
   try {
@@ -580,6 +537,7 @@ function askRemove(r: RelayView) {
 
 /* ---- form ---- */
 interface KeyFormItem {
+  readonly id: string
   readonly name: string
   readonly serverGroup: string
   key: string
@@ -590,7 +548,7 @@ interface KeyFormItem {
 }
 
 function defaultKeyFormItem(): KeyFormItem {
-  return { name: '', serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
+  return { id: '', name: '', serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
 }
 
 const form = ref<{
@@ -604,10 +562,7 @@ const form = ref<{
   newApiRefresh: string
   consoleHeaders: string
   consoleUserId: string
-  consoleAuthorization: string
-  consoleCheckinPath: string
   consoleCheckinWorkflowId: string
-  channelUrl: string
   proxyId: string
   weight: number
   keys: KeyFormItem[]
@@ -622,10 +577,7 @@ const form = ref<{
   newApiRefresh: '',
   consoleHeaders: '',
   consoleUserId: '',
-  consoleAuthorization: '',
-  consoleCheckinPath: '',
   consoleCheckinWorkflowId: '',
-  channelUrl: '',
   proxyId: '',
   weight: 10,
   keys: []
@@ -635,10 +587,9 @@ const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const isEditing = computed(() => editingId.value !== null)
 const isNewAPIBackendType = computed(() => form.value.backendType === 'new-api')
-const isSub2APIBackendType = computed(() => form.value.backendType === 'sub2api')
-const isConsoleBackendType = computed(() => isNewAPIBackendType.value || isSub2APIBackendType.value)
+const isConsoleBackendType = computed(() => form.value.backendType === 'new-api' || form.value.backendType === 'sub2api')
 const consoleHeadersError = computed(() => {
-  if (!isNewAPIBackendType.value) return ''
+  if (!isConsoleBackendType.value) return ''
   try {
     parseConsoleHeaders(form.value.consoleHeaders)
     return ''
@@ -658,9 +609,9 @@ const modelMappingErrors = computed(() => form.value.keys.map((key) => {
 function resetForm() {
   form.value = {
     name: '', url: '', protocol: 'openai', backendType: 'new-api', consoleUrl: '', username: '', password: '',
-    newApiRefresh: '', consoleHeaders: '', consoleUserId: '', consoleAuthorization: '', consoleCheckinPath: '',
+    newApiRefresh: '', consoleHeaders: '', consoleUserId: '',
     consoleCheckinWorkflowId: '',
-    channelUrl: '', proxyId: '', weight: 10, keys: []
+    proxyId: '', weight: 10, keys: []
   }
 }
 
@@ -683,14 +634,12 @@ function openEditRelay(r: RelayView) {
     newApiRefresh: r.raw.new_api_refresh || '',
     consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
     consoleUserId: consoleUserIdOf(r.raw),
-    consoleAuthorization: r.raw.console_authorization || '',
-    consoleCheckinPath: r.raw.console_checkin_path || '',
     consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
-    channelUrl: r.raw.channel_url || '',
     proxyId: r.proxyId,
     weight: numberValue(r.raw.weight) || 10,
     keys: r.keys.length
       ? r.keys.map((key) => ({
+          id: r.raw.api_keys.find((item) => item.key === key.key)?.id || '',
           name: key.name,
           serverGroup: key.group || 'default',
           key: key.key,
@@ -714,7 +663,8 @@ function removeKeyRow(i: number) {
 function buildPayload() {
   const apiKeys: BackendApiKey[] = form.value.keys.map((key) => {
     return {
-      api_key: key.key.trim(),
+      id: key.id,
+      key: key.key.trim(),
       name: key.name,
       group: key.serverGroup,
       models: parseModelList(key.modelsInput),
@@ -733,12 +683,9 @@ function buildPayload() {
     console_username: form.value.username.trim(),
     console_password: form.value.password,
     new_api_refresh: backendType === 'new-api' ? form.value.newApiRefresh.trim() : '',
-    console_headers: backendType === 'new-api' ? parseConsoleHeaders(form.value.consoleHeaders) : {},
+    console_headers: backendType === 'new-api' || backendType === 'sub2api' ? parseConsoleHeaders(form.value.consoleHeaders) : {},
     console_user_id: backendType === 'new-api' ? form.value.consoleUserId.trim() : '',
-    console_authorization: backendType === 'sub2api' ? form.value.consoleAuthorization.trim() : '',
-    console_checkin_path: backendType === 'sub2api' ? form.value.consoleCheckinPath.trim() : '',
     console_checkin_workflow_id: form.value.consoleCheckinWorkflowId.trim(),
-    channel_url: backendType === 'sub2api' ? form.value.channelUrl.trim() : '',
     proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0,
     weight: Math.min(100, Math.max(1, Math.round(numberValue(form.value.weight) || 10)))
   }
@@ -888,8 +835,8 @@ onMounted(loadData)
               <span v-if="r.models.length > 3" class="tag neutral">+{{ r.models.length - 3 }}</span>
             </div>
             <div class="rl-cell money">
-              <span class="mono rl-bal" :class="{ low: r.balance < 20 }">{{ fmtUsd(r.balance) }}</span>
-              <span class="mono rl-used">{{ fmtUsd(r.used) }}</span>
+              <span class="mono rl-bal" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</span>
+              <span class="mono rl-used">{{ fmtMoney(r.used, r.quotaUnit) }}</span>
             </div>
             <div class="rl-cell weight"><span class="mono rl-weight">{{ r.raw.weight }}</span></div>
             <div class="rl-cell op">
@@ -925,14 +872,14 @@ onMounted(loadData)
                       <div class="ra-ico cyan"><Wallet :size="14" /></div>
                       <div class="ra-body">
                         <div class="ra-label">账户余额</div>
-                        <div class="ra-val mono" :class="{ low: r.balance < 20 }">{{ fmtUsd(r.balance) }}</div>
+                        <div class="ra-val mono" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</div>
                       </div>
                     </div>
                     <div class="ra-cell">
                       <div class="ra-ico violet"><Coins :size="14" /></div>
                       <div class="ra-body">
                         <div class="ra-label">累计用额</div>
-                        <div class="ra-val mono">{{ fmtUsd(r.used) }}</div>
+                        <div class="ra-val mono">{{ fmtMoney(r.used, r.quotaUnit) }}</div>
                       </div>
                     </div>
                   </div>
@@ -968,7 +915,7 @@ onMounted(loadData)
                       <div class="rk-top">
                         <span class="rk-name"><KeyRound :size="12" />{{ k.name || '未知' }}</span>
                         <span class="rk-group">{{ k.group || 'default' }}</span>
-                        <span class="rk-used mono"><Coins :size="11" />{{ fmtUsd(k.usedTokens / 500000) }}</span>
+                        <span class="rk-used mono"><Coins :size="11" />{{ fmtMoney(k.usedTokens, r.quotaUnit) }}</span>
                       </div>
                       <div class="rk-key mono">{{ k.key }}</div>
                       <div class="rk-bottom">
@@ -987,8 +934,8 @@ onMounted(loadData)
                     <div v-for="m in r.pricingModels" :key="m.id" class="rm-item">
                       <span class="tag rm-tag">{{ m.name }}</span>
                       <span class="rm-group">{{ m.group || '-' }}</span>
-                      <span v-if="m.billingType === 'fixed'" class="rm-price mono">{{ fmtPrice(m.priceIn) }} / 次</span>
-                      <span v-else class="rm-price mono">in {{ fmtPrice(m.priceIn) }} / out {{ fmtPrice(m.priceOut) }}</span>
+                      <span v-if="m.billingType === 'fixed'" class="rm-price mono">{{ fmtPrice(m.priceIn, r.quotaUnit) }} / 次</span>
+                      <span v-else class="rm-price mono">in {{ fmtPrice(m.priceIn, r.quotaUnit) }} / out {{ fmtPrice(m.priceOut, r.quotaUnit) }}</span>
                     </div>
                   </div>
                 </div>
@@ -1076,20 +1023,7 @@ onMounted(loadData)
             </div>
           </div>
 
-          <div v-if="isSub2APIBackendType" class="field">
-            <label class="field-label">Authorization</label>
-            <textarea v-model="form.consoleAuthorization" class="textarea mono" rows="2" placeholder="Bearer sk-..."></textarea>
-          </div>
-          <div v-if="isSub2APIBackendType" class="field">
-            <label class="field-label">签到 Path</label>
-            <input v-model="form.consoleCheckinPath" class="input mono" placeholder="/api/v1/checkin" />
-          </div>
-          <div v-if="isSub2APIBackendType" class="field">
-            <label class="field-label">渠道 URL</label>
-            <input v-model="form.channelUrl" class="input mono" placeholder="/api/v1/channels" />
-          </div>
-
-          <div v-if="isNewAPIBackendType" class="field">
+          <div v-if="isConsoleBackendType" class="field">
             <label class="field-label">Headers</label>
             <textarea v-model="form.consoleHeaders" class="textarea mono" rows="3" placeholder="Authorization: Bearer token&#10;Cookie: session=abc123"></textarea>
             <em v-if="consoleHeadersError" class="ke-hint">{{ consoleHeadersError }}</em>

@@ -251,6 +251,34 @@ func (s *Store) BackendUsageSummaryByIDs(ctx context.Context, ids []int64) (map[
 	return out, rows.Err()
 }
 
+func (s *Store) BackendAverageLatencyByIDs(ctx context.Context, ids []int64) (map[int64]float64, error) {
+	if len(ids) == 0 {
+		return map[int64]float64{}, nil
+	}
+	query := `SELECT backend_id, AVG(duration_ms) FROM usage_logs WHERE backend_id IN (` +
+		placeholders(len(ids)) + `) GROUP BY backend_id`
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]float64, len(ids))
+	for rows.Next() {
+		var backendID int64
+		var avgLatency float64
+		if err := rows.Scan(&backendID, &avgLatency); err != nil {
+			return nil, err
+		}
+		out[backendID] = avgLatency
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) BackendBindingCountByProxyIDs(ctx context.Context, ids []int64) (map[int64]int, error) {
 	if len(ids) == 0 {
 		return map[int64]int{}, nil
