@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -878,7 +879,7 @@ func normalizeBackendAPIKeys(values []domain.BackendAPIKey) []domain.BackendAPIK
 		}
 		value.Models = normalizeList(value.Models)
 		value.ModelMapping = normalizeMap(value.ModelMapping)
-		if value.UsedQuota < 0 {
+		if value.UsedQuota < 0 || math.IsNaN(value.UsedQuota) || math.IsInf(value.UsedQuota, 0) {
 			value.UsedQuota = 0
 		}
 		normalized = append(normalized, value)

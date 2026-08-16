@@ -23,17 +23,29 @@ func TestValidateCheckinWorkflowOutput(t *testing.T) {
 		"username":     "alice",
 		"quota":        2400.0,
 		"quota_unit":   "USD",
-		"used_quota":   int64(3),
+		"used_quota":   3.75,
 		"today_reward": 123.0,
 		"api_keys": []any{
-			map[string]any{"id": "key-1", "name": "main", "key": "sk-value", "group": "default", "used_quota": int64(3)},
+			map[string]any{"id": "key-1", "name": "main", "key": "sk-value", "group": "default", "used_quota": 3.25},
 		},
 		"models": []any{
 			map[string]any{"name": "model-a", "cheapest_groups": []any{"default"}, "in_price": 1.0, "out_price": 2.0, "price_type": 0},
+			map[string]any{"name": "fixed-model", "cheapest_groups": []any{"default"}, "price": 0.03, "price_type": 1},
 		},
 	}
 	if err := ValidateCheckinWorkflowOutput(valid); err != nil {
 		t.Fatalf("validate output: %v", err)
+	}
+	legacyFixedPrice := cloneWorkflowOutputFixture(valid)
+	legacyFixedPrice["models"].([]any)[1] = map[string]any{"name": "fixed-model", "cheapest_groups": []any{"default"}, "in_price": 0.03, "out_price": 0.03, "price_type": 1}
+	if err := ValidateCheckinWorkflowOutput(legacyFixedPrice); err != nil {
+		t.Fatalf("validate legacy fixed-price output: %v", err)
+	}
+	allPriceFields := cloneWorkflowOutputFixture(valid)
+	allPriceFields["models"].([]any)[1].(map[string]any)["in_price"] = 0.03
+	allPriceFields["models"].([]any)[1].(map[string]any)["out_price"] = 0.03
+	if err := ValidateCheckinWorkflowOutput(allPriceFields); err != nil {
+		t.Fatalf("validate model with all price fields: %v", err)
 	}
 
 	tests := []struct {
@@ -70,20 +82,20 @@ func TestValidateCheckinWorkflowOutput(t *testing.T) {
 			message: "$.balance is not allowed",
 		},
 		{
-			name: "fractional API key usage",
-			mutate: func(output map[string]any) {
-				keys := output["api_keys"].([]any)
-				keys[0].(map[string]any)["used_quota"] = 1.5
-			},
-			message: "expected integer",
-		},
-		{
 			name: "invalid price type",
 			mutate: func(output map[string]any) {
 				models := output["models"].([]any)
 				models[0].(map[string]any)["price_type"] = 2
 			},
 			message: "must be between 0 and 1",
+		},
+		{
+			name: "fixed price missing",
+			mutate: func(output map[string]any) {
+				models := output["models"].([]any)
+				delete(models[1].(map[string]any), "price")
+			},
+			message: "at least one of in_price, out_price, or price is required",
 		},
 		{
 			name: "duplicate group",
@@ -115,10 +127,11 @@ func cloneWorkflowOutputFixture(source map[string]any) map[string]any {
 		"used_quota":   source["used_quota"],
 		"today_reward": source["today_reward"],
 		"api_keys": []any{
-			map[string]any{"id": "key-1", "name": "main", "key": "sk-value", "group": "default", "used_quota": int64(3)},
+			map[string]any{"id": "key-1", "name": "main", "key": "sk-value", "group": "default", "used_quota": source["api_keys"].([]any)[0].(map[string]any)["used_quota"]},
 		},
 		"models": []any{
 			map[string]any{"name": "model-a", "cheapest_groups": []any{"default"}, "in_price": 1.0, "out_price": 2.0, "price_type": 0},
+			map[string]any{"name": "fixed-model", "cheapest_groups": []any{"default"}, "price": 0.03, "price_type": 1},
 		},
 	}
 }

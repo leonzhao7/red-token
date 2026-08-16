@@ -669,7 +669,7 @@ function buildPayload() {
       group: key.serverGroup,
       models: parseModelList(key.modelsInput),
       model_mapping: parseModelMapping(key.modelMappingInput),
-      used_quota: Math.max(0, Math.round(key.usedTokens || 0))
+      used_quota: Math.max(0, key.usedTokens || 0)
     }
   })
   const backendType = form.value.backendType

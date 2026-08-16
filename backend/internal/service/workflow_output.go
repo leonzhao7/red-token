@@ -30,6 +30,7 @@ var checkinWorkflowModelFields = map[string]struct{}{
 	"cheapest_groups": {},
 	"in_price":        {},
 	"out_price":       {},
+	"price":           {},
 	"price_type":      {},
 }
 
@@ -96,7 +97,7 @@ func ValidateCheckinWorkflowOutput(value any) error {
 				return err
 			}
 		}
-		if _, err := requireWorkflowInteger(item, "used_quota", path+".used_quota", 0, maxSafeWorkflowInteger); err != nil {
+		if _, err := requireWorkflowNumber(item, "used_quota", path+".used_quota", true); err != nil {
 			return err
 		}
 		if id != "" {
@@ -122,7 +123,7 @@ func ValidateCheckinWorkflowOutput(value any) error {
 		if !ok {
 			return fmt.Errorf("%s: expected object, got %T", path, value)
 		}
-		if err := validateWorkflowObjectFields(path, item, checkinWorkflowModelFields); err != nil {
+		if err := validateWorkflowObjectAllowedFields(path, item, checkinWorkflowModelFields); err != nil {
 			return err
 		}
 		name, err := requireWorkflowString(item, "name", path+".name")
@@ -153,29 +154,41 @@ func ValidateCheckinWorkflowOutput(value any) error {
 			}
 			groupNames[group] = struct{}{}
 		}
-		for _, field := range []string{"in_price", "out_price"} {
-			if _, err := requireWorkflowNumber(item, field, path+"."+field, true); err != nil {
-				return err
-			}
-		}
 		if _, err := requireWorkflowInteger(item, "price_type", path+".price_type", 0, 1); err != nil {
 			return err
+		}
+		hasPrice := false
+		for _, field := range []string{"in_price", "out_price", "price"} {
+			if _, exists := item[field]; exists {
+				hasPrice = true
+				if _, err := requireWorkflowNumber(item, field, path+"."+field, true); err != nil {
+					return err
+				}
+			}
+		}
+		if !hasPrice {
+			return fmt.Errorf("%s: at least one of in_price, out_price, or price is required", path)
 		}
 	}
 	return nil
 }
 
-const maxSafeWorkflowInteger = 1<<53 - 1
-
 func validateWorkflowObjectFields(path string, object map[string]any, allowed map[string]struct{}) error {
-	for field := range object {
-		if _, ok := allowed[field]; !ok {
-			return fmt.Errorf("%s.%s is not allowed", path, field)
-		}
+	if err := validateWorkflowObjectAllowedFields(path, object, allowed); err != nil {
+		return err
 	}
 	for field := range allowed {
 		if _, exists := object[field]; !exists {
 			return fmt.Errorf("%s.%s is required", path, field)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowObjectAllowedFields(path string, object map[string]any, allowed map[string]struct{}) error {
+	for field := range object {
+		if _, ok := allowed[field]; !ok {
+			return fmt.Errorf("%s.%s is not allowed", path, field)
 		}
 	}
 	return nil

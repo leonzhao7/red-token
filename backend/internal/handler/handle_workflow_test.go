@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -90,7 +91,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	var received atomic.Bool
 	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := http.StatusOK
-		body := `{"user_id":"user-1","username":"alice","quota":2400,"quota_unit":"USD","used_quota":3,"today_reward":123,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","used_quota":3},{"id":"key-2","name":"secondary","key":"existing-secondary","group":"secondary","used_quota":0}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2,"price_type":0},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4,"price_type":0}]}`
+		body := `{"user_id":"user-1","username":"alice","quota":2400.5,"quota_unit":"USD","used_quota":3.75,"today_reward":123.25,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","used_quota":3.25},{"id":"key-2","name":"secondary","key":"existing-secondary","group":"secondary","used_quota":0.5}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2,"price_type":0},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4,"price_type":0}]}`
 		expectedNewAPIUser := "account-42"
 		if mode.Load() != 0 {
 			expectedNewAPIUser = "user-1"
@@ -115,7 +116,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		case 2:
 			body = `{"user_id":"user-2","username":"broken","quota":8,"api_keys":[],"models":[]}`
 		case 3:
-			body = strings.Replace(body, `"today_reward":123`, `"today_reward":0`, 1)
+			body = strings.Replace(body, `"today_reward":123.25`, `"today_reward":0`, 1)
 		}
 		return &http.Response{
 			StatusCode: status,
@@ -189,7 +190,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	if execution.Output["user_id"] != "user-1" || execution.Aliases["username"] != "alice" || len(execution.Requests) != 1 || execution.ExecutedAt == "" {
 		t.Fatalf("unexpected execution response: %+v", execution)
 	}
-	if execution.Output["quota"] != float64(2400) || execution.Output["quota_unit"] != "USD" || execution.Output["used_quota"] != float64(3) || execution.Output["today_reward"] != float64(123) {
+	if execution.Output["quota"] != 2400.5 || execution.Output["quota_unit"] != "USD" || execution.Output["used_quota"] != 3.75 || execution.Output["today_reward"] != 123.25 {
 		t.Fatalf("workflow response did not use the fixed quota output: %+v", execution.Output)
 	}
 	if _, exists := execution.Output["balance"]; exists {
@@ -205,14 +206,14 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	if len(updatedBackend.APIKeys[0].Models) != 1 || updatedBackend.APIKeys[0].Models[0] != "configured-main-model" || updatedBackend.APIKeys[0].ModelMapping["configured-main-model"] != "provider-main-model" {
 		t.Fatalf("workflow changed the primary API key routing configuration: %+v", updatedBackend.APIKeys[0])
 	}
-	if updatedBackend.APIKeys[0].ID != "key-1" || updatedBackend.APIKeys[1].ID != "key-2" || updatedBackend.APIKeys[0].UsedQuota != 3 || updatedBackend.APIKeys[1].UsedQuota != 0 {
+	if updatedBackend.APIKeys[0].ID != "key-1" || updatedBackend.APIKeys[1].ID != "key-2" || updatedBackend.APIKeys[0].UsedQuota != 3.25 || updatedBackend.APIKeys[1].UsedQuota != 0.5 {
 		t.Fatalf("workflow did not persist API key usage: %+v", updatedBackend.APIKeys)
 	}
 	if len(updatedBackend.APIKeys[1].Models) != 1 || updatedBackend.APIKeys[1].Models[0] != "upstream-only-model" || updatedBackend.APIKeys[1].ModelMapping["upstream-only-model"] != "provider-model" {
 		t.Fatalf("workflow changed the secondary API key routing configuration: %+v", updatedBackend.APIKeys[1])
 	}
 	account := decodeJSONMap(updatedBackend.ConsoleAccountJSON)
-	if account["id"] != "user-1" || account["username"] != "alice" || account["quota"] != 2400.0 || account["quota_unit"] != "USD" || account["used_quota"] != 3.0 || account["today_reward"] != 123.0 {
+	if account["id"] != "user-1" || account["username"] != "alice" || account["quota"] != 2400.5 || account["quota_unit"] != "USD" || account["used_quota"] != 3.75 || account["today_reward"] != 123.25 {
 		t.Fatalf("workflow did not update backend account: %s", updatedBackend.ConsoleAccountJSON)
 	}
 	if _, exists := account["balance"]; exists {
@@ -232,7 +233,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 
 	mode.Store(3)
 	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/execute-workflow/execute", executeBody)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"today_reward":123`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"today_reward":123.25`) {
 		t.Fatalf("zero workflow reward did not preserve previous value: status=%d body=%s", response.Code, response.Body.String())
 	}
 	updatedBackend, err = st.GetBackend(context.Background(), backend.ID)
@@ -240,7 +241,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		t.Fatalf("get backend after zero reward workflow: %v", err)
 	}
 	account = decodeJSONMap(updatedBackend.ConsoleAccountJSON)
-	if account["today_reward"] != 123.0 {
+	if account["today_reward"] != 123.25 {
 		t.Fatalf("zero workflow reward overwrote account value: %s", updatedBackend.ConsoleAccountJSON)
 	}
 
@@ -277,6 +278,78 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	}
 	if updatedBackend.ConsoleAccountJSON != backendAfterSuccess.ConsoleAccountJSON || updatedBackend.ConsolePricingJSON != backendAfterSuccess.ConsolePricingJSON || updatedBackend.APIKey != backendAfterSuccess.APIKey {
 		t.Fatalf("failed workflow changed backend data: before=%+v after=%+v", backendAfterSuccess, updatedBackend)
+	}
+}
+
+func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
+	client := &http.Client{Transport: workflowRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode runtime body: %v", err)
+		}
+		want := map[string]any{
+			"username":      "relay-user",
+			"password":      "relay-password",
+			"user_id":       "account-42",
+			"authorization": "Bearer console-token",
+			"header":        "configured",
+		}
+		if !reflect.DeepEqual(payload, want) {
+			t.Fatalf("unexpected backend runtime body: got %#v want %#v", payload, want)
+		}
+		responseBody := `{"user_id":"account-42","username":"relay-user","quota":1,"quota_unit":"USD","used_quota":0,"today_reward":1,"api_keys":[],"models":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
+			Request:    request,
+		}, nil
+	})}
+
+	st := openWorkflowHandlerStore(t)
+	definitionText := strings.Replace(
+		workflowTestDefinition("runtime-workflow"),
+		`"request":{"method":"GET","path":"/snapshot"}`,
+		`"request":{"method":"POST","path":"/snapshot","body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}","authorization":"{{runtime#/headers/Authorization}}","header":"{{runtime#/headers/X-Console}}"}}`,
+		1,
+	)
+	definition, err := service.ParseGeneralWorkflow([]byte(definitionText))
+	if err != nil {
+		t.Fatalf("parse runtime workflow: %v", err)
+	}
+	encodedDefinition, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatalf("encode runtime workflow: %v", err)
+	}
+	if _, err := st.CreateHTTPWorkflow(context.Background(), definition.ID, definition.Name, encodedDefinition); err != nil {
+		t.Fatalf("create runtime workflow: %v", err)
+	}
+	backend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:                 "runtime-backend",
+		BackendType:          domain.BackendTypeNewAPI,
+		ConsoleURL:           "https://runtime-console.test",
+		ConsoleUsername:      "relay-user",
+		ConsolePassword:      "relay-password",
+		ConsoleAuthorization: "Bearer console-token",
+		ConsoleHeaders:       map[string]string{"X-Console": "configured"},
+		ConsoleAccountJSON:   `{"id":"account-42"}`,
+	})
+	if err != nil {
+		t.Fatalf("create runtime backend: %v", err)
+	}
+
+	handler := NewWorkflowHandler(st)
+	handler.SetHTTPClient(client)
+	outcome, err := handler.runCheckinWorkflow(context.Background(), backend, definition.ID, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("run backend runtime workflow: %v", err)
+	}
+	if _, exists := outcome.Aliases["runtime"]; exists {
+		t.Fatalf("runtime leaked into handler aliases: %#v", outcome.Aliases)
 	}
 }
 
@@ -364,8 +437,7 @@ func TestWorkflowOutputPricingJSONPersistsFixedPriceType(t *testing.T) {
 		map[string]any{
 			"name":            "fixed-model",
 			"cheapest_groups": []any{"default"},
-			"in_price":        1.75,
-			"out_price":       1.75,
+			"price":           1.75,
 			"price_type":      1,
 		},
 	}, "")
@@ -378,8 +450,37 @@ func TestWorkflowOutputPricingJSONPersistsFixedPriceType(t *testing.T) {
 		t.Fatalf("unexpected pricing payload: %s", encoded)
 	}
 	model := models[0].(map[string]any)
-	if model["price_type"] != float64(1) || model["quota_type"] != float64(1) || model["model_price"] != 1.75 || model["billing_mode"] != "fixed" {
+	if model["price_type"] != float64(1) || model["quota_type"] != float64(1) || model["price"] != 1.75 || model["model_price"] != 1.75 || model["billing_mode"] != "fixed" {
 		t.Fatalf("fixed price type was not persisted: %s", encoded)
+	}
+}
+
+func TestWorkflowOutputPricingJSONAcceptsLegacyFixedPriceShape(t *testing.T) {
+	encoded, err := workflowOutputPricingJSON([]any{
+		map[string]any{
+			"name":            "fixed-model",
+			"cheapest_groups": []any{"default"},
+			"in_price":        1.75,
+			"out_price":       1.75,
+			"price_type":      1,
+		},
+	}, "")
+	if err != nil || !strings.Contains(encoded, `"model_price":1.75`) {
+		t.Fatalf("persist legacy fixed model pricing: encoded=%s err=%v", encoded, err)
+	}
+}
+
+func TestWorkflowOutputPricingJSONAcceptsPriceForUsageType(t *testing.T) {
+	encoded, err := workflowOutputPricingJSON([]any{
+		map[string]any{
+			"name":            "usage-model",
+			"cheapest_groups": []any{"default"},
+			"price":           2.5,
+			"price_type":      0,
+		},
+	}, "")
+	if err != nil || !strings.Contains(encoded, `"input_price":2.5`) || !strings.Contains(encoded, `"output_price":2.5`) {
+		t.Fatalf("persist usage model price fallback: encoded=%s err=%v", encoded, err)
 	}
 }
 

@@ -156,6 +156,84 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.Header.Get("X-Runtime-Header"); got != "configured" {
+			t.Fatalf("unexpected runtime header %q", got)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode runtime request body: %v", err)
+		}
+		want := map[string]any{"username": "alice", "password": "secret", "user_id": "user-42"}
+		if !reflect.DeepEqual(payload, want) {
+			t.Fatalf("unexpected runtime request body: got %#v want %#v", payload, want)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v1","id":"runtime-context","name":"Runtime context",
+  "steps":[{
+    "id":"login","name":"Login",
+    "request":{
+      "method":"POST","path":"/login",
+      "headers":{"X-Runtime-Header":"{{runtime#/headers/X-Console}}"},
+      "body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}"}
+    },
+    "expect":"$runtime.username == \"alice\" and $runtime.password == \"secret\" and $runtime.user_id == \"user-42\" and $runtime.headers[\"X-Console\"] == \"configured\"",
+    "extract":[{"alias":"runtime_username","expression":"$runtime.username"}]
+  }],
+  "output":{"username":"{{runtime#/username}}","copied_username":"{{runtime_username}}"}
+}`)
+
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+		Runtime: map[string]any{
+			"username": "alice",
+			"password": "secret",
+			"user_id":  "user-42",
+			"headers":  map[string]string{"X-Console": "configured"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute runtime workflow: %v", err)
+	}
+	output := result.Output.(map[string]any)
+	if output["username"] != "alice" || output["copied_username"] != "alice" {
+		t.Fatalf("unexpected runtime output: %#v", output)
+	}
+	if _, exists := result.Aliases["runtime"]; exists {
+		t.Fatalf("runtime leaked into result aliases: %#v", result.Aliases)
+	}
+}
+
+func TestGeneralWorkflowRuntimeHasStableCredentialDefaults(t *testing.T) {
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{})
+	runtime, err := workflow.buildRuntime("runtime-defaults", nil)
+	if err != nil {
+		t.Fatalf("build default runtime: %v", err)
+	}
+	for _, field := range []string{"username", "password", "user_id"} {
+		if runtime[field] != "" {
+			t.Fatalf("runtime %s default = %#v, want empty string", field, runtime[field])
+		}
+	}
+	headers, ok := runtime["headers"].(map[string]any)
+	if !ok || len(headers) != 0 {
+		t.Fatalf("runtime headers default = %#v, want empty object", runtime["headers"])
+	}
+}
+
 func TestGeneralWorkflowForeachRendersObjectMembersAndAggregatesExtracts(t *testing.T) {
 	var paths []string
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {

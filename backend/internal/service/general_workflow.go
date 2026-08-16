@@ -937,7 +937,7 @@ stepLoop:
 				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "foreach_iteration", "foreach iteration started", withIteration(nil), 0))
 			}
 
-			request, err := workflow.renderRequest(step.definition.Request, iterationAliases, baseHeaders)
+			request, err := workflow.renderRequest(step.definition.Request, iterationAliases, runtime, baseHeaders)
 			if err != nil {
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "render request", Err: iterationError(err)}
 			}
@@ -1091,7 +1091,7 @@ stepLoop:
 		stepIndex++
 	}
 
-	output, err := renderGeneralWorkflowTemplate(compiled.output, aliases)
+	output, err := renderGeneralWorkflowTemplate(compiled.output, generalWorkflowTemplateValues(aliases, runtime))
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "render output", Err: err}
 	}
@@ -1190,16 +1190,23 @@ func generalWorkflowDebugValue(name string, value any) any {
 }
 
 func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[string]any) (map[string]any, error) {
-	runtime := map[string]any{}
+	runtime := map[string]any{
+		"username": "",
+		"password": "",
+		"user_id":  "",
+		"headers":  map[string]any{},
+	}
 	if values != nil {
 		normalized, err := canonicalGeneralWorkflowJSON(values, "runtime")
 		if err != nil {
 			return nil, err
 		}
-		var ok bool
-		runtime, ok = normalized.(map[string]any)
+		provided, ok := normalized.(map[string]any)
 		if !ok {
 			return nil, errors.New("runtime must be an object")
+		}
+		for name, value := range provided {
+			runtime[name] = value
 		}
 	}
 	startedAt := workflow.now().UTC()
@@ -1241,8 +1248,9 @@ func parseGeneralWorkflowBaseURL(raw string) (*url.URL, error) {
 	return baseURL, nil
 }
 
-func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest, aliases map[string]any, baseHeaders http.Header) (renderedGeneralWorkflowRequest, error) {
-	renderedPath, err := renderGeneralWorkflowTemplate(definition.Path, aliases)
+func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest, aliases, runtime map[string]any, baseHeaders http.Header) (renderedGeneralWorkflowRequest, error) {
+	templateValues := generalWorkflowTemplateValues(aliases, runtime)
+	renderedPath, err := renderGeneralWorkflowTemplate(definition.Path, templateValues)
 	if err != nil {
 		return renderedGeneralWorkflowRequest{}, fmt.Errorf("path: %w", err)
 	}
@@ -1260,7 +1268,7 @@ func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, err
 		}
-		rendered, err := renderGeneralWorkflowTemplate(queryTemplate, aliases)
+		rendered, err := renderGeneralWorkflowTemplate(queryTemplate, templateValues)
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, fmt.Errorf("query: %w", err)
 		}
@@ -1279,7 +1287,7 @@ func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, err
 		}
-		rendered, err := renderGeneralWorkflowTemplate(headerTemplate, aliases)
+		rendered, err := renderGeneralWorkflowTemplate(headerTemplate, templateValues)
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, fmt.Errorf("headers: %w", err)
 		}
@@ -1305,7 +1313,7 @@ func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, fmt.Errorf("decode body: %w", err)
 		}
-		request.body, err = renderGeneralWorkflowTemplate(bodyTemplate, aliases)
+		request.body, err = renderGeneralWorkflowTemplate(bodyTemplate, templateValues)
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, fmt.Errorf("body: %w", err)
 		}
@@ -1706,6 +1714,15 @@ func validateGeneralWorkflowTemplate(value any) error {
 	}
 }
 
+func generalWorkflowTemplateValues(aliases, runtime map[string]any) map[string]any {
+	values := make(map[string]any, len(aliases)+1)
+	for name, value := range aliases {
+		values[name] = value
+	}
+	values["runtime"] = runtime
+	return values
+}
+
 func renderGeneralWorkflowTemplate(value any, aliases map[string]any) (any, error) {
 	switch value := value.(type) {
 	case nil, bool, int, int64, float64, json.Number:
@@ -1829,8 +1846,10 @@ func parseGeneralWorkflowReference(source string) (generalWorkflowTemplateRefere
 		return generalWorkflowTemplateReference{}, fmt.Errorf("invalid template reference %q", source)
 	}
 	alias, pointerText, hasPointer := strings.Cut(source, "#")
-	if err := validateGeneralWorkflowAlias(alias); err != nil {
-		return generalWorkflowTemplateReference{}, err
+	if alias != "runtime" {
+		if err := validateGeneralWorkflowAlias(alias); err != nil {
+			return generalWorkflowTemplateReference{}, err
+		}
 	}
 	reference := generalWorkflowTemplateReference{alias: alias}
 	if hasPointer {

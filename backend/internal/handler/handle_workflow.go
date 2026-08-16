@@ -301,6 +301,10 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		Runtime: map[string]any{
 			"backend_id":   backend.ID,
 			"backend_name": backend.Name,
+			"username":     backend.ConsoleUsername,
+			"password":     backend.ConsolePassword,
+			"user_id":      consoleStoredAccountID(backend),
+			"headers":      workflowRuntimeHeaders(headers),
 		},
 		Recorder:       recorder,
 		DebugLog:       debugLogs.Record,
@@ -445,9 +449,9 @@ func workflowOutputAPIKeys(value any, existing []domain.BackendAPIKey) ([]domain
 		if strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("workflow output api_keys[%d].key is required", index)
 		}
-		usedQuota, ok := workflowOutputNonNegativeInt64(object["used_quota"])
-		if !ok {
-			return nil, fmt.Errorf("workflow output api_keys[%d].used_quota must be a non-negative safe integer", index)
+		usedQuota, ok := workflowOutputNumber(object["used_quota"])
+		if !ok || usedQuota < 0 {
+			return nil, fmt.Errorf("workflow output api_keys[%d].used_quota must be a non-negative finite number", index)
 		}
 		models := []string{}
 		modelMapping := map[string]string{}
@@ -498,14 +502,6 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (string, error) 
 		if !ok {
 			return "", fmt.Errorf("workflow output models[%d].cheapest_groups must be an array", index)
 		}
-		inPrice, ok := workflowOutputNumber(object["in_price"])
-		if !ok {
-			return "", fmt.Errorf("workflow output models[%d].in_price is not a number", index)
-		}
-		outPrice, ok := workflowOutputNumber(object["out_price"])
-		if !ok {
-			return "", fmt.Errorf("workflow output models[%d].out_price is not a number", index)
-		}
 		priceTypeValue, ok := workflowOutputNumber(object["price_type"])
 		if !ok || math.Trunc(priceTypeValue) != priceTypeValue || priceTypeValue < 0 || priceTypeValue > 1 {
 			return "", fmt.Errorf("workflow output models[%d].price_type must be 0 or 1", index)
@@ -522,15 +518,53 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (string, error) 
 		model := map[string]any{
 			"model_name":    name,
 			"enable_groups": groupNames,
-			"input_price":   inPrice,
-			"output_price":  outPrice,
 			"price_type":    priceType,
 			"quota_type":    priceType,
 			"billing_mode":  "token",
 		}
+		price, hasPrice, err := workflowOutputOptionalPrice(object, "price")
+		if err != nil {
+			return "", fmt.Errorf("workflow output models[%d]: %w", index, err)
+		}
+		inPrice, hasInPrice, err := workflowOutputOptionalPrice(object, "in_price")
+		if err != nil {
+			return "", fmt.Errorf("workflow output models[%d]: %w", index, err)
+		}
+		outPrice, hasOutPrice, err := workflowOutputOptionalPrice(object, "out_price")
+		if err != nil {
+			return "", fmt.Errorf("workflow output models[%d]: %w", index, err)
+		}
+		if !hasPrice && !hasInPrice && !hasOutPrice {
+			return "", fmt.Errorf("workflow output models[%d] requires at least one price field", index)
+		}
 		if priceType == 1 {
-			model["model_price"] = inPrice
+			fixedPrice := price
+			if !hasPrice {
+				fixedPrice = inPrice
+				if !hasInPrice {
+					fixedPrice = outPrice
+				}
+			}
+			model["price"] = fixedPrice
+			model["model_price"] = fixedPrice
 			model["billing_mode"] = "fixed"
+		} else {
+			finalInPrice := inPrice
+			if !hasInPrice {
+				finalInPrice = price
+				if !hasPrice {
+					finalInPrice = outPrice
+				}
+			}
+			finalOutPrice := outPrice
+			if !hasOutPrice {
+				finalOutPrice = price
+				if !hasPrice {
+					finalOutPrice = inPrice
+				}
+			}
+			model["input_price"] = finalInPrice
+			model["output_price"] = finalOutPrice
 		}
 		models = append(models, model)
 	}
@@ -540,6 +574,18 @@ func workflowOutputPricingJSON(value any, focusPatterns string) (string, error) 
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func workflowOutputOptionalPrice(object map[string]any, field string) (float64, bool, error) {
+	value, exists := object[field]
+	if !exists {
+		return 0, false, nil
+	}
+	number, ok := workflowOutputNumber(value)
+	if !ok || number < 0 {
+		return 0, false, fmt.Errorf("%s must be a non-negative finite number", field)
+	}
+	return number, true, nil
 }
 
 func workflowOutputNumber(value any) (float64, bool) {
@@ -556,14 +602,6 @@ func workflowOutputNumber(value any) (float64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func workflowOutputNonNegativeInt64(value any) (int64, bool) {
-	number, ok := workflowOutputNumber(value)
-	if !ok || number < 0 || math.Trunc(number) != number || number > 1<<53-1 {
-		return 0, false
-	}
-	return int64(number), true
 }
 
 func (h *WorkflowHandler) HandleGetWorkflowResult(w http.ResponseWriter, r *http.Request) {
@@ -649,6 +687,14 @@ func workflowConsoleHeaders(backend domain.Backend) http.Header {
 		headers.Set("Authorization", authorization)
 	}
 	return headers
+}
+
+func workflowRuntimeHeaders(headers http.Header) map[string]string {
+	values := make(map[string]string, len(headers))
+	for name, entries := range headers {
+		values[name] = strings.Join(entries, ", ")
+	}
+	return values
 }
 
 func validateWorkflowConsoleURL(raw string) error {

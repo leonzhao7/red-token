@@ -189,7 +189,7 @@ Foreach 的每个 Extract alias 都按输入顺序聚合为数组。例如两次
 
 ## 5. Alias 模板
 
-`request.path`、`request.query`、`request.headers`、`request.body` 和顶层 `output` 都是递归 alias 模板。
+`request.path`、`request.query`、`request.headers`、`request.body` 和顶层 `output` 都是递归模板。模板可以引用 alias，也可以通过保留根 `runtime` 引用宿主运行上下文；`runtime` 不属于 alias store。
 
 ### 5.1 引用格式
 
@@ -207,6 +207,17 @@ Alias 引用使用以下格式：
 {{keys#/0/id}}
 {{object#/a~1b/~0name}}
 ```
+
+宿主运行上下文使用相同的 JSON Pointer 形式：
+
+```text
+{{runtime#/username}}
+{{runtime#/password}}
+{{runtime#/user_id}}
+{{runtime#/headers/Authorization}}
+```
+
+jq 表达式中使用 `$runtime.username`、`$runtime.password`、`$runtime.user_id` 和 `$runtime.headers` 访问同一份数据。`runtime` 是只读模板根，不会出现在 `$vars` 或执行结果的 `aliases` 中。
 
 其中 `~1` 表示 `/`，`~0` 表示 `~`。
 
@@ -366,9 +377,15 @@ v3 foreach 执行期间，`$vars` 还包含 `foreach.as` 指定的当前元素�
 {
   "workflow_id": "example-workflow",
   "started_at": "2026-08-10T00:00:00Z",
-  "started_at_ms": 1786320000000
+  "started_at_ms": 1786320000000,
+  "username": "",
+  "password": "",
+  "user_id": "",
+  "headers": {}
 }
 ```
+
+宿主没有提供账户信息时，`username`、`password` 和 `user_id` 固定为空字符串，`headers` 固定为空对象。本项目对中转站执行工作流时会使用中转站控制台配置填充这些字段；`headers` 为宿主提供的基础控制台请求头字典，不包含当前 step 通过 `request.headers` 增加的请求头。
 
 表达式不得读取环境变量、文件、网络、进程状态或其他外部可变状态。当前时间必须从 `$runtime` 获取，不得在表达式中再次读取时钟。
 
@@ -754,9 +771,8 @@ $vars.model_rows
           "key": { "type": "string" },
           "group": { "type": "string" },
           "used_quota": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number",
+            "minimum": 0
           }
         }
       }
@@ -766,7 +782,7 @@ $vars.model_rows
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "cheapest_groups", "in_price", "out_price", "price_type"],
+        "required": ["name", "cheapest_groups", "price_type"],
         "properties": {
           "name": { "type": "string" },
           "cheapest_groups": {
@@ -776,8 +792,14 @@ $vars.model_rows
           },
           "in_price": { "type": "number", "minimum": 0 },
           "out_price": { "type": "number", "minimum": 0 },
+          "price": { "type": "number", "minimum": 0 },
           "price_type": { "type": "integer", "enum": [0, 1] }
-        }
+        },
+        "anyOf": [
+          { "required": ["in_price"] },
+          { "required": ["out_price"] },
+          { "required": ["price"] }
+        ]
       }
     }
   }
@@ -788,12 +810,12 @@ $vars.model_rows
 
 - 顶层以及数组元素都不得包含未声明字段。
 - `user_id`、`username`、`quota_unit`、Key 的 `id`、`name`、`key`、`group` 和模型 `name` 必须是字符串。
-- `quota`、`used_quota`、`today_reward`、Key 的 `used_quota`、`in_price` 和 `out_price` 必须是有限 JSON number；JSON Schema 验证前还必须执行第 8.2 节的有限数检查。
+- `quota`、`used_quota`、`today_reward`、Key 的 `used_quota`、`in_price`、`out_price` 和 `price` 必须是有限 JSON number；JSON Schema 验证前还必须执行第 8.2 节的有限数检查。
 - `api_keys` 和 `models` 必须始终是数组；无数据时使用空数组。
 - `cheapest_groups` 必须始终是字符串数组；不存在可用分组时使用空数组。
 - 同一个输出中，非空 Key ID 应当唯一，模型 name 应当唯一，单个模型中的 group 应当唯一。
-- 所有数值字段均不得小于零；Key 的 `used_quota` 必须是 JavaScript 安全整数。
-- `price_type` 必须是整数 `0`（按量）或 `1`（按次）。按次模型仍使用固定结构，价格缓存以 `in_price` 作为每次价格，`out_price` 仍为必填数值字段。
+- 所有配额和价格数值字段都允许有限小数，且不得小于零；只有 `price_type` 仍要求整数。
+- 模型始终允许 `in_price`、`out_price` 和 `price`，不按 `price_type` 限制字段组合，但至少要提供其中一个。`price_type` 必须是整数 `0`（按量）或 `1`（按次）。
 - `balance`、`used_balance` 和 `total_cost` 是旧输出字段，不再支持；出现这些字段会导致 Schema 校验失败。
 - 持久化时如果 `today_reward` 为 `0`，表示本次没有新的签到奖励，账户和最近成功结果会保留原来的 `today_reward`。
 
@@ -860,7 +882,7 @@ $vars.model_rows
       "extract": [
         {
           "alias": "api_keys_base",
-          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \"\"), key: (.key // \"\"), group: (.group.name // .group // \"default\"), used_quota: ((.used_quota // 0) | tonumber | floor)}]"
+          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \"\"), key: (.key // \"\"), group: (.group.name // .group // \"default\"), used_quota: ((.used_quota // 0) | tonumber)}]"
         },
         {
           "alias": "key_ids",
@@ -883,7 +905,7 @@ $vars.model_rows
       "extract": [
         {
           "alias": "api_keys",
-          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber | floor)})"
+          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber)})"
         },
         {
           "alias": "used_quota",

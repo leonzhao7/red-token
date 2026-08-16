@@ -153,7 +153,7 @@ const SAMPLE_DEFINITION = `{
       "extract": [
         {
           "alias": "api_keys_base",
-          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \\"\\"), key: (.key // \\"\\"), group: (.group.name // .group // \\"default\\"), used_quota: ((.used_quota // 0) | tonumber | floor)}]"
+          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \\"\\"), key: (.key // \\"\\"), group: (.group.name // .group // \\"default\\"), used_quota: ((.used_quota // 0) | tonumber)}]"
         },
         {
           "alias": "key_ids",
@@ -174,7 +174,7 @@ const SAMPLE_DEFINITION = `{
       "extract": [
         {
           "alias": "api_keys",
-          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber | floor)})"
+          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber)})"
         },
         {
           "alias": "used_quota",
@@ -221,7 +221,12 @@ const SAMPLE_DEFINITION = `{
 
 const activeEditor = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const availableAliases = computed(() => {
-  const seen: string[] = []
+  const seen: string[] = [
+    'runtime#/username',
+    'runtime#/password',
+    'runtime#/user_id',
+    'runtime#/headers'
+  ]
   for (const st of form.steps) {
     for (const ex of st.extract) {
       const alias = ex.alias.trim()
@@ -798,7 +803,7 @@ onMounted(loadData)
         </div>
 
         <div v-if="availableAliases.length" class="wf-alias-bar">
-          <span class="wf-alias-label">可用 Alias</span>
+          <span class="wf-alias-label">可用引用</span>
           <button v-for="alias in availableAliases" :key="alias" class="wf-alias" @click="insertAlias(alias)">
             {{ alias }}
           </button>

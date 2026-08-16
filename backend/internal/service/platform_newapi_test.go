@@ -11,7 +11,7 @@ func TestNewAPITokenMetadataUsesTokenName(t *testing.T) {
 					"key":        "bsvt**********3xDi",
 					"name":       "wahaha",
 					"group":      "",
-					"used_quota": float64(40121914),
+					"used_quota": 40121914.25,
 				},
 			},
 		},
@@ -21,7 +21,7 @@ func TestNewAPITokenMetadataUsesTokenName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse token metadata: %v", err)
 	}
-	if len(items) != 1 || items[0].Name != "wahaha" || items[0].Group != "default" {
+	if len(items) != 1 || items[0].Name != "wahaha" || items[0].Group != "default" || items[0].UsedQuota != 40121914.25 {
 		t.Fatalf("expected token name %q and default group, got %#v", "wahaha", items)
 	}
 }

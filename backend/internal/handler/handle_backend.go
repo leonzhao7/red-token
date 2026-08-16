@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1616,8 +1617,8 @@ func validateBackendAPIKeys(values []domain.BackendAPIKey, legacyAPIKey string, 
 		if value.Group == "" {
 			return nil, fmt.Errorf("api_keys[%d].group is required", index)
 		}
-		if value.UsedQuota < 0 {
-			return nil, fmt.Errorf("api_keys[%d].used_quota must be >= 0", index)
+		if value.UsedQuota < 0 || math.IsNaN(value.UsedQuota) || math.IsInf(value.UsedQuota, 0) {
+			return nil, fmt.Errorf("api_keys[%d].used_quota must be a non-negative finite number", index)
 		}
 		if _, ok := seen[value.APIKey]; ok {
 			return nil, fmt.Errorf("duplicate api key at api_keys[%d]", index)

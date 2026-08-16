@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -393,7 +394,7 @@ type newAPITokenMetadata struct {
 	Key       string
 	Name      string
 	Group     string
-	UsedQuota int64
+	UsedQuota float64
 }
 
 type newAPIToken struct {
@@ -401,7 +402,7 @@ type newAPIToken struct {
 	APIKey    string
 	Name      string
 	Group     string
-	UsedQuota int64
+	UsedQuota float64
 }
 
 func newAPITokenMetadataItems(payload map[string]any) ([]newAPITokenMetadata, error) {
@@ -423,7 +424,7 @@ func newAPITokenMetadataItems(payload map[string]any) ([]newAPITokenMetadata, er
 		if !ok || id <= 0 {
 			return nil, fmt.Errorf("new-api token list item %d has invalid id", index)
 		}
-		usedQuota, ok := nonNegativeNewAPIInteger(item["used_quota"])
+		usedQuota, ok := nonNegativeNewAPINumber(item["used_quota"])
 		if !ok {
 			return nil, fmt.Errorf("new-api token list item %d has invalid used_quota", index)
 		}
@@ -491,6 +492,27 @@ func nonNegativeNewAPIInteger(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func nonNegativeNewAPINumber(value any) (float64, bool) {
+	var number float64
+	switch value := value.(type) {
+	case float64:
+		number = value
+	case int:
+		number = float64(value)
+	case int64:
+		number = float64(value)
+	case json.Number:
+		parsed, err := value.Float64()
+		if err != nil {
+			return 0, false
+		}
+		number = parsed
+	default:
+		return 0, false
+	}
+	return number, number >= 0 && !math.IsNaN(number) && !math.IsInf(number, 0)
 }
 
 func mergeNewAPITokens(existing []domain.BackendAPIKey, tokens []newAPIToken) []domain.BackendAPIKey {

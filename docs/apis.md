@@ -117,7 +117,7 @@ X-Api-Key: tg-xxxxxxxx
 | `group` | string | Key 分组，必填 |
 | `models` | string[] | 支持的模型；支持 `*`、`?` 通配模式，至少一项 |
 | `model_mapping` | object<string,string> | 客户端模型名到上游模型名的映射 |
-| `used_quota` | integer | 已用额度，必须大于等于 `0` |
+| `used_quota` | number | 已用额度，允许有限小数且必须大于等于 `0` |
 
 示例：
 
@@ -1246,7 +1246,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 - `backend_id`：必填正整数，指定执行请求所使用的后端/中转站。
 - `aliases`：可选对象，作为本次运行的初始 alias store；名称和值仍受工作流规范约束。
-- `$runtime` 除规范字段外还包含 `backend_id` 和 `backend_name`。
+- `$runtime` 除规范字段外还包含 `backend_id`、`backend_name`，并使用所选中转站填充 `username`、`password`、`user_id` 和宿主提供的基础控制台 `headers` 字典。jq 表达式通过 `$runtime.username` 等字段读取；请求模板通过 `{{runtime#/username}}`、`{{runtime#/password}}`、`{{runtime#/user_id}}` 和 `{{runtime#/headers/Header-Name}}` 读取。`runtime` 不会写入响应的 `aliases`。
 
 响应 `200`：
 

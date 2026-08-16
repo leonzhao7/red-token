@@ -46,7 +46,7 @@ type BackendAPIKey struct {
 	Group        string            `json:"group"`
 	Models       []string          `json:"models"`
 	ModelMapping map[string]string `json:"model_mapping"`
-	UsedQuota    int64             `json:"used_quota"`
+	UsedQuota    float64           `json:"used_quota"`
 }
 
 func (k *BackendAPIKey) UnmarshalJSON(data []byte) error {
@@ -58,7 +58,7 @@ func (k *BackendAPIKey) UnmarshalJSON(data []byte) error {
 		Group        string            `json:"group"`
 		Models       []string          `json:"models"`
 		ModelMapping map[string]string `json:"model_mapping"`
-		UsedQuota    int64             `json:"used_quota"`
+		UsedQuota    float64           `json:"used_quota"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err

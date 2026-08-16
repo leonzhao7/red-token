@@ -72,7 +72,7 @@ func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) back
 			Group:        apiKey.Group,
 			Models:       models,
 			ModelMapping: mapping,
-			UsedQuota:    float64(apiKey.UsedQuota) * apiKeyQuotaFactor,
+			UsedQuota:    apiKey.UsedQuota * apiKeyQuotaFactor,
 		})
 	}
 	tags := append([]string(nil), backend.Tags...)
