@@ -28,11 +28,11 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 			}
 			responseBody = `{"code":0,"data":{"id":42,"email":"user@example.com","free_balance":"10.5"}}`
 		case "/api/keys":
+			if got := request.URL.RawQuery; got != "scope=personal&scope=shared" {
+				t.Fatalf("unexpected raw query %q", got)
+			}
 			if got := request.URL.Query()["scope"]; !reflect.DeepEqual(got, []string{"personal", "shared"}) {
 				t.Fatalf("unexpected repeated scope query: %#v", got)
-			}
-			if got := request.Header.Get("X-Profile"); got != "user-42" {
-				t.Fatalf("unexpected interpolated header %q", got)
 			}
 			responseBody = `{"data":{"items":[{"id":7,"name":"first","key":"sk-a","group":{"name":"vip"}},{"id":8,"name":null,"key":"sk-b","group":null}]}}`
 		case "/api/usage":
@@ -67,7 +67,6 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
   "steps":[
     {
       "id":"profile",
-      "name":"Profile",
       "request":{"method":"GET","path":"/api/profile"},
       "expect":"$response.status == 200 and .code == 0",
       "extract":[
@@ -78,12 +77,9 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
     },
     {
       "id":"keys",
-      "name":"Keys",
       "request":{
         "method":"GET",
-        "path":"/api/keys",
-        "query":{"scope":"{{scopes}}","omit":null},
-        "headers":{"X-Profile":"user-{{user_id}}"}
+        "path":"/api/keys?scope={{scope}}&scope=shared"
       },
       "extract":[
         {"alias":"api_keys_base","expression":"[.data.items[] | {id:(.id|tostring),name:(.name // \"\"),key:.key,group:(.group.name // \"default\")}]"},
@@ -92,7 +88,6 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
     },
     {
       "id":"usage",
-      "name":"Usage",
       "request":{"method":"POST","path":"/api/usage","body":{"ids":"{{key_ids}}"}},
       "extract":[
         {"alias":"api_keys","expression":"$vars.api_keys_base | map(. as $key | $key + {total_cost: (($response.body.data.stats[$key.id].total_actual_cost // 0) | tonumber)})"},
@@ -121,7 +116,7 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
 		BaseURL:        "https://console.example/base",
 		Headers:        http.Header{"Authorization": []string{"Bearer host-token"}},
-		InitialAliases: map[string]any{"scopes": []string{"personal", "shared"}},
+		InitialAliases: map[string]any{"scope": "personal"},
 		ValidateOutput: func(value any) error {
 			validatorCalled = true
 			output := value.(map[string]any)
@@ -177,8 +172,8 @@ func TestGeneralWorkflowCarriesResponseCookiesAndGlobalHeaders(t *testing.T) {
 				"theme=dark; Path=/",
 			}
 		case "/profile":
-			if got := request.Header.Get("X-Override"); got != "step" {
-				t.Fatalf("step header did not override global value: %q", got)
+			if got := request.Header.Get("X-Override"); got != "global" {
+				t.Fatalf("global header value=%q", got)
 			}
 			for name, want := range map[string]string{"seed": "old", "session": "fresh", "theme": "dark"} {
 				cookie, err := request.Cookie(name)
@@ -205,8 +200,8 @@ func TestGeneralWorkflowCarriesResponseCookiesAndGlobalHeaders(t *testing.T) {
     "X-Configured":"{{runtime#/headers/X-Relay}}"
   },
   "steps":[
-    {"id":"login","name":"Login","request":{"method":"POST","path":"/login"}},
-    {"id":"profile","name":"Profile","request":{"method":"GET","path":"/profile","headers":{"X-Override":"step"}},"extract":[{"alias":"sent_cookies","expression":"$request.headers.cookie[0]"}]}
+    {"id":"login","request":{"method":"POST","path":"/login"}},
+    {"id":"profile","request":{"method":"GET","path":"/profile"},"extract":[{"alias":"sent_cookies","expression":"$request.headers.cookie[0]"}]}
   ],
   "output":{"sent_cookies":"{{sent_cookies}}"}
 }`)
@@ -247,9 +242,6 @@ func TestGeneralWorkflowCarriesResponseCookiesAndGlobalHeaders(t *testing.T) {
 
 func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if got := request.Header.Get("X-Runtime-Header"); got != "configured" {
-			t.Fatalf("unexpected runtime header %q", got)
-		}
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -272,10 +264,9 @@ func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v1","id":"runtime-context","name":"Runtime context",
   "steps":[{
-    "id":"login","name":"Login",
+    "id":"login",
     "request":{
       "method":"POST","path":"/login",
-      "headers":{"X-Runtime-Header":"{{runtime#/headers/X-Console}}"},
       "body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}"}
     },
     "expect":"$runtime.username == \"alice\" and $runtime.password == \"secret\" and $runtime.user_id == \"user-42\" and $runtime.headers[\"X-Console\"] == \"configured\"",
@@ -344,9 +335,9 @@ func TestGeneralWorkflowForeachRendersObjectMembersAndAggregatesExtracts(t *test
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v3","id":"foreach-objects","name":"Foreach objects",
   "steps":[
-    {"id":"list","name":"List","request":{"method":"GET","path":"/items"},"extract":[{"alias":"items","expression":".data"}]},
+    {"id":"list","request":{"method":"GET","path":"/items"},"extract":[{"alias":"items","expression":".data"}]},
     {
-      "id":"usage","name":"Usage",
+      "id":"usage",
       "foreach":{"alias":"items","as":"item","index_as":"item_index"},
       "request":{"method":"GET","path":"/api/{{item#/key}}/usage"},
       "extract":[
@@ -355,8 +346,8 @@ func TestGeneralWorkflowForeachRendersObjectMembersAndAggregatesExtracts(t *test
       ],
       "when":{"expression":"$vars.usage_rows | length == 2","goto":"done"}
     },
-    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
-    {"id":"done","name":"Done","request":{"method":"GET","path":"/done"}}
+    {"id":"skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"done","request":{"method":"GET","path":"/done"}}
   ],
   "output":{"rows":"{{usage_rows}}","labels":"{{usage_labels}}"}
 }`)
@@ -412,9 +403,9 @@ func TestGeneralWorkflowForeachEmptyArrayCommitsEmptyExtracts(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v3","id":"foreach-empty","name":"Foreach empty",
   "steps":[
-    {"id":"usage","name":"Usage","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api/{{item#/key}}/usage"},"extract":[{"alias":"usage_rows","expression":".usage"}],"when":{"expression":"($vars.usage_rows == []) and (. == null) and ($response == null) and ($request == null)","goto":"done"}},
-    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
-    {"id":"done","name":"Done","request":{"method":"GET","path":"/done"}}
+    {"id":"usage","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api/{{item#/key}}/usage"},"extract":[{"alias":"usage_rows","expression":".usage"}],"when":{"expression":"($vars.usage_rows == []) and (. == null) and ($response == null) and ($request == null)","goto":"done"}},
+    {"id":"skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"done","request":{"method":"GET","path":"/done"}}
   ],
   "output":{"rows":"{{usage_rows}}"}
 }`)
@@ -448,8 +439,8 @@ func TestGeneralWorkflowForeachExpectRouteDiscardsPartialAggregates(t *testing.T
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v3","id":"foreach-route","name":"Foreach route",
   "steps":[
-    {"id":"usage","name":"Usage","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api/{{item#/key}}/usage"},"expect":{"routes":[{"statuses":[409],"goto":"fallback"}]},"extract":[{"alias":"usage_rows","expression":".usage"}]},
-    {"id":"fallback","name":"Fallback","request":{"method":"GET","path":"/fallback/{{usage_rows#/0}}"}}
+    {"id":"usage","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api/{{item#/key}}/usage"},"expect":{"routes":[{"statuses":[409],"goto":"fallback"}]},"extract":[{"alias":"usage_rows","expression":".usage"}]},
+    {"id":"fallback","request":{"method":"GET","path":"/fallback/{{usage_rows#/0}}"}}
   ],
   "output":{"rows":"{{usage_rows}}"}
 }`)
@@ -490,10 +481,10 @@ func TestGeneralWorkflowGotoOnResponseStatusContinuesFromTarget(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v2","id":"goto-status","name":"Goto status",
   "steps":[
-    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"expect":{"routes":[{"statuses":[401],"goto":"target"}]},"extract":[{"alias":"must_not_run","expression":"error(\"expect route must skip extract\")"}]},
-    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
-    {"id":"target","name":"Target","request":{"method":"GET","path":"/target"}},
-    {"id":"tail","name":"Tail","request":{"method":"GET","path":"/tail"}}
+    {"id":"first","request":{"method":"GET","path":"/first"},"expect":{"routes":[{"statuses":[401],"goto":"target"}]},"extract":[{"alias":"must_not_run","expression":"error(\"expect route must skip extract\")"}]},
+    {"id":"skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"target","request":{"method":"GET","path":"/target"}},
+    {"id":"tail","request":{"method":"GET","path":"/tail"}}
   ],
   "output":{}
 }`)
@@ -520,8 +511,8 @@ func TestGeneralWorkflowWhenFalseContinuesCurrentStep(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v2","id":"when-false","name":"When false",
   "steps":[
-    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"when":{"expression":"$vars.value == 99","goto":"tail"},"extract":[{"alias":"value","expression":".value"}]},
-    {"id":"tail","name":"Tail","request":{"method":"GET","path":"/tail"}}
+    {"id":"first","request":{"method":"GET","path":"/first"},"when":{"expression":"$vars.value == 99","goto":"tail"},"extract":[{"alias":"value","expression":".value"}]},
+    {"id":"tail","request":{"method":"GET","path":"/tail"}}
   ],
   "output":{"value":"{{value}}"}
 }`)
@@ -550,10 +541,10 @@ func TestGeneralWorkflowWhenRoutesUsingExtractedAlias(t *testing.T) {
 			definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v2","id":"when-alias","name":"When alias",
   "steps":[
-    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"extract":[{"alias":"a","expression":".a"}],"when":{"expression":"$vars.a == true","goto":"request2"}},
-    {"id":"request3","name":"Request 3","request":{"method":"GET","path":"/request3"},"when":{"expression":"true","goto":"end"}},
-    {"id":"request2","name":"Request 2","request":{"method":"GET","path":"/request2"}},
-    {"id":"end","name":"End","request":{"method":"GET","path":"/end"}}
+    {"id":"first","request":{"method":"GET","path":"/first"},"extract":[{"alias":"a","expression":".a"}],"when":{"expression":"$vars.a == true","goto":"request2"}},
+    {"id":"request3","request":{"method":"GET","path":"/request3"},"when":{"expression":"true","goto":"end"}},
+    {"id":"request2","request":{"method":"GET","path":"/request2"}},
+    {"id":"end","request":{"method":"GET","path":"/end"}}
   ],
   "output":{"a":"{{a}}"}
 }`)
@@ -580,8 +571,8 @@ func TestGeneralWorkflowExpectUnmatchedNon2xxFailsWithoutExtract(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v2","id":"expect-failure","name":"Expect failure",
   "steps":[
-    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"expect":{"routes":[{"statuses":[401],"goto":"tail"}]},"extract":[{"alias":"a","expression":".a"}]},
-    {"id":"tail","name":"Tail","request":{"method":"GET","path":"/tail"}}
+    {"id":"first","request":{"method":"GET","path":"/first"},"expect":{"routes":[{"statuses":[401],"goto":"tail"}]},"extract":[{"alias":"a","expression":".a"}]},
+    {"id":"tail","request":{"method":"GET","path":"/tail"}}
   ],
   "output":{}
 }`)
@@ -606,9 +597,9 @@ func TestGeneralWorkflowAcceptedStatusContinuesToExtractAndWhen(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v2","id":"accepted-status","name":"Accepted status",
   "steps":[
-    {"id":"first","name":"First","request":{"method":"GET","path":"/first"},"expect":{"accepted_statuses":[409]},"extract":[{"alias":"a","expression":".a"}],"when":{"expression":"$vars.a == true","goto":"target"}},
-    {"id":"skipped","name":"Skipped","request":{"method":"GET","path":"/skipped"}},
-    {"id":"target","name":"Target","request":{"method":"GET","path":"/target"}}
+    {"id":"first","request":{"method":"GET","path":"/first"},"expect":{"accepted_statuses":[409]},"extract":[{"alias":"a","expression":".a"}],"when":{"expression":"$vars.a == true","goto":"target"}},
+    {"id":"skipped","request":{"method":"GET","path":"/skipped"}},
+    {"id":"target","request":{"method":"GET","path":"/target"}}
   ],
   "output":{"a":"{{a}}"}
 }`)
@@ -628,7 +619,7 @@ func TestGeneralWorkflowGotoLoopIsBounded(t *testing.T) {
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: generalWorkflowJSONClient(`{}`, http.StatusOK)})
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v2","id":"goto-loop","name":"Goto loop",
-  "steps":[{"id":"loop","name":"Loop","request":{"method":"GET","path":"/loop"},"when":{"expression":"true","goto":"loop"}}],
+  "steps":[{"id":"loop","request":{"method":"GET","path":"/loop"},"when":{"expression":"true","goto":"loop"}}],
   "output":{}
 }`)
 	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
@@ -643,7 +634,7 @@ func TestGeneralWorkflowDebugLogsIncludeFailureContext(t *testing.T) {
 	})
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v1","id":"debug-failure","name":"Debug failure",
-  "steps":[{"id":"request","name":"Request","request":{"method":"POST","path":"/api","query":{"api_key":"query-secret"},"body":{"password":"request-secret"}},"expect":"$response.status == 200"}],
+  "steps":[{"id":"request","request":{"method":"POST","path":"/api?api_key=query-secret","body":{"password":"request-secret"}},"expect":"$response.status == 200"}],
   "output":{}
 }`)
 	logs := make([]GeneralWorkflowDebugLog, 0)
@@ -739,78 +730,73 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 		},
 		{
 			name:       "forbidden jq",
-			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"extract":[{"alias":"value","expression":"now"}]}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"extract":[{"alias":"value","expression":"now"}]}],"output":{}}`,
 			want:       "not allowed",
 		},
 		{
 			name:       "v1 when",
-			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"when":{"expression":"true","goto":"step"}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"when":{"expression":"true","goto":"step"}}],"output":{}}`,
 			want:       "when requires spec \"http-workflow/v2\"",
 		},
 		{
 			name:       "v2 foreach",
-			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/"}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/"}}],"output":{}}`,
 			want:       "foreach requires spec \"http-workflow/v3\"",
 		},
 		{
 			name:       "foreach alias collision",
-			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","steps":[{"id":"step","name":"Step","foreach":{"alias":"items","as":"items"},"request":{"method":"GET","path":"/"}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","steps":[{"id":"step","foreach":{"alias":"items","as":"items"},"request":{"method":"GET","path":"/"}}],"output":{}}`,
 			want:       "foreach alias must differ",
 		},
 		{
 			name:       "foreach extract alias collision",
-			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","steps":[{"id":"step","name":"Step","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/"},"extract":[{"alias":"item","expression":"."}]}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","steps":[{"id":"step","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/"},"extract":[{"alias":"item","expression":"."}]}],"output":{}}`,
 			want:       "conflicts with a foreach iteration alias",
 		},
 		{
 			name:       "invalid expect status",
-			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[99],"goto":"step"}]}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[99],"goto":"step"}]}}],"output":{}}`,
 			want:       "HTTP status code",
 		},
 		{
 			name:       "v1 structured expect",
-			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[401],"goto":"step"}]}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"expect":{"routes":[{"statuses":[401],"goto":"step"}]}}],"output":{}}`,
 			want:       "structured expect requires spec \"http-workflow/v2\"",
 		},
 		{
 			name:       "v2 string expect",
-			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":"true"}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"expect":"true"}],"output":{}}`,
 			want:       "string expect requires spec \"http-workflow/v1\"",
 		},
 		{
 			name:       "accepted and routed status conflict",
-			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"expect":{"accepted_statuses":[409],"routes":[{"statuses":[409],"goto":"step"}]}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"expect":{"accepted_statuses":[409],"routes":[{"statuses":[409],"goto":"step"}]}}],"output":{}}`,
 			want:       "cannot be both accepted and routed",
 		},
 		{
 			name:       "missing when target",
-			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"},"when":{"expression":"true","goto":"missing"}}],"output":{}}`,
+			definition: `{"spec":"http-workflow/v2","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"when":{"expression":"true","goto":"missing"}}],"output":{}}`,
 			want:       "does not exist",
 		},
 		{
-			name:       "null query",
-			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/","query":null}}],"output":{}}`,
-			want:       "query must be an object",
+			name:       "request query is unsupported",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/","query":{}}}],"output":{}}`,
+			want:       "unknown field \"query\"",
 		},
 		{
-			name:       "query in path",
-			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/api?a=1"}}],"output":{}}`,
-			want:       "",
+			name:       "request headers are unsupported",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/","headers":{}}}],"output":{}}`,
+			want:       "unknown field \"headers\"",
+		},
+		{
+			name:       "step name is unsupported",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"}}],"output":{}}`,
+			want:       "unknown field \"name\"",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			definition, err := ParseGeneralWorkflow([]byte(test.definition))
-			if test.name == "query in path" {
-				if err != nil {
-					t.Fatalf("path is rendered at execution, parse should succeed: %v", err)
-				}
-				workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-					t.Fatal("invalid rendered path must fail before sending")
-					return nil, nil
-				})}})
-				_, err = workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
-			}
+			_, err := ParseGeneralWorkflow([]byte(test.definition))
 			if err == nil || test.want != "" && !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected error containing %q, got %v", test.want, err)
 			}
@@ -821,7 +807,7 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 func TestGeneralWorkflowForeachValidatesRuntimeSource(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v3","id":"foreach-source","name":"Foreach source",
-  "steps":[{"id":"request","name":"Request","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api"}}],
+  "steps":[{"id":"request","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/api"}}],
   "output":{}
 }`)
 	requests := 0
@@ -856,7 +842,7 @@ func TestGeneralWorkflowRejectsForbiddenJQCapabilities(t *testing.T) {
 		t.Run(expression, func(t *testing.T) {
 			definition := `{
   "spec":"http-workflow/v1","id":"forbidden-jq","name":"Forbidden jq",
-  "steps":[{"id":"request","name":"Request","request":{"method":"GET","path":"/api"},"extract":[{"alias":"value","expression":` + strconv.Quote(expression) + `}]}],
+  "steps":[{"id":"request","request":{"method":"GET","path":"/api"},"extract":[{"alias":"value","expression":` + strconv.Quote(expression) + `}]}],
   "output":{}
 }`
 			_, err := ParseGeneralWorkflow([]byte(definition))
@@ -871,7 +857,7 @@ func TestGeneralWorkflowRejectsDuplicateResponseKeys(t *testing.T) {
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: generalWorkflowJSONClient(`{"data":{"id":1,"id":2}}`, http.StatusOK)})
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v1","id":"duplicate-response","name":"Duplicate response",
-  "steps":[{"id":"request","name":"Request","request":{"method":"GET","path":"/api"}}],
+  "steps":[{"id":"request","request":{"method":"GET","path":"/api"}}],
   "output":{}
 }`)
 	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
@@ -884,7 +870,7 @@ func TestGeneralWorkflowRequiresSingleJQResult(t *testing.T) {
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: generalWorkflowJSONClient(`[1,2]`, http.StatusOK)})
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v1","id":"multiple-results","name":"Multiple results",
-  "steps":[{"id":"request","name":"Request","request":{"method":"GET","path":"/api"},"extract":[{"alias":"items","expression":".[]"}]}],
+  "steps":[{"id":"request","request":{"method":"GET","path":"/api"},"extract":[{"alias":"items","expression":".[]"}]}],
   "output":{}
 }`)
 	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
@@ -900,7 +886,7 @@ func TestGeneralWorkflowLimitsJQExecutionTime(t *testing.T) {
 	})
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v1","id":"jq-timeout","name":"JQ timeout",
-  "steps":[{"id":"request","name":"Request","request":{"method":"GET","path":"/api"},"extract":[{"alias":"value","expression":"def recurse: recurse; recurse"}]}],
+  "steps":[{"id":"request","request":{"method":"GET","path":"/api"},"extract":[{"alias":"value","expression":"def recurse: recurse; recurse"}]}],
   "output":{}
 }`)
 	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://example.com"})
@@ -938,8 +924,8 @@ func TestGeneralWorkflowDistinguishesAbsentAndNullBody(t *testing.T) {
 	definition := mustParseGeneralWorkflow(t, `{
   "spec":"http-workflow/v1","id":"null-body","name":"Null body",
   "steps":[
-    {"id":"absent","name":"Absent","request":{"method":"POST","path":"/absent"},"expect":"$response.status == 204 and ($response.has_body | not)"},
-    {"id":"null","name":"Null","request":{"method":"POST","path":"/null","body":null},"expect":"$response.status == 204"}
+    {"id":"absent","request":{"method":"POST","path":"/absent"},"expect":"$response.status == 204 and ($response.has_body | not)"},
+    {"id":"null","request":{"method":"POST","path":"/null","body":null},"expect":"$response.status == 204"}
   ],
   "output":{}
 }`)

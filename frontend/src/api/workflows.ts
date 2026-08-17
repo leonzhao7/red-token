@@ -3,8 +3,6 @@ const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 export interface WorkflowRequest {
   method: string
   path: string
-  query?: Record<string, unknown>
-  headers?: Record<string, unknown>
   body?: unknown
 }
 
@@ -36,7 +34,6 @@ export interface WorkflowForeach {
 
 export interface WorkflowStep {
   id: string
-  name: string
   foreach?: WorkflowForeach
   request: WorkflowRequest
   expect?: string | WorkflowExpect
@@ -73,7 +70,6 @@ export interface WorkflowDebugLog {
   time: string
   level: 'debug' | 'info' | 'warn' | 'error' | string
   step_id?: string
-  step_name?: string
   phase: string
   message: string
   duration_ms?: number

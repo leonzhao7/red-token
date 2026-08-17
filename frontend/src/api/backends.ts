@@ -101,7 +101,6 @@ export interface BackendWorkflowDebugLog {
   time: string
   level: 'debug' | 'info' | 'warn' | 'error' | string
   step_id?: string
-  step_name?: string
   phase: string
   message: string
   duration_ms?: number

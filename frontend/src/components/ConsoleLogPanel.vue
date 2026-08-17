@@ -79,7 +79,7 @@ function toggleDetails(id: string, body: string) {
                     <span class="console-log-workflow-badge">WORKFLOW</span>
                     <span class="console-log-workflow-content">
                       <span class="console-log-workflow-meta">
-                        <span v-if="row.stepId" class="mono">{{ row.stepName || row.stepId }}</span>
+                        <span v-if="row.stepId" class="mono">{{ row.stepId }}</span>
                         <span class="mono">{{ row.phase }}</span>
                         <span v-if="row.durationMs != null" class="mono">{{ row.durationMs }} ms</span>
                       </span>

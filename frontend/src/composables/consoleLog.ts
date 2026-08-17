@@ -12,7 +12,6 @@ export interface ConsoleLogRow {
   level?: string
   phase?: string
   stepId?: string
-  stepName?: string
   message?: string
   durationMs?: number
 }
@@ -75,7 +74,6 @@ export function appendWorkflowLogRow(
     time: string
     level: string
     step_id?: string
-    step_name?: string
     phase: string
     message: string
     duration_ms?: number
@@ -94,7 +92,6 @@ export function appendWorkflowLogRow(
     level: log.level || 'info',
     phase: log.phase,
     stepId: log.step_id,
-    stepName: log.step_name,
     message: log.message,
     durationMs: log.duration_ms
   })

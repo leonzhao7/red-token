@@ -32,12 +32,9 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
   "steps": [
     {
       "id": "get_profile",
-      "name": "获取用户信息",
       "request": {
         "method": "GET",
-        "path": "/api/profile",
-        "query": {},
-        "headers": {}
+        "path": "/api/profile"
       },
       "extract": [
         {
@@ -71,14 +68,13 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
 | `id` | string | 是 | 当前工作流内唯一的稳定标识 |
-| `name` | string | 是 | 展示名称，不参与执行 |
 | `foreach` | object | 否（v3+） | 对指定数组 alias 串行执行当前 step；省略时只执行一次 |
 | `request` | object | 是 | HTTP 请求模板 |
 | `expect` | string（v1）/ object（v2+） | 否 | v1 为 jq 布尔表达式；v2 及更高版本为响应状态码跳转路由，未命中时接受 `200..299` 和额外成功状态码 |
 | `extract` | array | 否 | 有序的 alias 赋值列表；省略等价于空数组 |
 | `when` | object | 否（v2+） | 当前 step 的 alias 全部提取并提交后执行的 jq 条件及跳转目标 |
 
-所有 step 具有完全相同的字段语义。不得根据 `step.id` 或 `step.name` 启用隐式行为。
+所有 step 具有完全相同的字段语义。不得根据 `step.id` 启用隐式行为。
 
 ### 2.3 Foreach 字段
 
@@ -97,9 +93,7 @@ v3 的 foreach 配置由以下字段组成：
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
 | `method` | string | 是 | HTTP method，执行前转为大写 |
-| `path` | string | 是 | 相对 URL path 模板，必须以 `/` 开头且不得包含 scheme、authority、fragment 或 query |
-| `query` | object | 否 | Query 参数模板，省略等价于 `{}` |
-| `headers` | object | 否 | 请求头模板，省略等价于 `{}` |
+| `path` | string | 是 | 相对 URL 模板，可直接包含 query，必须以 `/` 开头且不得包含 scheme、authority 或 fragment |
 | `body` | JSON value | 否 | JSON body 模板；字段省略表示不发送 body，字段存在时序列化其值 |
 
 基础 URL、认证信息、代理、超时和受保护请求头由宿主执行环境提供，不属于工作流语义。
@@ -153,7 +147,6 @@ v3 可以让一个 step 对数组 alias 中的每个成员串行发送一次请�
 ```json
 {
   "id": "get_usage",
-  "name": "逐个获取用量",
   "foreach": {
     "alias": "items",
     "as": "item",
@@ -191,7 +184,7 @@ Foreach 的每个 Extract alias 都按输入顺序聚合为数组。例如两次
 
 ## 5. Alias 模板
 
-顶层 `headers`、`request.path`、`request.query`、`request.headers`、`request.body` 和顶层 `output` 都是递归模板。模板可以引用 alias，也可以通过保留根 `runtime` 引用宿主运行上下文；`runtime` 不属于 alias store。
+顶层 `headers`、`request.path`、`request.body` 和顶层 `output` 都是递归模板。模板可以引用 alias，也可以通过保留根 `runtime` 引用宿主运行上下文；`runtime` 不属于 alias store。
 
 ### 5.1 引用格式
 
@@ -254,9 +247,9 @@ jq 表达式中使用 `$runtime.username`、`$runtime.password`、`$runtime.user
 
 嵌入字符串时只允许 string、number 和 boolean。number 使用合法 JSON 数字文本，boolean 使用 `true` 或 `false`。null、array、object 或不存在的值都会导致模板错误。
 
-模板替换本身不执行 URL 编码或 Header 编码。Query 在模板求值完成后由 HTTP 编码规则统一编码。
+模板替换本身不执行 URL 编码或 Header 编码。`path` 中的 query 在模板求值完成后按原样作为 URL query 使用，不会额外编码。
 
-Path 中的 alias 也不会被自动编码。需要把任意字符串安全地放入单个 path segment 时，应先在 extract 表达式中使用 jq 的 `@uri` 生成已编码 alias，再将它用于 path。
+Path 中的 alias 也不会被自动编码。需要把任意字符串安全地放入单个 path segment 或 query 值时，应先在 extract 表达式中使用 jq 的 `@uri` 生成已编码 alias，再将它用于 path。
 
 要在模板字符串中输出一个可被识别为引用的字面量，配置中使用 `\\{{alias}}`；模板求值结果为字面量 `{{alias}}`。
 
@@ -280,26 +273,11 @@ JSON null 是存在的值，不等同于 alias 或 JSON Pointer 不存在。
 
 ### 6.1 Path
 
-`path` 只描述 URL path。Query 必须写入 `query`，从而避免 path 插值、URL 编码和参数重复之间的歧义。
+`path` 描述相对 URL，可直接包含 query，例如 `"/api/v1/keys?page=1&page_size=100"`。query 不再使用独立的 `request.query` 配置。
 
-Path 渲染完成后必须仍以 `/` 开头。宿主必须拒绝绝对 URL、协议相对 URL和包含 fragment 的结果。
+Path 渲染完成后必须仍以 `/` 开头。宿主必须拒绝绝对 URL、协议相对 URL和包含 fragment 的结果；path 中的 query 会原样保留到 HTTP 请求。
 
-### 6.2 Query
-
-`query` 的每个渲染后值按以下规则编码：
-
-| JSON 类型 | 编码规则 |
-| --- | --- |
-| string | 一个参数值 |
-| number | 一个合法 JSON 数字文本 |
-| boolean | `true` 或 `false` |
-| array | 按数组顺序生成多个同名参数；元素只能是 string、number 或 boolean |
-| null | 省略该参数 |
-| object | 错误 |
-
-参数名和值都必须按照标准 URL query percent-encoding 编码。对象成员顺序不影响语义；同名数组参数的值顺序必须保留。
-
-### 6.3 Headers
+### 6.2 Headers
 
 Header 名不区分大小写。渲染后按以下规则处理：
 
@@ -314,13 +292,13 @@ Header 名不区分大小写。渲染后按以下规则处理：
 
 同一请求中大小写不同但语义相同的 Header 名视为冲突。宿主可以定义一组受保护 Header；工作流配置这些 Header 时必须在请求发送前失败。
 
-v4 按“宿主提供 Header、顶层 `headers`、当前步骤 `request.headers`”三层合并。宿主提供 Header 不允许被工作流覆盖；步骤 Header 与顶层 Header 同名时使用步骤值。当前项目把中转站 `console_headers` 作为宿主提供 Header，因此可直接在中转站配置中设置所有工作流请求共用的静态 Header。`Authorization` 和 `Cookie` 由宿主管理，不能写入顶层或步骤 Header。
+v4 按“宿主提供 Header、顶层 `headers`”两层合并。宿主提供 Header 不允许被工作流覆盖。当前项目把中转站 `console_headers` 作为宿主提供 Header，因此可直接在中转站配置中设置所有工作流请求共用的静态 Header。`Authorization` 和 `Cookie` 由宿主管理，不能写入顶层 Header；单个请求不支持单独配置 Header。
 
 当前项目为每次工作流执行创建独立 Cookie jar。中转站已有的 `Cookie` 会作为初始 Cookie；任意响应的 `Set-Cookie` 会按照标准的 domain、path、expiry 和 secure 规则自动用于后续请求，无需 jq 提取或在请求中显式配置。本次响应产生的 Cookie 变更会按 Cookie 名新增或覆盖中转站 `console_headers.Cookie`，过期 Cookie 会从配置中删除；成功工作流将 Cookie 与业务输出放在同一事务中保存，失败工作流也会独立保存已经收到的 Cookie 变更。不同中转站和不同执行之间不共享 Cookie jar。
 
 当 `body` 字段存在且未显式配置 `Content-Type` 时，使用 `application/json`。未显式配置 `Accept` 时，使用 `application/json`。
 
-### 6.4 Body
+### 6.3 Body
 
 `body` 字段不存在时不发送请求 body。`body` 字段存在时，将渲染后的值序列化并发送，因此 `"body": null` 明确表示发送 JSON null。字段存在性与字段值不同，不得把存在且为 null 的 body 当成省略。
 
@@ -391,7 +369,7 @@ v3 foreach 执行期间，`$vars` 还包含 `foreach.as` 指定的当前元素�
 }
 ```
 
-宿主没有提供账户信息时，`username`、`password` 和 `user_id` 固定为空字符串，`headers` 固定为空对象。本项目对中转站执行工作流时会使用中转站控制台配置填充这些字段；`headers` 为宿主提供的基础控制台请求头字典，不包含当前 step 通过 `request.headers` 增加的请求头。
+宿主没有提供账户信息时，`username`、`password` 和 `user_id` 固定为空字符串，`headers` 固定为空对象。本项目对中转站执行工作流时会使用中转站控制台配置填充这些字段；`headers` 为宿主提供的基础控制台请求头字典，不包含工作流顶层 `headers`。
 
 表达式不得读取环境变量、文件、网络、进程状态或其他外部可变状态。当前时间必须从 `$runtime` 获取，不得在表达式中再次读取时钟。
 
@@ -856,12 +834,9 @@ $vars.model_rows
   "steps": [
     {
       "id": "get_me",
-      "name": "获取用户信息",
       "request": {
         "method": "GET",
-        "path": "/api/v1/auth/me",
-        "query": {},
-        "headers": {}
+        "path": "/api/v1/auth/me"
       },
       "expect": "$response.status >= 200 and $response.status < 300 and ((.code? // 0) == 0)",
       "extract": [
@@ -874,16 +849,9 @@ $vars.model_rows
     },
     {
       "id": "get_keys",
-      "name": "获取 API Key 列表",
       "request": {
         "method": "GET",
-        "path": "/api/v1/keys",
-        "query": {
-          "page": 1,
-          "page_size": 100,
-          "scope": "personal"
-        },
-        "headers": {}
+        "path": "/api/v1/keys?page=1&page_size=100&scope=personal"
       },
       "extract": [
         {
@@ -898,12 +866,9 @@ $vars.model_rows
     },
     {
       "id": "get_key_usage",
-      "name": "获取 API Key 用量",
       "request": {
         "method": "POST",
         "path": "/api/v1/usage/dashboard/api-keys-usage",
-        "query": {},
-        "headers": {},
         "body": {
           "api_key_ids": "{{key_ids}}"
         }
@@ -921,12 +886,9 @@ $vars.model_rows
     },
     {
       "id": "get_models",
-      "name": "获取模型定价",
       "request": {
         "method": "GET",
-        "path": "/api/v1/models",
-        "query": {},
-        "headers": {}
+        "path": "/api/v1/models"
       },
       "extract": [
         {
@@ -973,7 +935,7 @@ $vars.model_rows
 - 最终 output 模板求值失败。
 - 最终结果不符合宿主输出 Schema。
 
-失败时不得持久化部分业务输出。响应 Cookie 属于后续请求所需的认证状态，不属于业务输出；本项目会保存失败前已经收到的 `Set-Cookie` 变更。宿主可以持久化独立的运行日志和 HTTP 审计记录。本项目约定工作流定义和调试数据不做敏感信息处理，`output`、alias、Header、query、请求 body 和响应 body 均按原值明文返回；单项调试预览仍受长度上限约束。
+失败时不得持久化部分业务输出。响应 Cookie 属于后续请求所需的认证状态，不属于业务输出；本项目会保存失败前已经收到的 `Set-Cookie` 变更。宿主可以持久化独立的运行日志和 HTTP 审计记录。本项目约定工作流定义和调试数据不做敏感信息处理，`output`、alias、Header、path（含 query）、请求 body 和响应 body 均按原值明文返回；单项调试预览仍受长度上限约束。
 
 只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
 

@@ -59,7 +59,6 @@ interface ExpectRouteRow {
 }
 interface StepForm {
   id: string
-  name: string
   foreachAlias: string
   foreachAs: string
   foreachIndexAs: string
@@ -94,7 +93,6 @@ function freshForm() {
 function emptyStep(): StepForm {
   return {
     id: '',
-    name: '',
     foreachAlias: '',
     foreachAs: '',
     foreachIndexAs: '',
@@ -125,12 +123,9 @@ const SAMPLE_DEFINITION = `{
   "steps": [
     {
       "id": "get_me",
-      "name": "获取用户信息",
       "request": {
         "method": "GET",
-        "path": "/api/v1/auth/me",
-        "query": {},
-        "headers": {}
+        "path": "/api/v1/auth/me"
       },
       "extract": [
         { "alias": "user_id", "expression": ".data.id | tostring" },
@@ -142,12 +137,9 @@ const SAMPLE_DEFINITION = `{
     },
     {
       "id": "get_keys",
-      "name": "获取 API Key 列表",
       "request": {
         "method": "GET",
-        "path": "/api/v1/keys",
-        "query": { "page": 1, "page_size": 100, "scope": "personal" },
-        "headers": {}
+        "path": "/api/v1/keys?page=1&page_size=100&scope=personal"
       },
       "extract": [
         {
@@ -162,12 +154,9 @@ const SAMPLE_DEFINITION = `{
     },
     {
       "id": "get_key_usage",
-      "name": "获取 API Key 用量",
       "request": {
         "method": "POST",
         "path": "/api/v1/usage/dashboard/api-keys-usage",
-        "query": {},
-        "headers": {},
         "body": { "api_key_ids": "{{key_ids}}" }
       },
       "extract": [
@@ -183,12 +172,9 @@ const SAMPLE_DEFINITION = `{
     },
     {
       "id": "get_models",
-      "name": "获取模型定价",
       "request": {
         "method": "GET",
-        "path": "/api/v1/models",
-        "query": {},
-        "headers": {}
+        "path": "/api/v1/models"
       },
       "extract": [
         {
@@ -258,7 +244,6 @@ function defToForm(def: WorkflowDefinition) {
   form.headers = objToKv(def.headers)
   form.steps = def.steps.map((step) => ({
     id: step.id,
-    name: step.name,
     foreachAlias: step.foreach?.alias || '',
     foreachAs: step.foreach?.as || '',
     foreachIndexAs: step.foreach?.index_as || '',
@@ -478,12 +463,11 @@ function validateForm(): string[] {
 
   const stepIds = new Set<string>()
   form.steps.forEach((st, i) => {
-    const label = `第 ${i + 1} 步` + (st.name.trim() ? `（${st.name.trim()}）` : '')
+    const label = `第 ${i + 1} 步（${st.id.trim() || '未命名'}）`
     if (!st.id.trim()) errors.push(`${label}：步骤 ID 不能为空`)
     else if (!WORKFLOW_ID_RE.test(st.id.trim())) errors.push(`${label}：步骤 ID 必须匹配 ^[a-z][a-z0-9_-]{0,63}$`)
     else if (stepIds.has(st.id.trim())) errors.push(`${label}：步骤 ID「${st.id.trim()}」重复`)
     else stepIds.add(st.id.trim())
-    if (!st.name.trim()) errors.push(`${label}：步骤名称不能为空`)
     const foreachAlias = st.foreachAlias.trim()
     const foreachAs = st.foreachAs.trim()
     const foreachIndexAs = st.foreachIndexAs.trim()
@@ -563,7 +547,6 @@ function formToDef(): WorkflowDefinition {
     }
     const step: WorkflowStep = {
       id: st.id.trim(),
-      name: st.name.trim(),
       request: request as WorkflowStep['request']
     }
     const foreachAlias = st.foreachAlias.trim()

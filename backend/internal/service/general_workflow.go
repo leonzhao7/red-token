@@ -80,7 +80,6 @@ type GeneralWorkflowDefinition struct {
 
 type GeneralWorkflowStep struct {
 	ID      string                      `json:"id"`
-	Name    string                      `json:"name"`
 	Foreach *GeneralWorkflowForeach     `json:"foreach,omitempty"`
 	Request GeneralWorkflowRequest      `json:"request"`
 	Expect  *GeneralWorkflowExpect      `json:"expect,omitempty"`
@@ -143,11 +142,9 @@ func (expect GeneralWorkflowExpect) MarshalJSON() ([]byte, error) {
 }
 
 type GeneralWorkflowRequest struct {
-	Method  string          `json:"method"`
-	Path    string          `json:"path"`
-	Query   map[string]any  `json:"query,omitempty"`
-	Headers map[string]any  `json:"headers,omitempty"`
-	Body    json.RawMessage `json:"body,omitempty"`
+	Method string          `json:"method"`
+	Path   string          `json:"path"`
+	Body   json.RawMessage `json:"body,omitempty"`
 }
 
 type GeneralWorkflowExtraction struct {
@@ -178,7 +175,6 @@ type GeneralWorkflowDebugLog struct {
 	Time       string         `json:"time"`
 	Level      string         `json:"level"`
 	StepID     string         `json:"step_id,omitempty"`
-	StepName   string         `json:"step_name,omitempty"`
 	Phase      string         `json:"phase"`
 	Message    string         `json:"message"`
 	DurationMS int64          `json:"duration_ms,omitempty"`
@@ -244,7 +240,6 @@ type compiledGeneralWorkflowExtraction struct {
 type renderedGeneralWorkflowRequest struct {
 	method    string
 	path      string
-	query     map[string]any
 	headers   http.Header
 	hasBody   bool
 	body      any
@@ -402,7 +397,7 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 		if !ok {
 			return fmt.Errorf("%s must be an object", path)
 		}
-		for _, field := range []string{"id", "name"} {
+		for _, field := range []string{"id"} {
 			if _, err := requiredGeneralWorkflowString(step, field, path+"/"+field); err != nil {
 				return err
 			}
@@ -438,13 +433,6 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 		for _, field := range []string{"method", "path"} {
 			if _, err := requiredGeneralWorkflowString(request, field, path+"/request/"+field); err != nil {
 				return err
-			}
-		}
-		for _, field := range []string{"query", "headers"} {
-			if item, exists := request[field]; exists {
-				if _, ok := item.(map[string]any); !ok {
-					return fmt.Errorf("%s/request/%s must be an object", path, field)
-				}
 			}
 		}
 		if expect, exists := step["expect"]; exists {
@@ -604,9 +592,6 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: duplicate step id %q", index, step.ID)
 		}
 		stepIDs[step.ID] = index
-		if strings.TrimSpace(step.Name) == "" {
-			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: step name is required", index)
-		}
 		if step.Foreach != nil {
 			if definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach requires spec %q or later", index, GeneralWorkflowSpecV3)
@@ -756,24 +741,6 @@ func validateGeneralWorkflowRequest(request GeneralWorkflowRequest) error {
 	if err := validateGeneralWorkflowTemplate(request.Path); err != nil {
 		return fmt.Errorf("path template: %w", err)
 	}
-	if request.Query != nil {
-		query, err := canonicalGeneralWorkflowJSON(request.Query, "query")
-		if err != nil {
-			return err
-		}
-		if err := validateGeneralWorkflowTemplate(query); err != nil {
-			return fmt.Errorf("query template: %w", err)
-		}
-	}
-	if request.Headers != nil {
-		headers, err := canonicalGeneralWorkflowJSON(request.Headers, "headers")
-		if err != nil {
-			return err
-		}
-		if err := validateGeneralWorkflowTemplate(headers); err != nil {
-			return fmt.Errorf("headers template: %w", err)
-		}
-	}
 	if len(request.Body) > 0 {
 		body, err := decodeGeneralWorkflowJSON(request.Body)
 		if err != nil {
@@ -891,7 +858,6 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 		var workflowErr *GeneralWorkflowError
 		if errors.As(resultErr, &workflowErr) {
 			entry.StepID = workflowErr.StepID
-			entry.StepName = generalWorkflowStepName(definition, workflowErr.StepID)
 			entry.Phase = workflowErr.Phase
 			entry.Details["error"] = workflowErr.Err.Error()
 		}
@@ -950,7 +916,7 @@ stepLoop:
 		}
 		step := compiled.steps[stepIndex]
 		stepStartedAt := time.Now()
-		stepLog := GeneralWorkflowDebugLog{StepID: step.definition.ID, StepName: step.definition.Name}
+		stepLog := GeneralWorkflowDebugLog{StepID: step.definition.ID}
 		foreachItems := []any{nil}
 		stepDetails := map[string]any(nil)
 		if step.definition.Foreach != nil {
@@ -1022,7 +988,6 @@ stepLoop:
 			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "request", "HTTP request rendered", withIteration(map[string]any{
 				"method":   request.method,
 				"path":     request.path,
-				"query":    generalWorkflowDebugValue("query", request.query),
 				"headers":  request.jqValue["headers"],
 				"has_body": request.hasBody,
 				"body":     generalWorkflowDebugValue("body", request.body),
@@ -1232,15 +1197,6 @@ func generalWorkflowDebugWith(base GeneralWorkflowDebugLog, level, phase, messag
 	return base
 }
 
-func generalWorkflowStepName(definition GeneralWorkflowDefinition, stepID string) string {
-	for _, step := range definition.Steps {
-		if step.ID == stepID {
-			return step.Name
-		}
-	}
-	return ""
-}
-
 func sortedGeneralWorkflowKeys(values map[string]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -1340,37 +1296,7 @@ func (workflow *GeneralWorkflow) renderRequest(globalHeaderDefinition map[string
 		return renderedGeneralWorkflowRequest{}, err
 	}
 
-	query := map[string]any{}
-	if definition.Query != nil {
-		queryTemplate, err := canonicalGeneralWorkflowJSON(definition.Query, "query")
-		if err != nil {
-			return renderedGeneralWorkflowRequest{}, err
-		}
-		rendered, err := renderGeneralWorkflowTemplate(queryTemplate, templateValues)
-		if err != nil {
-			return renderedGeneralWorkflowRequest{}, fmt.Errorf("query: %w", err)
-		}
-		query, ok = rendered.(map[string]any)
-		if !ok {
-			return renderedGeneralWorkflowRequest{}, errors.New("query must render as an object")
-		}
-		if _, err := encodeGeneralWorkflowQuery(query); err != nil {
-			return renderedGeneralWorkflowRequest{}, err
-		}
-	}
-
-	globalHeaders, err := renderGeneralWorkflowHeaderTemplate(globalHeaderDefinition, templateValues, "workflow headers")
-	if err != nil {
-		return renderedGeneralWorkflowRequest{}, err
-	}
-	workflowHeaders := map[string]any{}
-	if definition.Headers != nil {
-		workflowHeaders, err = renderGeneralWorkflowHeaderTemplate(definition.Headers, templateValues, "headers")
-		if err != nil {
-			return renderedGeneralWorkflowRequest{}, err
-		}
-	}
-	workflowHeaders, err = mergeGeneralWorkflowHeaderValues(globalHeaders, workflowHeaders)
+	workflowHeaders, err := renderGeneralWorkflowHeaderTemplate(globalHeaderDefinition, templateValues, "workflow headers")
 	if err != nil {
 		return renderedGeneralWorkflowRequest{}, err
 	}
@@ -1382,7 +1308,6 @@ func (workflow *GeneralWorkflow) renderRequest(globalHeaderDefinition map[string
 	request := renderedGeneralWorkflowRequest{
 		method:  strings.ToUpper(strings.TrimSpace(definition.Method)),
 		path:    path,
-		query:   query,
 		headers: headers,
 		hasBody: len(definition.Body) > 0,
 	}
@@ -1407,7 +1332,6 @@ func (workflow *GeneralWorkflow) renderRequest(globalHeaderDefinition map[string
 	request.jqValue = map[string]any{
 		"method":   request.method,
 		"path":     request.path,
-		"query":    request.query,
 		"headers":  generalWorkflowHeaderObject(request.headers),
 		"has_body": request.hasBody,
 		"body":     request.body,
@@ -1434,30 +1358,6 @@ func renderGeneralWorkflowHeaderTemplate(definition map[string]any, templateValu
 	return headers, nil
 }
 
-func mergeGeneralWorkflowHeaderValues(global, step map[string]any) (map[string]any, error) {
-	result := make(map[string]any, len(global)+len(step))
-	names := make(map[string]string, len(global)+len(step))
-	for _, source := range []struct {
-		label  string
-		values map[string]any
-	}{{label: "workflow", values: global}, {label: "step", values: step}} {
-		seen := make(map[string]struct{}, len(source.values))
-		for name, value := range source.values {
-			lower := strings.ToLower(name)
-			if _, duplicate := seen[lower]; duplicate {
-				return nil, fmt.Errorf("duplicate %s header %q", source.label, name)
-			}
-			seen[lower] = struct{}{}
-			if previous, exists := names[lower]; exists {
-				delete(result, previous)
-			}
-			result[name] = value
-			names[lower] = name
-		}
-	}
-	return result, nil
-}
-
 func validateRenderedGeneralWorkflowPath(path string) error {
 	if path == "" || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		return errors.New("path must start with one slash")
@@ -1466,8 +1366,8 @@ func validateRenderedGeneralWorkflowPath(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
 	}
-	if parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("path must not contain scheme, authority, query, or fragment")
+	if parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
+		return errors.New("path must not contain scheme, authority, or fragment")
 	}
 	return nil
 }
@@ -1563,23 +1463,6 @@ func validateGeneralWorkflowHeaderValue(value string) error {
 	return nil
 }
 
-func encodeGeneralWorkflowQuery(values map[string]any) (string, error) {
-	query := url.Values{}
-	for name, value := range values {
-		converted, omit, err := generalWorkflowStringValues(value, true)
-		if err != nil {
-			return "", fmt.Errorf("query parameter %q: %w", name, err)
-		}
-		if omit {
-			continue
-		}
-		for _, item := range converted {
-			query.Add(name, item)
-		}
-	}
-	return query.Encode(), nil
-}
-
 func generalWorkflowStringValues(value any, allowArray bool) ([]string, bool, error) {
 	if value == nil {
 		return nil, true, nil
@@ -1634,7 +1517,7 @@ func generalWorkflowScalarString(value any) (string, error) {
 }
 
 func (workflow *GeneralWorkflow) doRequest(ctx context.Context, client *http.Client, baseURL *url.URL, rendered renderedGeneralWorkflowRequest, recorder ConsoleRequestRecorder) (generalWorkflowHTTPResponse, error) {
-	target, err := buildGeneralWorkflowTargetURL(baseURL, rendered.path, rendered.query)
+	target, err := buildGeneralWorkflowTargetURL(baseURL, rendered.path)
 	if err != nil {
 		return generalWorkflowHTTPResponse{}, err
 	}
@@ -1699,7 +1582,7 @@ func applyGeneralWorkflowCookiePreview(baseURL *url.URL, rendered *renderedGener
 	if baseURL == nil || rendered == nil || jar == nil {
 		return nil
 	}
-	target, err := buildGeneralWorkflowTargetURL(baseURL, rendered.path, rendered.query)
+	target, err := buildGeneralWorkflowTargetURL(baseURL, rendered.path)
 	if err != nil {
 		return err
 	}
@@ -1711,17 +1594,12 @@ func applyGeneralWorkflowCookiePreview(baseURL *url.URL, rendered *renderedGener
 	return nil
 }
 
-func buildGeneralWorkflowTargetURL(baseURL *url.URL, path string, query map[string]any) (*url.URL, error) {
+func buildGeneralWorkflowTargetURL(baseURL *url.URL, path string) (*url.URL, error) {
 	reference, err := url.Parse(path)
 	if err != nil {
 		return nil, err
 	}
 	target := baseURL.ResolveReference(reference)
-	encodedQuery, err := encodeGeneralWorkflowQuery(query)
-	if err != nil {
-		return nil, err
-	}
-	target.RawQuery = encodedQuery
 	target.Fragment = ""
 	return target, nil
 }

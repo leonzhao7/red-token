@@ -588,7 +588,7 @@ func TestWorkflowOutputPricingJSONAcceptsPriceForUsageType(t *testing.T) {
 }
 
 func workflowTestDefinition(id string) string {
-	return `{"spec":"http-workflow/v1","id":"` + id + `","name":"Workflow test","steps":[{"id":"snapshot","name":"Get snapshot","request":{"method":"GET","path":"/snapshot"},"extract":[{"alias":"user_id","expression":".user_id"},{"alias":"username","expression":".username"},{"alias":"quota","expression":".quota"},{"alias":"quota_unit","expression":".quota_unit"},{"alias":"used_quota","expression":".used_quota"},{"alias":"today_reward","expression":".today_reward"},{"alias":"api_keys","expression":".api_keys"},{"alias":"models","expression":".models"}]}],"output":{"user_id":"{{user_id}}","username":"{{username}}","quota":"{{quota}}","quota_unit":"{{quota_unit}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}}`
+	return `{"spec":"http-workflow/v1","id":"` + id + `","name":"Workflow test","steps":[{"id":"snapshot","request":{"method":"GET","path":"/snapshot"},"extract":[{"alias":"user_id","expression":".user_id"},{"alias":"username","expression":".username"},{"alias":"quota","expression":".quota"},{"alias":"quota_unit","expression":".quota_unit"},{"alias":"used_quota","expression":".used_quota"},{"alias":"today_reward","expression":".today_reward"},{"alias":"api_keys","expression":".api_keys"},{"alias":"models","expression":".models"}]}],"output":{"user_id":"{{user_id}}","username":"{{username}}","quota":"{{quota}}","quota_unit":"{{quota_unit}}","used_quota":"{{used_quota}}","today_reward":"{{today_reward}}","api_keys":"{{api_keys}}","models":"{{models}}"}}`
 }
 
 func openWorkflowHandlerStore(t *testing.T) *store.Store {
