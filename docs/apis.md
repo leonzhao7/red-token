@@ -1134,9 +1134,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 ## 7. HTTP 工作流管理
 
-工作流配置使用 [`http-workflow/v1`](http_workflow.md)、`http-workflow/v2` 或 `http-workflow/v3` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或 v3；需要对数组 alias 逐项串行发送请求时使用 v3。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。
+工作流配置使用 [`http-workflow/v1`](http_workflow.md) 至 `http-workflow/v4` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或更高版本；需要对数组 alias 逐项串行发送请求时使用 v3 或更高版本；需要工作流全局请求 Header 时使用 v4。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。
 
-工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、`console_authorization`、SOCKS5 代理和全局控制台 User-Agent。对于 `new-api` 后端，如果 Headers 中没有显式配置 `New-Api-User`，还会从 `console_account_json.id` 自动注入该请求头。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。
+工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、`console_authorization`、SOCKS5 代理和全局控制台 User-Agent。对于 `new-api` 后端，如果 Headers 中没有显式配置 `New-Api-User`，还会从 `console_account_json.id` 自动注入该请求头。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。每次执行使用独立 Cookie jar，响应 `Set-Cookie` 自动用于后续步骤；成功后 Cookie 变更会新增或覆盖所选中转站的 `console_headers.Cookie`。
 
 ### 7.1 工作流列表
 
@@ -1151,9 +1151,10 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
       "id": "sub2api-default-checkin-profile",
       "name": "sub2api 默认签到",
       "definition": {
-        "spec": "http-workflow/v1",
+        "spec": "http-workflow/v4",
         "id": "sub2api-default-checkin-profile",
         "name": "sub2api 默认签到",
+        "headers": {},
         "steps": [],
         "output": {}
       },
@@ -1177,9 +1178,12 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 ```json
 {
-  "spec": "http-workflow/v1",
+  "spec": "http-workflow/v4",
   "id": "sub2api-default-checkin-profile",
   "name": "sub2api 默认签到",
+  "headers": {
+    "X-Workflow-Profile": "sub2api-default"
+  },
   "steps": [
     {
       "id": "get_profile",
@@ -1298,9 +1302,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会在同一个事务中更新所选 backend 的控制台账户摘要、API Key 列表、模型价格缓存，并原子替换 `(workflow_id, backend_id)` 的上一次成功结果。已有 API Key 的 `models` 和 `model_mapping` 按 key 值原样保留，与工作流输出的模型列表及 `cheapest_groups` 无关；账户的 `quota`、`quota_unit`、`used_quota`、`today_reward`、`username`、`user_id` 和最近成功时间也会同步更新，旧的 `balance` 与 `total_actual_cost` 会被移除。若 `today_reward` 为 `0`，则保留账户和上一次成功结果中的原值。API Key 的 `used_quota` 和模型的 `price_type` 会同步写入后端运行数据。写入 backend 时会使用系统设置 `focus_models` 过滤价格缓存中的模型；该设置为空时不过滤。`aliases`、`requests` 和 `debug_logs` 只随本次响应返回，不属于持久化业务快照。
+只有所有 step 成功且 `output` 通过工作流规范中的固定签到 Schema 后，服务端才会在同一个事务中更新所选 backend 的控制台账户摘要、API Key 列表、模型价格缓存、响应 Cookie，并原子替换 `(workflow_id, backend_id)` 的上一次成功结果。失败前已经收到的响应 Cookie 也会独立更新到 `console_headers.Cookie`，但不会写入部分业务输出。已有 API Key 的 `models` 和 `model_mapping` 按 key 值原样保留，与工作流输出的模型列表及 `cheapest_groups` 无关；账户的 `quota`、`quota_unit`、`used_quota`、`today_reward`、`username`、`user_id` 和最近成功时间也会同步更新，旧的 `balance` 与 `total_actual_cost` 会被移除。若 `today_reward` 为 `0`，则保留账户和上一次成功结果中的原值。API Key 的 `used_quota` 和模型的 `price_type` 会同步写入后端运行数据。写入 backend 时会使用系统设置 `focus_models` 过滤价格缓存中的模型；该设置为空时不过滤。`aliases`、`requests` 和 `debug_logs` 只随本次响应返回，不属于持久化业务快照。
 
-工作流或后端不存在返回 `404`；`backend_id`、`console_url` 或代理配置非法返回 `400`；传输、非 2xx 默认预期、JSON 解析、jq、模板或输出 Schema 失败返回 `502`。`502` 响应包含已执行的 `requests` 和逐阶段 `debug_logs`，且不会覆盖旧的 backend 数据或成功结果。调试日志覆盖工作流校验、请求渲染、HTTP 响应、expect、alias 提取、output 渲染与 Schema 校验；header、query、请求 body 和响应 body 按原值返回，单项预览最多 64 KiB。
+工作流或后端不存在返回 `404`；`backend_id`、`console_url` 或代理配置非法返回 `400`；传输、非 2xx 默认预期、JSON 解析、jq、模板或输出 Schema 失败返回 `502`。`502` 响应包含已执行的 `requests` 和逐阶段 `debug_logs`，不会覆盖旧的业务运行数据或成功结果，但已收到的响应 Cookie 会同步到中转站配置。调试日志覆盖工作流校验、请求渲染、HTTP 响应、expect、alias 提取、output 渲染与 Schema 校验；header、query、请求 body 和响应 body 按原值返回，单项预览最多 64 KiB。
 
 ### 7.7 获取后端上的最近成功结果
 

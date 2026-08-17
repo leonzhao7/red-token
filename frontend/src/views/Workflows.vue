@@ -65,6 +65,7 @@ interface StepForm {
   method: string
   path: string
   query: KvRow[]
+  headers: KvRow[]
   body: string
   when: string
   whenGoto: string
@@ -77,6 +78,7 @@ interface StepForm {
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+const HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 const WORKFLOW_OUTPUT_FIELDS = ['api_keys', 'models', 'quota', 'quota_unit', 'today_reward', 'used_quota', 'user_id', 'username']
 
 const showForm = ref(false)
@@ -85,10 +87,10 @@ const saving = ref(false)
 const formError = ref('')
 const stepOpen = ref<boolean[]>([])
 
-const form = reactive<{ name: string; id: string; steps: StepForm[]; output: string }>(freshForm())
+const form = reactive<{ name: string; id: string; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
 
 function freshForm() {
-  return { name: '', id: '', steps: [emptyStep()], output: '{}' }
+  return { name: '', id: '', headers: [emptyKv()], steps: [emptyStep()], output: '{}' }
 }
 
 function emptyStep(): StepForm {
@@ -101,6 +103,7 @@ function emptyStep(): StepForm {
     method: 'GET',
     path: '',
     query: [emptyKv()],
+    headers: [emptyKv()],
     body: '',
     when: '',
     whenGoto: '',
@@ -120,9 +123,10 @@ function emptyExtract(): ExtractRow {
 }
 
 const SAMPLE_DEFINITION = `{
-  "spec": "http-workflow/v3",
+  "spec": "http-workflow/v4",
   "id": "sub2api-default-checkin-profile",
   "name": "sub2api 默认签到",
+  "headers": {},
   "steps": [
     {
       "id": "get_me",
@@ -254,6 +258,7 @@ function insertAlias(alias: string) {
 function defToForm(def: WorkflowDefinition) {
   form.name = def.name
   form.id = def.id
+  form.headers = objToKv(def.headers)
   form.steps = def.steps.map((step) => ({
     id: step.id,
     name: step.name,
@@ -263,6 +268,7 @@ function defToForm(def: WorkflowDefinition) {
     method: step.request.method,
     path: step.request.path,
     query: objToKv(step.request.query),
+    headers: objToKv(step.request.headers),
     body: 'body' in step.request ? JSON.stringify(step.request.body, null, 2) : '',
     when: step.when?.expression || '',
     whenGoto: step.when?.goto || '',
@@ -440,11 +446,25 @@ function parseKvValue(text: string): unknown {
   }
 }
 
+function validateHeaderRows(rows: KvRow[], label: string, errors: string[]) {
+  const names = new Set<string>()
+  for (const row of rows) {
+    const name = row.key.trim()
+    if (!name) continue
+    if (!HEADER_NAME_RE.test(name)) errors.push(`${label}：Header 名称「${name}」格式非法`)
+    const normalized = name.toLowerCase()
+    if (names.has(normalized)) errors.push(`${label}：Header 名称「${name}」重复`)
+    names.add(normalized)
+  }
+}
+
 function validateForm(): string[] {
   const errors: string[] = []
   if (!form.id.trim()) errors.push('工作流 ID 不能为空')
   else if (!WORKFLOW_ID_RE.test(form.id.trim())) errors.push('ID 必须匹配 ^[a-z][a-z0-9_-]{0,63}$')
   if (!form.name.trim()) errors.push('名称不能为空')
+
+  validateHeaderRows(form.headers, '全局 Headers', errors)
 
   const stepIds = new Set<string>()
   form.steps.forEach((st, i) => {
@@ -468,6 +488,7 @@ function validateForm(): string[] {
     }
     if (!st.path.trim()) errors.push(`${label}：path 不能为空`)
     else if (!st.path.trim().startsWith('/')) errors.push(`${label}：path 必须以 / 开头`)
+    validateHeaderRows(st.headers, `${label} Headers`, errors)
     if (st.body.trim()) {
       try {
         JSON.parse(st.body)
@@ -533,6 +554,8 @@ function formToDef(): WorkflowDefinition {
       path: st.path.trim(),
       query: kvToObj(st.query)
     }
+    const requestHeaders = kvToObj(st.headers)
+    if (Object.keys(requestHeaders).length) request.headers = requestHeaders
     if (st.body.trim()) {
       request.body = JSON.parse(st.body)
     }
@@ -574,13 +597,16 @@ function formToDef(): WorkflowDefinition {
     if (extract.length) step.extract = extract
     return step
   })
-  return {
-    spec: 'http-workflow/v3',
+  const definition: WorkflowDefinition = {
+    spec: 'http-workflow/v4',
     id: form.id.trim(),
     name: form.name.trim(),
     steps,
     output: JSON.parse(form.output)
   }
+  const globalHeaders = kvToObj(form.headers)
+  if (Object.keys(globalHeaders).length) definition.headers = globalHeaders
+  return definition
 }
 
 async function save() {
@@ -793,6 +819,16 @@ onMounted(loadData)
           </div>
         </div>
 
+        <div class="wf-kv wf-global-headers">
+          <label class="field-label">全局 Headers <em class="wf-hint">应用到所有步骤；中转站 Console Headers 会自动合并</em></label>
+          <div v-for="(header, headerIndex) in form.headers" :key="headerIndex" class="wf-kv-row">
+            <input v-model="header.key" class="input mono wf-kv-key" placeholder="Header 名称" spellcheck="false" />
+            <input v-model="header.value" class="input mono" placeholder="值（按 JSON 解析，可引用 {{runtime#/headers/...}}）" spellcheck="false" @focus="onFocus" />
+            <button class="icon-btn wf-del" title="移除" @click="removeKv(form.headers, headerIndex)"><X :size="13" /></button>
+          </div>
+          <button class="btn btn-ghost btn-sm" @click="addKv(form.headers)"><Plus :size="12" /> 添加 Header</button>
+        </div>
+
         <div class="wf-sec-head">
           <span class="wf-sec-title">步骤 <em class="wf-hint">{{ form.steps.length }} 个</em></span>
           <div class="spacer"></div>
@@ -862,16 +898,26 @@ onMounted(loadData)
                 </div>
                 <button class="btn btn-ghost btn-sm" @click="addKv(st.query)"><Plus :size="12" /> 添加参数</button>
               </div>
-              <div class="wf-body-col">
-                <label class="field-label">Body <em class="wf-hint">留空则不发送</em></label>
-                <textarea
-                  v-model="st.body"
-                  class="textarea mono wf-body"
-                  placeholder='如 { "api_key_ids": "{{key_ids}}" }'
-                  spellcheck="false"
-                  @focus="onFocus"
-                ></textarea>
+              <div class="wf-kv">
+                <label class="field-label">步骤 Headers <em class="wf-hint">同名值覆盖全局 Header</em></label>
+                <div v-for="(header, headerIndex) in st.headers" :key="headerIndex" class="wf-kv-row">
+                  <input v-model="header.key" class="input mono wf-kv-key" placeholder="Header 名称" spellcheck="false" />
+                  <input v-model="header.value" class="input mono" placeholder="值（按 JSON 解析，可引用 {{alias}}）" spellcheck="false" @focus="onFocus" />
+                  <button class="icon-btn wf-del" title="移除" @click="removeKv(st.headers, headerIndex)"><X :size="13" /></button>
+                </div>
+                <button class="btn btn-ghost btn-sm" @click="addKv(st.headers)"><Plus :size="12" /> 添加 Header</button>
               </div>
+            </div>
+
+            <div class="wf-body-col">
+              <label class="field-label">Body <em class="wf-hint">留空则不发送</em></label>
+              <textarea
+                v-model="st.body"
+                class="textarea mono wf-body"
+                placeholder='如 { "api_key_ids": "{{key_ids}}" }'
+                spellcheck="false"
+                @focus="onFocus"
+              ></textarea>
             </div>
 
             <div class="field">
@@ -1179,7 +1225,9 @@ onMounted(loadData)
 
 .wf-kv { display: flex; flex-direction: column; gap: 6px; }
 .wf-kv-row { display: flex; gap: 6px; }
+.wf-kv-row > .input:not(.wf-kv-key) { min-width: 0; }
 .wf-kv-key { width: 130px; flex: none; }
+.wf-global-headers .field-label { flex-wrap: wrap; }
 
 .wf-body-col { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .wf-body-col .wf-body { width: 100%; min-height: 108px; }
@@ -1264,6 +1312,11 @@ onMounted(loadData)
 
 @media (max-width: 720px) {
   .wf-form-grid, .wf-grid-2 { grid-template-columns: 1fr; }
+  .wf-kv-key { width: min(112px, 34vw); }
+  .wf-global-headers .field-label { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .wf-global-headers .wf-hint { margin-left: 0; }
+  .wf-sec-head { flex-wrap: wrap; }
+  .wf-sec-title { white-space: nowrap; }
   .wf-foreach-line { grid-template-columns: 1fr; }
   .wf-foreach-line .wf-goto-arrow { display: none; }
   .wf-row { flex-wrap: wrap; }

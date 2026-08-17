@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"red-token/internal/domain"
@@ -129,6 +130,7 @@ func (s *Store) ApplyHTTPWorkflowResult(ctx context.Context, workflowID string, 
 	legacyAPIKey, legacyModels, legacyModelMapping := legacyBackendRoutingFields(apiKeys)
 	accountJSON := normalizeJSONObject(backend.ConsoleAccountJSON)
 	pricingJSON := normalizeJSONObject(backend.ConsolePricingJSON)
+	consoleHeadersJSON := mustEncodeMap(normalizeMap(backend.ConsoleHeaders))
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -138,13 +140,15 @@ func (s *Store) ApplyHTTPWorkflowResult(ctx context.Context, workflowID string, 
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE backends
-		SET api_key = ?, api_keys_json = ?, model_list = ?, model_mapping = ?, console_account_json = ?, console_pricing_json = ?, updated_at = ?
+		SET api_key = ?, api_keys_json = ?, model_list = ?, model_mapping = ?, console_cookie = ?, console_headers_json = ?, console_account_json = ?, console_pricing_json = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		legacyAPIKey,
 		mustEncodeBackendAPIKeys(apiKeys),
 		mustEncodeList(legacyModels),
 		mustEncodeMap(legacyModelMapping),
+		strings.TrimSpace(backend.ConsoleCookie),
+		consoleHeadersJSON,
 		accountJSON,
 		pricingJSON,
 		formatTime(now),

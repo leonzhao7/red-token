@@ -6,7 +6,7 @@
 
 ## 1. 设计目标
 
-HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。`http-workflow/v2` 支持基于当前响应的条件跳转，`http-workflow/v3` 进一步支持对数组 alias 逐项发送请求。
+HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。`http-workflow/v2` 支持基于当前响应的条件跳转，`http-workflow/v3` 进一步支持对数组 alias 逐项发送请求，`http-workflow/v4` 增加应用于所有步骤的全局请求 Header。
 
 规范遵循以下原则：
 
@@ -25,9 +25,10 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 
 ```json
 {
-  "spec": "http-workflow/v3",
+  "spec": "http-workflow/v4",
   "id": "example-workflow",
   "name": "示例工作流",
+  "headers": {},
   "steps": [
     {
       "id": "get_profile",
@@ -56,9 +57,10 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
-| `spec` | string | 是 | 规范版本；支持 `http-workflow/v1`、支持条件跳转的 v2，以及支持 foreach 的 v3 |
+| `spec` | string | 是 | 规范版本；支持 v1、条件跳转 v2、foreach v3，以及全局 Header v4 |
 | `id` | string | 是 | 工作流稳定标识 |
 | `name` | string | 是 | 展示名称，不参与执行 |
+| `headers` | object | 否（v4） | 应用于所有步骤的请求 Header 模板；省略等价于 `{}` |
 | `steps` | array | 是 | 按数组顺序执行的 step；可以为空 |
 | `output` | JSON value | 是 | 递归 alias 模板；求值后必须符合宿主输出 Schema |
 
@@ -70,11 +72,11 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 | --- | --- | --- | --- |
 | `id` | string | 是 | 当前工作流内唯一的稳定标识 |
 | `name` | string | 是 | 展示名称，不参与执行 |
-| `foreach` | object | 否（v3） | 对指定数组 alias 串行执行当前 step；省略时只执行一次 |
+| `foreach` | object | 否（v3+） | 对指定数组 alias 串行执行当前 step；省略时只执行一次 |
 | `request` | object | 是 | HTTP 请求模板 |
-| `expect` | string（v1）/ object（v2/v3） | 否 | v1 为 jq 布尔表达式；v2/v3 为响应状态码跳转路由，未命中时接受 `200..299` 和额外成功状态码 |
+| `expect` | string（v1）/ object（v2+） | 否 | v1 为 jq 布尔表达式；v2 及更高版本为响应状态码跳转路由，未命中时接受 `200..299` 和额外成功状态码 |
 | `extract` | array | 否 | 有序的 alias 赋值列表；省略等价于空数组 |
-| `when` | object | 否（v2/v3） | 当前 step 的 alias 全部提取并提交后执行的 jq 条件及跳转目标 |
+| `when` | object | 否（v2+） | 当前 step 的 alias 全部提取并提交后执行的 jq 条件及跳转目标 |
 
 所有 step 具有完全相同的字段语义。不得根据 `step.id` 或 `step.name` 启用隐式行为。
 
@@ -131,9 +133,9 @@ response request runtime vars
 1. 从 `steps` 数组第一个 step 开始，按当前索引执行。
 2. 使用当前 alias store 渲染 `request`，发送 HTTP 请求并读取完整响应。
 3. 将非空响应体解析为 JSON；响应状态码自动放入 `$response.status`。
-4. v2/v3 按 `expect.routes` 查找响应状态码。命中时跳转到指定 step，当前响应的 `extract` 和 `when` 均不执行；未命中且状态码既不是 `2xx`、也不在 `expect.accepted_statuses` 中时流程失败。
+4. v2 及更高版本按 `expect.routes` 查找响应状态码。命中时跳转到指定 step，当前响应的 `extract` 和 `when` 均不执行；未命中且状态码既不是 `2xx`、也不在 `expect.accepted_statuses` 中时流程失败。
 5. 状态码未命中路由且被接受时，按顺序求值 `extract`；所有赋值成功后一次性提交到 alias store。
-6. v2/v3 若配置 `when`，使用提交后的 alias store 求值；结果为 true 时跳转到 `when.goto`，为 false 时顺序执行下一步。
+6. v2 及更高版本若配置 `when`，使用提交后的 alias store 求值；结果为 true 时跳转到 `when.goto`，为 false 时顺序执行下一步。
 7. 跳转到的 step 仍按相同规则执行；所有 step 成功后渲染并校验 `output`。
 
 `goto` 可以向前或向后跳转，因此可以表达受条件控制的重试或回退流程。为防止配置形成无限循环，同一个 step 在一次运行中最多进入 100 次；超过限制时本次工作流失败。
@@ -189,7 +191,7 @@ Foreach 的每个 Extract alias 都按输入顺序聚合为数组。例如两次
 
 ## 5. Alias 模板
 
-`request.path`、`request.query`、`request.headers`、`request.body` 和顶层 `output` 都是递归模板。模板可以引用 alias，也可以通过保留根 `runtime` 引用宿主运行上下文；`runtime` 不属于 alias store。
+顶层 `headers`、`request.path`、`request.query`、`request.headers`、`request.body` 和顶层 `output` 都是递归模板。模板可以引用 alias，也可以通过保留根 `runtime` 引用宿主运行上下文；`runtime` 不属于 alias store。
 
 ### 5.1 引用格式
 
@@ -312,6 +314,10 @@ Header 名不区分大小写。渲染后按以下规则处理：
 
 同一请求中大小写不同但语义相同的 Header 名视为冲突。宿主可以定义一组受保护 Header；工作流配置这些 Header 时必须在请求发送前失败。
 
+v4 按“宿主提供 Header、顶层 `headers`、当前步骤 `request.headers`”三层合并。宿主提供 Header 不允许被工作流覆盖；步骤 Header 与顶层 Header 同名时使用步骤值。当前项目把中转站 `console_headers` 作为宿主提供 Header，因此可直接在中转站配置中设置所有工作流请求共用的静态 Header。`Authorization` 和 `Cookie` 由宿主管理，不能写入顶层或步骤 Header。
+
+当前项目为每次工作流执行创建独立 Cookie jar。中转站已有的 `Cookie` 会作为初始 Cookie；任意响应的 `Set-Cookie` 会按照标准的 domain、path、expiry 和 secure 规则自动用于后续请求，无需 jq 提取或在请求中显式配置。本次响应产生的 Cookie 变更会按 Cookie 名新增或覆盖中转站 `console_headers.Cookie`，过期 Cookie 会从配置中删除；成功工作流将 Cookie 与业务输出放在同一事务中保存，失败工作流也会独立保存已经收到的 Cookie 变更。不同中转站和不同执行之间不共享 Cookie jar。
+
 当 `body` 字段存在且未显式配置 `Content-Type` 时，使用 `application/json`。未显式配置 `Accept` 时，使用 `application/json`。
 
 ### 6.4 Body
@@ -355,7 +361,7 @@ JSON body 可以是 object、array、string、number、boolean 或 null。它必
 
 ## 8. jq 表达式
 
-v1 的 `expect`、v2/v3 的 `when.expression` 和所有 `extract[].expression` 遵循 jq 1.7 语义。v2/v3 的 `expect` 是结构化 HTTP 状态码路由，不是 jq 表达式。
+v1 的 `expect`、v2 及更高版本的 `when.expression` 和所有 `extract[].expression` 遵循 jq 1.7 语义。v2 及更高版本的 `expect` 是结构化 HTTP 状态码路由，不是 jq 表达式。
 
 ### 8.1 求值上下文
 
@@ -959,23 +965,23 @@ $vars.model_rows
 - Alias 模板求值失败。
 - HTTP 传输失败。
 - 非空响应体不是合法 JSON。
-- v1 `expect` 或 v2/v3 `when.expression` 未返回唯一的 boolean；v1 `expect` 未返回 true。
-- v2/v3 响应状态码未命中 `expect.routes`，且既不是 `2xx`、也不在 `accepted_statuses` 中。
-- v3 foreach 来源 alias 不存在、不是数组或超过 1000 个元素。
+- v1 `expect` 或 v2 及更高版本的 `when.expression` 未返回唯一的 boolean；v1 `expect` 未返回 true。
+- v2 及更高版本响应状态码未命中 `expect.routes`，且既不是 `2xx`、也不在 `accepted_statuses` 中。
+- v3 及更高版本 foreach 来源 alias 不存在、不是数组或超过 1000 个元素。
 - Extract 表达式失败、没有结果或产生多个未收集结果。
 - Alias 结果不是合法 JSON 值。
 - 最终 output 模板求值失败。
 - 最终结果不符合宿主输出 Schema。
 
-失败时不得持久化部分业务输出。宿主可以持久化独立的运行日志和 HTTP 审计记录，但必须对 Authorization、Cookie、API Key、请求 body 和响应 body 中的敏感字段进行脱敏。
+失败时不得持久化部分业务输出。响应 Cookie 属于后续请求所需的认证状态，不属于业务输出；本项目会保存失败前已经收到的 `Set-Cookie` 变更。宿主可以持久化独立的运行日志和 HTTP 审计记录。本项目约定工作流定义和调试数据不做敏感信息处理，`output`、alias、Header、query、请求 body 和响应 body 均按原值明文返回；单项调试预览仍受长度上限约束。
 
 只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
 
 ## 14. 版本兼容
 
-`spec` 决定完整语义，不允许通过字段组合猜测版本。`http-workflow/v1` 使用字符串 `expect` 且不认识 `when`；结构化状态码路由和 alias 条件跳转必须使用 `http-workflow/v2` 或 `http-workflow/v3`；`foreach` 必须使用 `http-workflow/v3`。
+`spec` 决定完整语义，不允许通过字段组合猜测版本。`http-workflow/v1` 使用字符串 `expect` 且不认识 `when`；结构化状态码路由和 alias 条件跳转必须使用 `http-workflow/v2` 或更高版本；`foreach` 必须使用 `http-workflow/v3` 或更高版本；顶层 `headers` 必须使用 `http-workflow/v4`。
 
-v3 保留 v2 的结构化 Expect、When 和 Goto 语义。v1/v2 配置保持原有行为，不会隐式启用 foreach。
+v3 保留 v2 的结构化 Expect、When 和 Goto 语义，v4 保留 v3 的全部语义。旧版本配置保持原有行为，不会隐式启用更高版本字段。
 
 同一 major 版本内可以增加不改变现有配置含义的 jq 示例和说明，但不得增加会被旧读取方静默忽略的配置字段。新增字段、改变默认值、改变模板规则或改变 jq 求值上下文时，必须发布新的规范版本。
 

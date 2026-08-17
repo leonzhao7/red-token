@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/http/cookiejar"
 	"net/textproto"
 	"net/url"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -29,7 +31,8 @@ const (
 	GeneralWorkflowSpecV1              = "http-workflow/v1"
 	GeneralWorkflowSpecV2              = "http-workflow/v2"
 	GeneralWorkflowSpecV3              = "http-workflow/v3"
-	GeneralWorkflowSpec                = GeneralWorkflowSpecV3
+	GeneralWorkflowSpecV4              = "http-workflow/v4"
+	GeneralWorkflowSpec                = GeneralWorkflowSpecV4
 	defaultGeneralWorkflowBodyLimit    = int64(10 << 20)
 	defaultGeneralWorkflowHTTPTimeout  = 30 * time.Second
 	defaultGeneralWorkflowJQTimeout    = 5 * time.Second
@@ -67,11 +70,12 @@ var (
 // docs/http_workflow.md. Output and request bodies remain raw so JSON null can
 // be distinguished from an omitted field.
 type GeneralWorkflowDefinition struct {
-	Spec   string                `json:"spec"`
-	ID     string                `json:"id"`
-	Name   string                `json:"name"`
-	Steps  []GeneralWorkflowStep `json:"steps"`
-	Output json.RawMessage       `json:"output"`
+	Spec    string                `json:"spec"`
+	ID      string                `json:"id"`
+	Name    string                `json:"name"`
+	Headers map[string]any        `json:"headers,omitempty"`
+	Steps   []GeneralWorkflowStep `json:"steps"`
+	Output  json.RawMessage       `json:"output"`
 }
 
 type GeneralWorkflowStep struct {
@@ -182,8 +186,9 @@ type GeneralWorkflowDebugLog struct {
 }
 
 type GeneralWorkflowResult struct {
-	Output  any            `json:"output"`
-	Aliases map[string]any `json:"aliases"`
+	Output          any            `json:"output"`
+	Aliases         map[string]any `json:"aliases"`
+	ResponseCookies []*http.Cookie `json:"-"`
 }
 
 type GeneralWorkflow struct {
@@ -250,6 +255,52 @@ type renderedGeneralWorkflowRequest struct {
 type generalWorkflowHTTPResponse struct {
 	body     any
 	envelope map[string]any
+}
+
+type generalWorkflowCookieJar struct {
+	inner   http.CookieJar
+	mu      sync.Mutex
+	updates []*http.Cookie
+}
+
+func newGeneralWorkflowCookieJar() (*generalWorkflowCookieJar, error) {
+	inner, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &generalWorkflowCookieJar{inner: inner}, nil
+}
+
+func (jar *generalWorkflowCookieJar) SetCookies(target *url.URL, cookies []*http.Cookie) {
+	jar.inner.SetCookies(target, cookies)
+	jar.mu.Lock()
+	defer jar.mu.Unlock()
+	for _, cookie := range cookies {
+		if cookie == nil {
+			continue
+		}
+		copy := *cookie
+		jar.updates = append(jar.updates, &copy)
+	}
+}
+
+func (jar *generalWorkflowCookieJar) Cookies(target *url.URL) []*http.Cookie {
+	return jar.inner.Cookies(target)
+}
+
+func (jar *generalWorkflowCookieJar) seed(target *url.URL, cookies []*http.Cookie) {
+	jar.inner.SetCookies(target, cookies)
+}
+
+func (jar *generalWorkflowCookieJar) responseCookies() []*http.Cookie {
+	jar.mu.Lock()
+	defer jar.mu.Unlock()
+	result := make([]*http.Cookie, len(jar.updates))
+	for index, cookie := range jar.updates {
+		copy := *cookie
+		result[index] = &copy
+	}
+	return result
 }
 
 func NewGeneralWorkflow(options GeneralWorkflowOptions) *GeneralWorkflow {
@@ -339,6 +390,11 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 	}
 	if _, exists := root["output"]; !exists {
 		return errors.New("$/output is required")
+	}
+	if headers, exists := root["headers"]; exists {
+		if _, ok := headers.(map[string]any); !ok {
+			return errors.New("$/headers must be an object")
+		}
 	}
 	for stepIndex, stepValue := range steps {
 		path := fmt.Sprintf("$/steps/%d", stepIndex)
@@ -499,7 +555,7 @@ func ValidateGeneralWorkflow(definition GeneralWorkflowDefinition) error {
 }
 
 func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGeneralWorkflow, error) {
-	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 {
+	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
 		return compiledGeneralWorkflow{}, fmt.Errorf("unsupported spec %q", definition.Spec)
 	}
 	if !generalWorkflowIDPattern.MatchString(definition.ID) {
@@ -513,6 +569,18 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 	}
 	if len(definition.Output) == 0 {
 		return compiledGeneralWorkflow{}, errors.New("workflow output is required")
+	}
+	if definition.Headers != nil {
+		if definition.Spec != GeneralWorkflowSpecV4 {
+			return compiledGeneralWorkflow{}, fmt.Errorf("workflow headers require spec %q", GeneralWorkflowSpecV4)
+		}
+		headers, err := canonicalGeneralWorkflowJSON(definition.Headers, "workflow headers")
+		if err != nil {
+			return compiledGeneralWorkflow{}, err
+		}
+		if err := validateGeneralWorkflowTemplate(headers); err != nil {
+			return compiledGeneralWorkflow{}, fmt.Errorf("validate workflow headers template: %w", err)
+		}
 	}
 	output, err := decodeGeneralWorkflowJSON(definition.Output)
 	if err != nil {
@@ -540,8 +608,8 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: step name is required", index)
 		}
 		if step.Foreach != nil {
-			if definition.Spec != GeneralWorkflowSpecV3 {
-				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach requires spec %q", index, GeneralWorkflowSpecV3)
+			if definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach requires spec %q or later", index, GeneralWorkflowSpecV3)
 			}
 			if err := validateGeneralWorkflowAlias(step.Foreach.Alias); err != nil {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] foreach alias: %w", index, err)
@@ -587,7 +655,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		}
 		var when *gojq.Code
 		if step.When != nil {
-			if definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 {
+			if definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when requires spec %q or later", index, GeneralWorkflowSpecV2)
 			}
 			if strings.TrimSpace(step.When.Expression) == "" || strings.TrimSpace(step.When.Goto) == "" {
@@ -853,6 +921,13 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "validate base headers", Err: err}
 	}
+	runClient, cookieJar, err := workflow.newRunHTTPClient(baseURL, baseHeaders)
+	if err != nil {
+		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "initialize cookies", Err: err}
+	}
+	defer func() {
+		result.ResponseCookies = cookieJar.responseCookies()
+	}()
 	workflow.emitDebug(options.DebugLog, GeneralWorkflowDebugLog{
 		Level:   "debug",
 		Phase:   "validation",
@@ -937,20 +1012,23 @@ stepLoop:
 				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "foreach_iteration", "foreach iteration started", withIteration(nil), 0))
 			}
 
-			request, err := workflow.renderRequest(step.definition.Request, iterationAliases, runtime, baseHeaders)
+			request, err := workflow.renderRequest(compiled.definition.Headers, step.definition.Request, iterationAliases, runtime, baseHeaders)
 			if err != nil {
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "render request", Err: iterationError(err)}
+			}
+			if err := applyGeneralWorkflowCookiePreview(baseURL, &request, cookieJar); err != nil {
+				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "render request cookies", Err: iterationError(err)}
 			}
 			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "request", "HTTP request rendered", withIteration(map[string]any{
 				"method":   request.method,
 				"path":     request.path,
 				"query":    generalWorkflowDebugValue("query", request.query),
-				"headers":  generalWorkflowHeaderObject(request.headers),
+				"headers":  request.jqValue["headers"],
 				"has_body": request.hasBody,
 				"body":     generalWorkflowDebugValue("body", request.body),
 			}), 0))
 			requestStartedAt := time.Now()
-			response, err := workflow.doRequest(ctx, baseURL, request, options.Recorder)
+			response, err := workflow.doRequest(ctx, runClient, baseURL, request, options.Recorder)
 			if err != nil {
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "request", Err: iterationError(err)}
 			}
@@ -1248,7 +1326,7 @@ func parseGeneralWorkflowBaseURL(raw string) (*url.URL, error) {
 	return baseURL, nil
 }
 
-func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest, aliases, runtime map[string]any, baseHeaders http.Header) (renderedGeneralWorkflowRequest, error) {
+func (workflow *GeneralWorkflow) renderRequest(globalHeaderDefinition map[string]any, definition GeneralWorkflowRequest, aliases, runtime map[string]any, baseHeaders http.Header) (renderedGeneralWorkflowRequest, error) {
 	templateValues := generalWorkflowTemplateValues(aliases, runtime)
 	renderedPath, err := renderGeneralWorkflowTemplate(definition.Path, templateValues)
 	if err != nil {
@@ -1281,20 +1359,20 @@ func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest
 		}
 	}
 
+	globalHeaders, err := renderGeneralWorkflowHeaderTemplate(globalHeaderDefinition, templateValues, "workflow headers")
+	if err != nil {
+		return renderedGeneralWorkflowRequest{}, err
+	}
 	workflowHeaders := map[string]any{}
 	if definition.Headers != nil {
-		headerTemplate, err := canonicalGeneralWorkflowJSON(definition.Headers, "headers")
+		workflowHeaders, err = renderGeneralWorkflowHeaderTemplate(definition.Headers, templateValues, "headers")
 		if err != nil {
 			return renderedGeneralWorkflowRequest{}, err
 		}
-		rendered, err := renderGeneralWorkflowTemplate(headerTemplate, templateValues)
-		if err != nil {
-			return renderedGeneralWorkflowRequest{}, fmt.Errorf("headers: %w", err)
-		}
-		workflowHeaders, ok = rendered.(map[string]any)
-		if !ok {
-			return renderedGeneralWorkflowRequest{}, errors.New("headers must render as an object")
-		}
+	}
+	workflowHeaders, err = mergeGeneralWorkflowHeaderValues(globalHeaders, workflowHeaders)
+	if err != nil {
+		return renderedGeneralWorkflowRequest{}, err
 	}
 	headers, err := workflow.renderHeaders(workflowHeaders, baseHeaders, len(definition.Body) > 0)
 	if err != nil {
@@ -1335,6 +1413,49 @@ func (workflow *GeneralWorkflow) renderRequest(definition GeneralWorkflowRequest
 		"body":     request.body,
 	}
 	return request, nil
+}
+
+func renderGeneralWorkflowHeaderTemplate(definition map[string]any, templateValues map[string]any, label string) (map[string]any, error) {
+	if definition == nil {
+		return map[string]any{}, nil
+	}
+	headerTemplate, err := canonicalGeneralWorkflowJSON(definition, label)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := renderGeneralWorkflowTemplate(headerTemplate, templateValues)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	headers, ok := rendered.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must render as an object", label)
+	}
+	return headers, nil
+}
+
+func mergeGeneralWorkflowHeaderValues(global, step map[string]any) (map[string]any, error) {
+	result := make(map[string]any, len(global)+len(step))
+	names := make(map[string]string, len(global)+len(step))
+	for _, source := range []struct {
+		label  string
+		values map[string]any
+	}{{label: "workflow", values: global}, {label: "step", values: step}} {
+		seen := make(map[string]struct{}, len(source.values))
+		for name, value := range source.values {
+			lower := strings.ToLower(name)
+			if _, duplicate := seen[lower]; duplicate {
+				return nil, fmt.Errorf("duplicate %s header %q", source.label, name)
+			}
+			seen[lower] = struct{}{}
+			if previous, exists := names[lower]; exists {
+				delete(result, previous)
+			}
+			result[name] = value
+			names[lower] = name
+		}
+	}
+	return result, nil
 }
 
 func validateRenderedGeneralWorkflowPath(path string) error {
@@ -1512,7 +1633,7 @@ func generalWorkflowScalarString(value any) (string, error) {
 	}
 }
 
-func (workflow *GeneralWorkflow) doRequest(ctx context.Context, baseURL *url.URL, rendered renderedGeneralWorkflowRequest, recorder ConsoleRequestRecorder) (generalWorkflowHTTPResponse, error) {
+func (workflow *GeneralWorkflow) doRequest(ctx context.Context, client *http.Client, baseURL *url.URL, rendered renderedGeneralWorkflowRequest, recorder ConsoleRequestRecorder) (generalWorkflowHTTPResponse, error) {
 	target, err := buildGeneralWorkflowTargetURL(baseURL, rendered.path, rendered.query)
 	if err != nil {
 		return generalWorkflowHTTPResponse{}, err
@@ -1522,7 +1643,7 @@ func (workflow *GeneralWorkflow) doRequest(ctx context.Context, baseURL *url.URL
 		return generalWorkflowHTTPResponse{}, err
 	}
 	request.Header = rendered.headers.Clone()
-	response, err := workflow.httpClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		recordConsoleRequest(recorder, rendered.method, generalWorkflowRecordedRequestURI(request.URL), 0, err.Error())
 		return generalWorkflowHTTPResponse{}, err
@@ -1553,6 +1674,41 @@ func (workflow *GeneralWorkflow) doRequest(ctx context.Context, baseURL *url.URL
 		"text":     string(body),
 	}
 	return generalWorkflowHTTPResponse{body: decoded, envelope: envelope}, nil
+}
+
+func (workflow *GeneralWorkflow) newRunHTTPClient(baseURL *url.URL, baseHeaders http.Header) (*http.Client, *generalWorkflowCookieJar, error) {
+	jar, err := newGeneralWorkflowCookieJar()
+	if err != nil {
+		return nil, nil, err
+	}
+	if baseURL != nil {
+		cookieRequest := &http.Request{Header: http.Header{"Cookie": append([]string(nil), baseHeaders.Values("Cookie")...)}}
+		cookies := cookieRequest.Cookies()
+		for _, cookie := range cookies {
+			cookie.Path = "/"
+		}
+		jar.seed(baseURL, cookies)
+	}
+	baseHeaders.Del("Cookie")
+	client := *workflow.httpClient
+	client.Jar = jar
+	return &client, jar, nil
+}
+
+func applyGeneralWorkflowCookiePreview(baseURL *url.URL, rendered *renderedGeneralWorkflowRequest, jar http.CookieJar) error {
+	if baseURL == nil || rendered == nil || jar == nil {
+		return nil
+	}
+	target, err := buildGeneralWorkflowTargetURL(baseURL, rendered.path, rendered.query)
+	if err != nil {
+		return err
+	}
+	request := &http.Request{Header: rendered.headers.Clone()}
+	for _, cookie := range jar.Cookies(target) {
+		request.AddCookie(cookie)
+	}
+	rendered.jqValue["headers"] = generalWorkflowHeaderObject(request.Header)
+	return nil
 }
 
 func buildGeneralWorkflowTargetURL(baseURL *url.URL, path string, query map[string]any) (*url.URL, error) {

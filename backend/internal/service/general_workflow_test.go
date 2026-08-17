@@ -156,6 +156,95 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowCarriesResponseCookiesAndGlobalHeaders(t *testing.T) {
+	requestIndex := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestIndex++
+		if request.Header.Get("X-Backend") != "backend-value" || request.Header.Get("X-Global") != "global-value" || request.Header.Get("X-Configured") != "relay-value" {
+			t.Fatalf("missing inherited headers on request %d: %v", requestIndex, request.Header)
+		}
+		responseHeaders := http.Header{"Content-Type": []string{"application/json"}}
+		switch request.URL.Path {
+		case "/login":
+			if got := request.Header.Get("Cookie"); got != "seed=old" {
+				t.Fatalf("initial cookie=%q", got)
+			}
+			if got := request.Header.Get("X-Override"); got != "global" {
+				t.Fatalf("global header override value=%q", got)
+			}
+			responseHeaders["Set-Cookie"] = []string{
+				"session=fresh; Path=/; HttpOnly",
+				"theme=dark; Path=/",
+			}
+		case "/profile":
+			if got := request.Header.Get("X-Override"); got != "step" {
+				t.Fatalf("step header did not override global value: %q", got)
+			}
+			for name, want := range map[string]string{"seed": "old", "session": "fresh", "theme": "dark"} {
+				cookie, err := request.Cookie(name)
+				if err != nil || cookie.Value != want {
+					t.Fatalf("request cookie %s=%v err=%v", name, cookie, err)
+				}
+			}
+			responseHeaders["Set-Cookie"] = []string{"seed=replaced; Path=/"}
+		default:
+			t.Fatalf("unexpected request path %q", request.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     responseHeaders,
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v4","id":"cookies-and-headers","name":"Cookies and headers",
+  "headers":{
+    "X-Global":"global-value",
+    "X-Override":"global",
+    "X-Configured":"{{runtime#/headers/X-Relay}}"
+  },
+  "steps":[
+    {"id":"login","name":"Login","request":{"method":"POST","path":"/login"}},
+    {"id":"profile","name":"Profile","request":{"method":"GET","path":"/profile","headers":{"X-Override":"step"}},"extract":[{"alias":"sent_cookies","expression":"$request.headers.cookie[0]"}]}
+  ],
+  "output":{"sent_cookies":"{{sent_cookies}}"}
+}`)
+	logs := make([]GeneralWorkflowDebugLog, 0)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+		Headers: http.Header{
+			"Cookie":    []string{"seed=old"},
+			"X-Backend": []string{"backend-value"},
+		},
+		Runtime:  map[string]any{"headers": map[string]string{"X-Relay": "relay-value"}},
+		DebugLog: func(log GeneralWorkflowDebugLog) { logs = append(logs, log) },
+	})
+	if err != nil {
+		t.Fatalf("execute cookies workflow: %v", err)
+	}
+	if requestIndex != 2 {
+		t.Fatalf("request count=%d", requestIndex)
+	}
+	if len(result.ResponseCookies) != 3 {
+		t.Fatalf("response cookies=%#v", result.ResponseCookies)
+	}
+	sentCookies := result.Output.(map[string]any)["sent_cookies"].(string)
+	for _, value := range []string{"seed=old", "session=fresh", "theme=dark"} {
+		if !strings.Contains(sentCookies, value) {
+			t.Fatalf("$request cookie preview %q does not contain %q", sentCookies, value)
+		}
+	}
+	encodedLogs, err := json.Marshal(logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encodedLogs), "session=fresh") || !strings.Contains(string(encodedLogs), "set-cookie") {
+		t.Fatalf("cookie values were not emitted in plaintext debug logs: %s", encodedLogs)
+	}
+}
+
 func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if got := request.Header.Get("X-Runtime-Header"); got != "configured" {
@@ -642,6 +731,11 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			name:       "unsafe integer",
 			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[],"output":{"id":9007199254740992}}`,
 			want:       "safe JSON integer",
+		},
+		{
+			name:       "v3 global headers",
+			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","headers":{"X-Test":"value"},"steps":[],"output":{}}`,
+			want:       "workflow headers require spec \"http-workflow/v4\"",
 		},
 		{
 			name:       "forbidden jq",

@@ -581,6 +581,35 @@ func NewAPIConsoleCookieValue(backend domain.Backend) string {
 	return ""
 }
 
+// ConsoleHeadersWithResponseCookies applies Set-Cookie mutations to the flat
+// Cookie request header stored in a backend configuration. Other configured
+// headers are preserved unchanged.
+func ConsoleHeadersWithResponseCookies(headers map[string]string, cookies []*http.Cookie, now time.Time) map[string]string {
+	out := make(map[string]string, len(headers)+1)
+	cookieValue := ""
+	for key, value := range headers {
+		if strings.EqualFold(key, "Cookie") {
+			cookieValue = value
+			continue
+		}
+		out[http.CanonicalHeaderKey(strings.TrimSpace(key))] = strings.TrimSpace(value)
+	}
+	for _, cookie := range cookies {
+		if cookie == nil || strings.TrimSpace(cookie.Name) == "" {
+			continue
+		}
+		if cookie.MaxAge < 0 || !cookie.Expires.IsZero() && !cookie.Expires.After(now) {
+			cookieValue = removeNewAPICookieValue(cookieValue, cookie.Name)
+			continue
+		}
+		cookieValue = mergeNewAPICookieValue(cookieValue, cookie)
+	}
+	if cookieValue = strings.TrimSpace(cookieValue); cookieValue != "" {
+		out["Cookie"] = cookieValue
+	}
+	return out
+}
+
 func NewAPIConsoleRefreshHeaders(backend domain.Backend) map[string]string {
 	headers := NewAPIConsoleHeaders(backend)
 	out := make(map[string]string, len(headers))
@@ -774,6 +803,22 @@ func mergeNewAPICookieValue(raw string, cookie *http.Cookie) string {
 	}
 	if !replaced {
 		out = append(out, replacement)
+	}
+	return strings.Join(out, "; ")
+}
+
+func removeNewAPICookieValue(raw, cookieName string) string {
+	out := make([]string, 0)
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, _, ok := strings.Cut(part, "=")
+		if ok && strings.TrimSpace(name) == cookieName {
+			continue
+		}
+		out = append(out, part)
 	}
 	return strings.Join(out, "; ")
 }

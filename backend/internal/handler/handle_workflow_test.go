@@ -281,6 +281,113 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	}
 }
 
+func TestWorkflowHandlerPersistsResponseCookiesInBackendHeaders(t *testing.T) {
+	client := &http.Client{Transport: workflowRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "cookie-console.test":
+			if request.Header.Get("Cookie") != "session=old; retained=yes" {
+				t.Fatalf("initial Cookie header=%q", request.Header.Get("Cookie"))
+			}
+		case "empty-cookie-console.test", "failed-workflow-console.test":
+			if request.Header.Get("Cookie") != "" {
+				t.Fatalf("cookie leaked between workflow runs: %q", request.Header.Get("Cookie"))
+			}
+		default:
+			t.Fatalf("unexpected host %q", request.URL.Host)
+		}
+		statusCode := http.StatusOK
+		if request.URL.Host == "failed-workflow-console.test" {
+			statusCode = http.StatusInternalServerError
+		}
+		return &http.Response{
+			StatusCode: statusCode,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"Set-Cookie": []string{
+					"session=new; Path=/; HttpOnly",
+					"added=value; Path=/",
+				},
+			},
+			Body:    io.NopCloser(strings.NewReader(`{"user_id":"user-1","username":"alice","quota":1,"quota_unit":"USD","used_quota":0,"today_reward":1,"api_keys":[],"models":[]}`)),
+			Request: request,
+		}, nil
+	})}
+
+	st := openWorkflowHandlerStore(t)
+	definition := json.RawMessage(workflowTestDefinition("cookie-persistence"))
+	if _, err := st.CreateHTTPWorkflow(context.Background(), "cookie-persistence", "Cookie persistence", definition); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	backend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:        "cookie-backend",
+		BackendType: domain.BackendTypeNewAPI,
+		ConsoleURL:  "https://cookie-console.test",
+		ConsoleHeaders: map[string]string{
+			"Cookie":    "session=old; retained=yes",
+			"X-Console": "configured",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+	handler := NewWorkflowHandler(st)
+	handler.SetHTTPClient(client)
+	outcome, err := handler.runCheckinWorkflow(context.Background(), backend, "cookie-persistence", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+	wantCookie := "session=new; retained=yes; added=value"
+	if got := outcome.Backend.ConsoleHeaders["Cookie"]; got != wantCookie {
+		t.Fatalf("stored Cookie=%q want %q", got, wantCookie)
+	}
+	if got := outcome.Backend.ConsoleHeaders["X-Console"]; got != "configured" {
+		t.Fatalf("non-cookie header changed: %q", got)
+	}
+	stored, err := st.GetBackend(context.Background(), backend.ID)
+	if err != nil {
+		t.Fatalf("get backend: %v", err)
+	}
+	if stored.ConsoleHeaders["Cookie"] != wantCookie {
+		t.Fatalf("persisted Cookie=%q want %q", stored.ConsoleHeaders["Cookie"], wantCookie)
+	}
+
+	emptyBackend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:           "empty-cookie-backend",
+		BackendType:    domain.BackendTypeNewAPI,
+		ConsoleURL:     "https://empty-cookie-console.test",
+		ConsoleHeaders: map[string]string{"X-Console": "configured"},
+	})
+	if err != nil {
+		t.Fatalf("create empty-cookie backend: %v", err)
+	}
+	emptyOutcome, err := handler.runCheckinWorkflow(context.Background(), emptyBackend, "cookie-persistence", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute empty-cookie workflow: %v", err)
+	}
+	if got := emptyOutcome.Backend.ConsoleHeaders["Cookie"]; got != "session=new; added=value" {
+		t.Fatalf("new Cookie header=%q", got)
+	}
+
+	failedBackend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:        "failed-workflow-backend",
+		BackendType: domain.BackendTypeNewAPI,
+		ConsoleURL:  "https://failed-workflow-console.test",
+	})
+	if err != nil {
+		t.Fatalf("create failed-workflow backend: %v", err)
+	}
+	if _, err := handler.runCheckinWorkflow(context.Background(), failedBackend, "cookie-persistence", nil, nil, nil); err == nil {
+		t.Fatal("expected failed workflow")
+	}
+	failedStored, err := st.GetBackend(context.Background(), failedBackend.ID)
+	if err != nil {
+		t.Fatalf("get failed-workflow backend: %v", err)
+	}
+	if got := failedStored.ConsoleHeaders["Cookie"]; got != "session=new; added=value" {
+		t.Fatalf("failed workflow did not persist response cookies: %q", got)
+	}
+}
+
 func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 	client := &http.Client{Transport: workflowRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)

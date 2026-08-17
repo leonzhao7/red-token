@@ -311,7 +311,19 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		ValidateOutput: service.ValidateCheckinWorkflowOutput,
 	})
 	if err != nil {
+		if len(result.ResponseCookies) > 0 {
+			cookieBackend := workflowBackendWithResponseCookies(backend, result.ResponseCookies)
+			if _, persistErr := h.store.PatchBackend(ctx, backend.ID, store.BackendPatch{
+				ConsoleCookie:  &cookieBackend.ConsoleCookie,
+				ConsoleHeaders: &cookieBackend.ConsoleHeaders,
+			}); persistErr != nil {
+				return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error() + "; persist response cookies: " + persistErr.Error()}
+			}
+		}
 		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusBadGateway, message: err.Error()}
+	}
+	if len(result.ResponseCookies) > 0 {
+		backend = workflowBackendWithResponseCookies(backend, result.ResponseCookies)
 	}
 	preserveWorkflowTodayReward(result.Output, backend.ConsoleAccountJSON)
 	outputJSON, err := json.Marshal(result.Output)
@@ -335,6 +347,12 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		Requests:   recorder.Requests,
 		DebugLogs:  debugLogs.Logs,
 	}, nil
+}
+
+func workflowBackendWithResponseCookies(backend domain.Backend, cookies []*http.Cookie) domain.Backend {
+	backend.ConsoleHeaders = service.ConsoleHeadersWithResponseCookies(service.NewAPIConsoleHeaders(backend), cookies, time.Now())
+	backend.ConsoleCookie = ""
+	return backend
 }
 
 func preserveWorkflowTodayReward(value any, existingAccountJSON string) {
