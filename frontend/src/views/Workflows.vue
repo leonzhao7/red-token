@@ -14,18 +14,18 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  ChevronsDownUp,
-  ChevronsUpDown,
+  ChevronRight,
   ArrowUp,
   ArrowDown,
   X,
   ListPlus,
   Download,
-  Upload
+  Upload,
+  ChevronsDownUp,
+  ChevronsUpDown
 } from 'lucide-vue-next'
 import { toast } from '../composables/toast'
 import Modal from '../components/Modal.vue'
-import { selectWorkflowSpec } from '../utils/workflowSpec'
 import {
   listWorkflows,
   createWorkflow,
@@ -65,12 +65,9 @@ interface StepForm {
   foreachIndexAs: string
   method: string
   path: string
-  query: KvRow[]
-  headers: KvRow[]
   body: string
   when: string
   whenGoto: string
-  acceptedStatuses: string
   expectRoutes: ExpectRouteRow[]
   legacyExpect: string
   extract: ExtractRow[]
@@ -88,10 +85,10 @@ const saving = ref(false)
 const formError = ref('')
 const stepOpen = ref<boolean[]>([])
 
-const form = reactive<{ spec: string; name: string; id: string; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
+const form = reactive<{ name: string; id: string; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
 
 function freshForm() {
-  return { spec: 'http-workflow/v3', name: '', id: '', headers: [emptyKv()], steps: [emptyStep()], output: '{}' }
+  return { name: '', id: '', headers: [], steps: [emptyStep()], output: '{}' }
 }
 
 function emptyStep(): StepForm {
@@ -103,12 +100,9 @@ function emptyStep(): StepForm {
     foreachIndexAs: '',
     method: 'GET',
     path: '',
-    query: [emptyKv()],
-    headers: [emptyKv()],
     body: '',
     when: '',
     whenGoto: '',
-    acceptedStatuses: '',
     expectRoutes: [],
     legacyExpect: '',
     extract: [emptyExtract()]
@@ -241,6 +235,8 @@ const availableAliases = computed(() => {
   return seen
 })
 
+const globalHeaderCount = computed(() => form.headers.filter((h) => h.key.trim()).length)
+
 function onFocus(e: FocusEvent) {
   activeEditor.value = e.target as HTMLInputElement | HTMLTextAreaElement
 }
@@ -257,7 +253,6 @@ function insertAlias(alias: string) {
 }
 
 function defToForm(def: WorkflowDefinition) {
-  form.spec = def.spec
   form.name = def.name
   form.id = def.id
   form.headers = objToKv(def.headers)
@@ -269,12 +264,9 @@ function defToForm(def: WorkflowDefinition) {
     foreachIndexAs: step.foreach?.index_as || '',
     method: step.request.method,
     path: step.request.path,
-    query: objToKv(step.request.query),
-    headers: objToKv(step.request.headers),
     body: 'body' in step.request ? JSON.stringify(step.request.body, null, 2) : '',
     when: step.when?.expression || '',
     whenGoto: step.when?.goto || '',
-    acceptedStatuses: typeof step.expect === 'object' ? (step.expect.accepted_statuses || []).join(',') : '',
     expectRoutes: typeof step.expect === 'object'
       ? (step.expect.routes || []).map((route) => ({ statuses: route.statuses.join(','), goto: route.goto }))
       : [],
@@ -285,7 +277,7 @@ function defToForm(def: WorkflowDefinition) {
 }
 
 function objToKv(obj: Record<string, unknown> | undefined): KvRow[] {
-  if (!obj || !Object.keys(obj).length) return [emptyKv()]
+  if (!obj || !Object.keys(obj).length) return []
   return Object.entries(obj).map(([key, value]) => ({ key, value: valueToStr(value) }))
 }
 
@@ -306,7 +298,7 @@ function openEdit(record: WorkflowRecord) {
   isEditing.value = true
   formError.value = ''
   defToForm(record.definition)
-  stepOpen.value = form.steps.map(() => true)
+  stepOpen.value = form.steps.map(() => false)
   showForm.value = true
 }
 
@@ -314,7 +306,7 @@ function fillExample() {
   try {
     const def = JSON.parse(SAMPLE_DEFINITION) as WorkflowDefinition
     defToForm(def)
-    stepOpen.value = form.steps.map(() => true)
+    stepOpen.value = form.steps.map(() => false)
     formError.value = ''
   } catch (e: any) {
     formError.value = '内置示例解析失败：' + (e?.message || '')
@@ -349,7 +341,7 @@ function handleImportFile(event: Event) {
       isEditing.value = false
       formError.value = ''
       defToForm(def)
-      stepOpen.value = form.steps.map(() => true)
+      stepOpen.value = form.steps.map(() => false)
       showForm.value = true
     } catch (err: any) {
       toast('导入失败', err?.message || '解析 JSON 失败', 'danger')
@@ -379,6 +371,22 @@ function expandAll() {
 
 function collapseAll() {
   stepOpen.value = form.steps.map(() => false)
+}
+
+function methodTone(method: string): string {
+  switch (method.trim().toUpperCase()) {
+    case 'GET':
+      return 'cyan'
+    case 'POST':
+      return 'violet'
+    case 'PUT':
+    case 'PATCH':
+      return 'amber'
+    case 'DELETE':
+      return 'rose'
+    default:
+      return 'blue'
+  }
 }
 
 function removeStep(index: number) {
@@ -467,7 +475,6 @@ function validateForm(): string[] {
   if (!form.name.trim()) errors.push('名称不能为空')
 
   validateHeaderRows(form.headers, '全局 Headers', errors)
-  const hasGlobalHeaders = form.headers.some((row) => row.key.trim())
 
   const stepIds = new Set<string>()
   form.steps.forEach((st, i) => {
@@ -491,7 +498,6 @@ function validateForm(): string[] {
     }
     if (!st.path.trim()) errors.push(`${label}：path 不能为空`)
     else if (!st.path.trim().startsWith('/')) errors.push(`${label}：path 必须以 / 开头`)
-    validateHeaderRows(st.headers, `${label} Headers`, errors)
     if (st.body.trim()) {
       try {
         JSON.parse(st.body)
@@ -513,17 +519,7 @@ function validateForm(): string[] {
       if (!route.goto.trim()) errors.push(`${routeLabel} 缺少跳转目标`)
       else if (!form.steps.some((candidate) => candidate.id.trim() === route.goto.trim())) errors.push(`${routeLabel} 目标步骤「${route.goto.trim()}」不存在`)
     })
-    const acceptedStatuses = st.acceptedStatuses.split(',').map((value) => value.trim()).filter(Boolean)
-    if (acceptedStatuses.some((value) => !/^\d+$/.test(value) || Number(value) < 100 || Number(value) > 599)) {
-      errors.push(`${label}：Expect 成功状态码包含非法 HTTP 状态码`)
-    }
-    if (st.legacyExpect) {
-      const requiresNewerSpec = hasGlobalHeaders || foreachAlias !== '' || foreachAs !== '' || foreachIndexAs !== '' ||
-        when !== '' || whenGoto !== '' || st.expectRoutes.length > 0 || acceptedStatuses.length > 0
-      if (requiresNewerSpec) {
-        errors.push(`${label}：v1 字符串 Expect 不能与全局 Header、Foreach、When 或状态码路由同时使用，请先删除旧 Expect 完成迁移`)
-      }
-    }
+    if (st.legacyExpect) errors.push(`${label}：该步骤仍使用 v1 字符串 Expect，请删除旧表达式并迁移为 v3 状态码路由后保存`)
     const extractAliases = new Set<string>()
     st.extract.forEach((ex, j) => {
       if (!ex.alias.trim()) {
@@ -556,25 +552,12 @@ function validateForm(): string[] {
   return errors
 }
 
-function workflowSpecForSave(globalHeaders: Record<string, unknown>): string {
-  return selectWorkflowSpec(form.spec, {
-    globalHeaders: Object.keys(globalHeaders).length > 0,
-    foreach: form.steps.some((step) => step.foreachAlias.trim() || step.foreachAs.trim() || step.foreachIndexAs.trim()),
-    controlFlow: form.steps.some((step) =>
-      step.when.trim() || step.whenGoto.trim() || step.expectRoutes.length > 0 || step.acceptedStatuses.trim()
-    )
-  })
-}
-
 function formToDef(): WorkflowDefinition {
   const steps: WorkflowStep[] = form.steps.map((st) => {
     const request: WorkflowStep['request'] = {
       method: st.method.trim().toUpperCase() || 'GET',
-      path: st.path.trim(),
-      query: kvToObj(st.query)
+      path: st.path.trim()
     }
-    const requestHeaders = kvToObj(st.headers)
-    if (Object.keys(requestHeaders).length) request.headers = requestHeaders
     if (st.body.trim()) {
       request.body = JSON.parse(st.body)
     }
@@ -601,31 +584,21 @@ function formToDef(): WorkflowDefinition {
         statuses: route.statuses.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value)),
         goto: route.goto.trim()
       }))
-    const acceptedStatuses = st.acceptedStatuses
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value))
-    if (st.legacyExpect) {
-      step.expect = st.legacyExpect
-    } else if (routes.length || acceptedStatuses.length) {
-      step.expect = {}
-      if (routes.length) step.expect.routes = routes
-      if (acceptedStatuses.length) step.expect.accepted_statuses = acceptedStatuses
+    if (routes.length) {
+      step.expect = { routes }
     }
     const extract = st.extract.filter((e) => e.alias.trim()).map((e) => ({ alias: e.alias.trim(), expression: e.expression.trim() }))
     if (extract.length) step.extract = extract
     return step
   })
-  const globalHeaders = kvToObj(form.headers)
   const definition: WorkflowDefinition = {
-    spec: workflowSpecForSave(globalHeaders),
+    spec: 'http-workflow/v4',
     id: form.id.trim(),
     name: form.name.trim(),
     steps,
     output: JSON.parse(form.output)
   }
+  const globalHeaders = kvToObj(form.headers)
   if (Object.keys(globalHeaders).length) definition.headers = globalHeaders
   return definition
 }
@@ -825,11 +798,11 @@ onMounted(loadData)
       :title="isEditing ? '编辑工作流' : '新建工作流'"
       :subtitle="isEditing ? '修改配置后保存，立即生效' : '创建结构化 HTTP 工作流 profile'"
       :icon="Workflow"
-      width="1080px"
+      width="960px"
       @close="showForm = false"
     >
       <div class="wf-form">
-        <div class="wf-form-grid">
+        <div class="wf-basic">
           <div class="field">
             <label class="field-label">名称</label>
             <input v-model="form.name" class="input" placeholder="例如：sub2api 默认签到" />
@@ -840,39 +813,56 @@ onMounted(loadData)
           </div>
         </div>
 
-        <div class="wf-kv wf-global-headers">
-          <label class="field-label">全局 Headers <em class="wf-hint">应用到所有步骤；中转站 Console Headers 会自动合并</em></label>
-          <div v-for="(header, headerIndex) in form.headers" :key="headerIndex" class="wf-kv-row">
-            <input v-model="header.key" class="input mono wf-kv-key" placeholder="Header 名称" spellcheck="false" />
-            <input v-model="header.value" class="input mono" placeholder="值（按 JSON 解析，可引用 {{runtime#/headers/...}}）" spellcheck="false" @focus="onFocus" />
-            <button class="icon-btn wf-del" title="移除" @click="removeKv(form.headers, headerIndex)"><X :size="13" /></button>
+        <div v-if="formError" class="wf-form-error"><AlertTriangle :size="14" /><span>{{ formError }}</span></div>
+
+        <div class="wf-section wf-sec-headers">
+          <div class="wf-sec-head wf-section-head">
+            <span class="wf-sec-title">全局 Headers <em class="wf-hint">附加到每个步骤请求</em></span>
+            <span v-if="globalHeaderCount" class="wf-adv-count">{{ globalHeaderCount }}</span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" @click="addKv(form.headers)"><Plus :size="12" /> 添加 Header</button>
           </div>
-          <button class="btn btn-ghost btn-sm" @click="addKv(form.headers)"><Plus :size="12" /> 添加 Header</button>
+          <div class="wf-section-body">
+            <div v-if="form.headers.length" class="wf-kv">
+              <div v-for="(header, headerIndex) in form.headers" :key="headerIndex" class="wf-kv-row">
+                <input v-model="header.key" class="input mono wf-kv-key" placeholder="Header 名称" spellcheck="false" />
+                <input v-model="header.value" class="input mono" placeholder="值，可引用" spellcheck="false" @focus="onFocus" />
+                <button class="icon-btn wf-del" title="移除" @click="removeKv(form.headers, headerIndex)"><X :size="13" /></button>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div class="wf-sec-head">
-          <span class="wf-sec-title">步骤 <em class="wf-hint">{{ form.steps.length }} 个</em></span>
-          <div class="spacer"></div>
-          <button v-if="form.steps.length" class="btn btn-ghost btn-sm" @click="collapseAll"><ChevronsUpDown :size="13" /> 全部收起</button>
-          <button v-if="form.steps.length" class="btn btn-ghost btn-sm" @click="expandAll"><ChevronsDownUp :size="13" /> 全部展开</button>
-          <button class="btn btn-ghost btn-sm" @click="fillExample"><Sparkles :size="13" /> 填充示例</button>
-          <button class="btn btn-primary btn-sm" @click="addStep"><Plus :size="13" /> 添加步骤</button>
-        </div>
+        <div class="wf-section wf-sec-steps">
+          <div class="wf-sec-head wf-section-head">
+            <span class="wf-sec-title">步骤编排</span>
+            <em v-if="form.steps.length" class="wf-hint">{{ form.steps.length }} 个</em>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" @click="expandAll"><ChevronsDownUp :size="13" /> 展开全部</button>
+            <button class="btn btn-ghost btn-sm" @click="collapseAll"><ChevronsUpDown :size="13" /> 收起全部</button>
+            <button class="btn btn-ghost btn-sm" @click="fillExample"><Sparkles :size="13" /> 填充示例</button>
+            <button class="btn btn-primary btn-sm" @click="addStep"><Plus :size="13" /> 添加步骤</button>
+          </div>
+          <div class="wf-section-body">
+            <div v-if="availableAliases.length" class="wf-alias-bar">
+              <span class="wf-alias-label">引用</span>
+              <button v-for="alias in availableAliases" :key="alias" class="wf-alias" @click="insertAlias(alias)">
+                {{ alias }}
+              </button>
+              <span class="wf-alias-tip">点击插入</span>
+            </div>
 
-        <div v-if="availableAliases.length" class="wf-alias-bar">
-          <span class="wf-alias-label">可用引用</span>
-          <button v-for="alias in availableAliases" :key="alias" class="wf-alias" @click="insertAlias(alias)">
-            {{ alias }}
-          </button>
-          <span class="wf-alias-tip">点击插入光标处</span>
-        </div>
-
-        <div v-for="(st, i) in form.steps" :key="i" class="wf-step" :class="{ open: stepOpen[i] }">
+            <div v-for="(st, i) in form.steps" :key="i" class="wf-step" :class="{ open: stepOpen[i] }">
           <div class="wf-step-head" @click="stepOpen[i] = !stepOpen[i]">
             <span class="wf-step-idx mono">{{ String(i + 1).padStart(2, '0') }}</span>
-            <input v-model="st.name" class="input wf-step-name" :placeholder="`步骤 ${i + 1} 名称`" @click.stop />
-            <span v-if="st.id" class="mono wf-step-tag">{{ st.id }}</span>
-            <div class="spacer"></div>
+            <span class="tag mono wf-method-tag" :class="methodTone(st.method)">{{ st.method || 'GET' }}</span>
+            <span class="mono wf-step-path">{{ st.path || '未设置路径' }}</span>
+            <div class="wf-extract-chips">
+              <template v-if="st.extract.length">
+                <span v-for="(ex, ei) in st.extract" :key="ei" class="wf-chip">{{ ex.alias.trim() || '未命名' }}</span>
+              </template>
+              <span v-else class="wf-chip empty">未配置提取</span>
+            </div>
             <button class="icon-btn" title="上移" @click.stop="moveStep(i, -1)"><ArrowUp :size="14" /></button>
             <button class="icon-btn" title="下移" @click.stop="moveStep(i, 1)"><ArrowDown :size="14" /></button>
             <button class="icon-btn wf-del" title="删除步骤" @click.stop="removeStep(i)"><Trash2 :size="14" /></button>
@@ -889,7 +879,7 @@ onMounted(loadData)
                 <input v-model="st.id" class="input mono" placeholder="get_me" spellcheck="false" />
               </div>
               <div class="field">
-                <label class="field-label">方法 / Path</label>
+                <label class="field-label">请求 <em class="wf-hint">相对路径，支持引用</em></label>
                 <div class="wf-req-line">
                   <select v-model="st.method" class="select wf-method-select">
                     <option v-for="m in methodOptions()" :key="m" :value="m">{{ m }}</option>
@@ -899,98 +889,13 @@ onMounted(loadData)
               </div>
             </div>
 
-            <div class="field">
-              <label class="field-label">Foreach <em class="wf-hint">来源是数组 Alias；留空表示本步骤只执行一次</em></label>
-              <div class="wf-foreach-line">
-                <input v-model="st.foreachAlias" class="input mono" placeholder="来源 Alias，如 items" spellcheck="false" />
-                <span class="wf-goto-arrow mono">→</span>
-                <input v-model="st.foreachAs" class="input mono" placeholder="元素 Alias，如 item" spellcheck="false" />
-                <input v-model="st.foreachIndexAs" class="input mono" placeholder="下标 Alias（可选）" spellcheck="false" />
-              </div>
-            </div>
-
-            <div class="wf-grid-2">
-              <div class="wf-kv">
-                <label class="field-label">Query 参数</label>
-                <div v-for="(q, qi) in st.query" :key="qi" class="wf-kv-row">
-                  <input v-model="q.key" class="input mono wf-kv-key" placeholder="参数名" spellcheck="false" />
-                  <input v-model="q.value" class="input mono" placeholder="值（按 JSON 解析，可引用 {{alias}}）" spellcheck="false" />
-                  <button class="icon-btn wf-del" title="移除" @click="removeKv(st.query, qi)"><X :size="13" /></button>
-                </div>
-                <button class="btn btn-ghost btn-sm" @click="addKv(st.query)"><Plus :size="12" /> 添加参数</button>
-              </div>
-              <div class="wf-kv">
-                <label class="field-label">步骤 Headers <em class="wf-hint">同名值覆盖全局 Header</em></label>
-                <div v-for="(header, headerIndex) in st.headers" :key="headerIndex" class="wf-kv-row">
-                  <input v-model="header.key" class="input mono wf-kv-key" placeholder="Header 名称" spellcheck="false" />
-                  <input v-model="header.value" class="input mono" placeholder="值（按 JSON 解析，可引用 {{alias}}）" spellcheck="false" @focus="onFocus" />
-                  <button class="icon-btn wf-del" title="移除" @click="removeKv(st.headers, headerIndex)"><X :size="13" /></button>
-                </div>
-                <button class="btn btn-ghost btn-sm" @click="addKv(st.headers)"><Plus :size="12" /> 添加 Header</button>
-              </div>
-            </div>
-
-            <div class="wf-body-col">
-              <label class="field-label">Body <em class="wf-hint">留空则不发送</em></label>
-              <textarea
-                v-model="st.body"
-                class="textarea mono wf-body"
-                placeholder='如 { "api_key_ids": "{{key_ids}}" }'
-                spellcheck="false"
-                @focus="onFocus"
-              ></textarea>
-            </div>
-
-            <div class="field">
-              <div class="wf-sec-head sub">
-                <span class="wf-sec-title">Expect 状态码路由 <em class="wf-hint">响应到达后、Extract 前判断；未命中时仅 2xx 继续</em></span>
-                <div class="spacer"></div>
-                <button class="btn btn-ghost btn-sm" @click="addExpectRoute(st)"><ListPlus :size="13" /> 添加路由</button>
-              </div>
-              <div v-if="st.legacyExpect" class="wf-extract-empty wf-legacy-expect">
-                v1 Expect：<span class="mono">{{ st.legacyExpect }}</span>
-                <button class="btn btn-ghost btn-sm" @click="st.legacyExpect = ''">确认删除并迁移</button>
-              </div>
-              <div class="wf-extract-row">
-                <span class="wf-extract-alias">额外成功状态码</span>
-                <input v-model="st.acceptedStatuses" class="input mono" placeholder="如 409；多个用逗号分隔" spellcheck="false" />
-              </div>
-              <div v-if="!st.expectRoutes.length" class="wf-extract-empty">未配置状态码路由；响应为 2xx 时继续 Extract，非 2xx 时流程失败</div>
-              <div v-for="(route, routeIndex) in st.expectRoutes" :key="routeIndex" class="wf-extract-row">
-                <input v-model="route.statuses" class="input mono" placeholder="状态码，如 401,403" spellcheck="false" />
-                <span class="wf-goto-arrow mono">→</span>
-                <input v-model="route.goto" class="input mono wf-goto" placeholder="目标步骤 ID" spellcheck="false" />
-                <button class="icon-btn wf-del" title="移除" @click="removeExpectRoute(st, routeIndex)"><X :size="13" /></button>
-              </div>
-            </div>
-
-            <div class="field">
-              <label class="field-label">When Alias 条件 <em class="wf-hint">Extract 全部成功并提交 Alias 后判断</em></label>
-              <div class="wf-req-line">
-                <input
-                  v-model="st.when"
-                  class="input mono"
-                  placeholder='$vars.a == true'
-                  spellcheck="false"
-                  @focus="onFocus"
-                />
-                <span class="wf-goto-arrow mono">→</span>
-                <input
-                  v-model="st.whenGoto"
-                  class="input mono wf-goto"
-                  placeholder="目标步骤 ID"
-                  spellcheck="false"
-                />
-              </div>
-            </div>
-
             <div class="wf-extract">
               <div class="wf-sec-head sub">
-                <span class="wf-sec-title">Extract 提取</span>
+                <span class="wf-sec-title">Extract 提取 <em class="wf-hint">响应值保存为 alias</em></span>
                 <div class="spacer"></div>
                 <button class="btn btn-ghost btn-sm" @click="addExtract(st)"><ListPlus :size="13" /> 添加提取</button>
               </div>
-              <div v-if="!st.extract.length" class="wf-extract-empty">未配置提取；响应中的值可通过 jq 表达式保存为 alias 供后续步骤引用</div>
+              <div v-if="!st.extract.length" class="wf-extract-empty">未配置提取</div>
               <div v-for="(ex, ei) in st.extract" :key="ei" class="wf-extract-row">
                 <input v-model="ex.alias" class="input mono wf-extract-alias" placeholder="alias" spellcheck="false" />
                 <input
@@ -1003,17 +908,85 @@ onMounted(loadData)
                 <button class="icon-btn wf-del" title="移除" @click="removeExtract(st, ei)"><X :size="13" /></button>
               </div>
             </div>
+
+            <details class="wf-adv">
+              <summary class="wf-adv-summary"><ChevronRight :size="14" class="wf-adv-arrow" /> 高级设置</summary>
+              <div class="wf-adv-body">
+                <div class="field">
+                  <label class="field-label">Foreach <em class="wf-hint">对数组 alias 逐项执行</em></label>
+                  <div class="wf-foreach-line">
+                    <input v-model="st.foreachAlias" class="input mono" placeholder="来源 Alias，如 items" spellcheck="false" />
+                    <span class="wf-goto-arrow mono">→</span>
+                    <input v-model="st.foreachAs" class="input mono" placeholder="元素 Alias，如 item" spellcheck="false" />
+                    <input v-model="st.foreachIndexAs" class="input mono" placeholder="下标 Alias（可选）" spellcheck="false" />
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label class="field-label">Body <em class="wf-hint">留空则不发送</em></label>
+                  <textarea
+                    v-model="st.body"
+                    class="textarea mono wf-body"
+                    placeholder='如 { "api_key_ids": "{{key_ids}}" }'
+                    spellcheck="false"
+                    @focus="onFocus"
+                  ></textarea>
+                </div>
+
+                <div class="field">
+                  <div class="wf-sec-head sub">
+                    <span class="wf-sec-title">Expect 状态码路由</span>
+                    <div class="spacer"></div>
+                    <button class="btn btn-ghost btn-sm" @click="addExpectRoute(st)"><ListPlus :size="13" /> 添加路由</button>
+                  </div>
+                  <div v-if="st.legacyExpect" class="wf-extract-empty wf-legacy-expect">
+                    v1 Expect：<span class="mono">{{ st.legacyExpect }}</span>
+                    <button class="btn btn-ghost btn-sm" @click="st.legacyExpect = ''">确认删除并迁移</button>
+                  </div>
+                  <div v-if="!st.expectRoutes.length" class="wf-extract-empty">未配置路由；2xx 继续，其他失败</div>
+                  <div v-for="(route, routeIndex) in st.expectRoutes" :key="routeIndex" class="wf-extract-row">
+                    <input v-model="route.statuses" class="input mono" placeholder="状态码，如 401,403" spellcheck="false" />
+                    <span class="wf-goto-arrow mono">→</span>
+                    <input v-model="route.goto" class="input mono wf-goto" placeholder="目标步骤 ID" spellcheck="false" />
+                    <button class="icon-btn wf-del" title="移除" @click="removeExpectRoute(st, routeIndex)"><X :size="13" /></button>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label class="field-label">When Alias 条件 <em class="wf-hint">提交后判断，可跳转</em></label>
+                  <div class="wf-req-line">
+                    <input
+                      v-model="st.when"
+                      class="input mono"
+                      placeholder='$vars.a == true'
+                      spellcheck="false"
+                      @focus="onFocus"
+                    />
+                    <span class="wf-goto-arrow mono">→</span>
+                    <input
+                      v-model="st.whenGoto"
+                      class="input mono wf-goto"
+                      placeholder="目标步骤 ID"
+                      spellcheck="false"
+                    />
+                  </div>
+                </div>
+              </div>
+            </details>
           </div>
         </div>
+        </div>
+        </div>
 
-        <div class="field">
-          <div class="wf-out-head">
-            <label class="field-label">Output <em class="wf-hint">递归 alias 模板</em></label>
-            <span v-if="formError" class="wf-json-err"><AlertTriangle :size="12" /> {{ formError }}</span>
+        <div class="wf-section wf-sec-output">
+          <div class="wf-sec-head wf-section-head">
+            <span class="wf-sec-title">Output <em class="wf-hint">递归 alias 模板，字段集合由后端固定约束</em></span>
             <div class="spacer"></div>
             <button class="btn btn-ghost btn-sm" @click="formatJson"><Braces :size="13" /> 格式化</button>
           </div>
-          <textarea v-model="form.output" class="textarea mono wf-output" spellcheck="false" @focus="onFocus"></textarea>
+          <div class="wf-section-body">
+            <textarea v-model="form.output" class="textarea mono wf-output" spellcheck="false" @focus="onFocus"></textarea>
+          </div>
         </div>
       </div>
       <template #footer>
@@ -1193,6 +1166,15 @@ onMounted(loadData)
 
 .wf-form { display: flex; flex-direction: column; gap: 14px; }
 .wf-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wf-basic { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wf-form-error {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 13px;
+  font-size: 12.5px; line-height: 1.5; color: var(--danger);
+  background: var(--danger-soft); border: 1px solid rgba(251, 113, 133, 0.3);
+  border-radius: var(--radius-sm);
+}
+.wf-form-error svg { flex: none; margin-top: 1px; }
 .wf-hint { font-style: normal; font-size: 11px; color: var(--text-faint); font-weight: 500; margin-left: 6px; }
 .wf-foreach-line { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 8px; }
 
@@ -1225,6 +1207,7 @@ onMounted(loadData)
 .wf-step-head {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; cursor: pointer; user-select: none;
+  min-width: 0;
 }
 .wf-step-idx {
   width: 28px; text-align: center; flex: none;
@@ -1232,8 +1215,23 @@ onMounted(loadData)
   background: var(--grad-soft); border: 1px solid var(--border-strong);
   border-radius: 8px; padding: 3px 0;
 }
-.wf-step-name { max-width: 300px; }
-.wf-step-tag { font-size: 11px; color: var(--text-faint); }
+.wf-method-tag { flex: none; font-size: 10.5px; }
+.wf-step-path {
+  flex: 0 1 220px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--text-soft);
+}
+.wf-extract-chips {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap;
+}
+.wf-chip {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 999px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--primary); background: var(--grad-soft); border: 1px solid var(--border-strong);
+}
+.wf-chip.empty { color: var(--text-faint); background: transparent; border: 1px dashed var(--border-strong); }
 .wf-step-body {
   display: flex; flex-direction: column; gap: 12px;
   padding: 12px 14px 14px;
@@ -1248,11 +1246,62 @@ onMounted(loadData)
 .wf-kv-row { display: flex; gap: 6px; }
 .wf-kv-row > .input:not(.wf-kv-key) { min-width: 0; }
 .wf-kv-key { width: 130px; flex: none; }
-.wf-global-headers .field-label { flex-wrap: wrap; }
 
-.wf-body-col { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
-.wf-body-col .wf-body { width: 100%; min-height: 108px; }
-.wf-body { min-height: 90px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
+.wf-section { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
+.wf-section-head {
+  position: relative;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--sec-tint, var(--surface-2));
+  border-bottom: 1px solid var(--border-soft);
+}
+.wf-section-head::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--sec-accent, transparent);
+}
+.wf-sec-headers { --sec-tint: rgba(34, 211, 238, 0.07); --sec-accent: #22d3ee; --sec-deep: #0891b2; --sec-deep-bg: rgba(8, 145, 178, 0.16); }
+.wf-sec-steps { --sec-tint: rgba(139, 92, 246, 0.08); --sec-accent: #8b5cf6; --sec-deep: #7c3aed; --sec-deep-bg: rgba(124, 58, 237, 0.16); }
+.wf-sec-output { --sec-tint: rgba(52, 211, 153, 0.07); --sec-accent: #34d399; --sec-deep: #059669; --sec-deep-bg: rgba(5, 150, 105, 0.16); }
+
+.wf-section-head .btn {
+  background: var(--sec-deep-bg);
+  color: var(--sec-deep);
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+.wf-section-head .btn:hover {
+  color: var(--text);
+  box-shadow: none;
+}
+.wf-section-body { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
+
+.wf-adv { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
+.wf-adv-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px; font-weight: 700; color: var(--text-soft);
+  cursor: pointer; user-select: none; list-style: none;
+  background: var(--surface-2);
+  transition: color 0.15s ease;
+}
+.wf-adv-summary::-webkit-details-marker { display: none; }
+.wf-adv-summary:hover { color: var(--text); }
+.wf-adv[open] .wf-adv-summary { color: var(--text); border-bottom: 1px solid var(--border-soft); }
+.wf-adv-arrow { color: var(--text-faint); transition: transform 0.2s var(--ease-out); }
+.wf-adv[open] .wf-adv-arrow { transform: rotate(90deg); }
+.wf-adv-body { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; }
+.wf-adv-body .field { margin-bottom: 0; }
+.wf-adv-body .wf-sec-head.sub { margin: 2px 0 7px; }
+.wf-adv-count {
+  display: inline-flex; align-items: center;
+  padding: 1px 8px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; font-family: var(--font-mono);
+  color: var(--primary); background: var(--grad-soft); border: 1px solid var(--border-strong);
+}
+
+.wf-body, .wf-output { min-height: 90px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
 
 .wf-extract { display: flex; flex-direction: column; gap: 8px; }
 .wf-extract-empty { font-size: 12px; color: var(--text-faint); padding: 6px 2px; }
@@ -1262,10 +1311,7 @@ onMounted(loadData)
 .wf-goto { width: 180px; flex: none; }
 .wf-legacy-expect { display: flex; align-items: center; gap: 8px; color: var(--warning); }
 
-.wf-output { min-height: 150px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
 .wf-aliases { min-height: 84px; font-size: 12px; line-height: 1.5; background: var(--bg-soft); }
-.wf-out-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.wf-json-err { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--danger); }
 
 .wf-run-state {
   display: flex; align-items: center; gap: 10px;
@@ -1332,10 +1378,8 @@ onMounted(loadData)
 .wf-confirm p.mono { color: var(--text-faint); font-size: 12px; }
 
 @media (max-width: 720px) {
-  .wf-form-grid, .wf-grid-2 { grid-template-columns: 1fr; }
+  .wf-form-grid, .wf-basic, .wf-grid-2 { grid-template-columns: 1fr; }
   .wf-kv-key { width: min(112px, 34vw); }
-  .wf-global-headers .field-label { align-items: flex-start; flex-direction: column; gap: 3px; }
-  .wf-global-headers .wf-hint { margin-left: 0; }
   .wf-sec-head { flex-wrap: wrap; }
   .wf-sec-title { white-space: nowrap; }
   .wf-foreach-line { grid-template-columns: 1fr; }
