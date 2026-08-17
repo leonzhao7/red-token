@@ -1,9 +1,14 @@
 package service
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"red-token/internal/domain"
 )
 
 func TestNewAPITokenMetadataUsesTokenName(t *testing.T) {
@@ -73,5 +78,43 @@ func TestConsoleHeadersWithResponseCookiesAddsReplacesAndDeletes(t *testing.T) {
 	headers = ConsoleHeadersWithResponseCookies(nil, []*http.Cookie{{Name: "session", Value: "new"}}, now)
 	if headers["Cookie"] != "session=new" {
 		t.Fatalf("missing Cookie header was not added: %#v", headers)
+	}
+}
+
+func TestNewAPICheckinDoesNotInjectNewAPIUserHeader(t *testing.T) {
+	var received *http.Request
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		received = request
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"success":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	platform := NewPlatformNewAPI(PlatformNewAPIOptions{HTTPClient: client})
+	_, err := platform.Checkin(context.Background(), domain.Backend{ConsoleURL: "https://console.example"}, "account-42", NewNewAPIRequestRecorder())
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	if received == nil {
+		t.Fatal("checkin did not issue a request")
+	}
+	if got := received.Header.Get("New-Api-User"); got != "" {
+		t.Fatalf("New-Api-User was automatically injected: %q", got)
+	}
+	if got := received.Header.Get("new-user-id"); got != "account-42" {
+		t.Fatalf("new-user-id=%q want %q", got, "account-42")
+	}
+
+	_, err = platform.Checkin(context.Background(), domain.Backend{
+		ConsoleURL:     "https://console.example",
+		ConsoleHeaders: map[string]string{"New-Api-User": "configured-user"},
+	}, "account-42", NewNewAPIRequestRecorder())
+	if err != nil {
+		t.Fatalf("checkin with configured header: %v", err)
+	}
+	if got := received.Header.Get("New-Api-User"); got != "configured-user" {
+		t.Fatalf("configured New-Api-User=%q want %q", got, "configured-user")
 	}
 }

@@ -239,7 +239,6 @@ func (p *PlatformNewAPI) doJSON(ctx context.Context, backend domain.Backend, met
 	}
 	if newAPIUser = strings.TrimSpace(newAPIUser); newAPIUser != "" {
 		request.Header.Set("new-user-id", newAPIUser)
-		request.Header.Set("New-Api-User", newAPIUser)
 	}
 	defer p.sleepAfterRequest(ctx, backend, method, path)
 

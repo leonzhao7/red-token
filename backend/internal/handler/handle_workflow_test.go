@@ -92,10 +92,6 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	client := &http.Client{Transport: workflowRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := http.StatusOK
 		body := `{"user_id":"user-1","username":"alice","quota":2400.5,"quota_unit":"USD","used_quota":3.75,"today_reward":123.25,"api_keys":[{"id":"key-1","name":"main","key":"sk-value","group":"default","used_quota":3.25},{"id":"key-2","name":"secondary","key":"existing-secondary","group":"secondary","used_quota":0.5}],"models":[{"name":"model-a","cheapest_groups":["default"],"in_price":1,"out_price":2,"price_type":0},{"name":"model-b","cheapest_groups":["default"],"in_price":3,"out_price":4,"price_type":0}]}`
-		expectedNewAPIUser := "account-42"
-		if mode.Load() != 0 {
-			expectedNewAPIUser = "user-1"
-		}
 		if r.URL.Scheme != "https" || r.URL.Host != "selected-console.test" || r.URL.Path != "/snapshot" {
 			status = http.StatusNotFound
 			body = `{"error":"wrong target"}`
@@ -103,7 +99,7 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer console-token" ||
 			r.Header.Get("Cookie") != "session=console" ||
 			r.Header.Get("X-Console") != "configured" ||
-			r.Header.Get("New-Api-User") != expectedNewAPIUser ||
+			r.Header.Get("New-Api-User") != "" ||
 			r.Header.Get("User-Agent") != "Workflow-Test/1.0" {
 			status = http.StatusUnauthorized
 			body = `{"error":"missing host headers"}`
