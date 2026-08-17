@@ -25,6 +25,7 @@ import {
 } from 'lucide-vue-next'
 import { toast } from '../composables/toast'
 import Modal from '../components/Modal.vue'
+import { selectWorkflowSpec } from '../utils/workflowSpec'
 import {
   listWorkflows,
   createWorkflow,
@@ -87,10 +88,10 @@ const saving = ref(false)
 const formError = ref('')
 const stepOpen = ref<boolean[]>([])
 
-const form = reactive<{ name: string; id: string; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
+const form = reactive<{ spec: string; name: string; id: string; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
 
 function freshForm() {
-  return { name: '', id: '', headers: [emptyKv()], steps: [emptyStep()], output: '{}' }
+  return { spec: 'http-workflow/v3', name: '', id: '', headers: [emptyKv()], steps: [emptyStep()], output: '{}' }
 }
 
 function emptyStep(): StepForm {
@@ -256,6 +257,7 @@ function insertAlias(alias: string) {
 }
 
 function defToForm(def: WorkflowDefinition) {
+  form.spec = def.spec
   form.name = def.name
   form.id = def.id
   form.headers = objToKv(def.headers)
@@ -465,6 +467,7 @@ function validateForm(): string[] {
   if (!form.name.trim()) errors.push('名称不能为空')
 
   validateHeaderRows(form.headers, '全局 Headers', errors)
+  const hasGlobalHeaders = form.headers.some((row) => row.key.trim())
 
   const stepIds = new Set<string>()
   form.steps.forEach((st, i) => {
@@ -514,7 +517,13 @@ function validateForm(): string[] {
     if (acceptedStatuses.some((value) => !/^\d+$/.test(value) || Number(value) < 100 || Number(value) > 599)) {
       errors.push(`${label}：Expect 成功状态码包含非法 HTTP 状态码`)
     }
-    if (st.legacyExpect) errors.push(`${label}：该步骤仍使用 v1 字符串 Expect，请删除旧表达式并迁移为 v3 状态码路由后保存`)
+    if (st.legacyExpect) {
+      const requiresNewerSpec = hasGlobalHeaders || foreachAlias !== '' || foreachAs !== '' || foreachIndexAs !== '' ||
+        when !== '' || whenGoto !== '' || st.expectRoutes.length > 0 || acceptedStatuses.length > 0
+      if (requiresNewerSpec) {
+        errors.push(`${label}：v1 字符串 Expect 不能与全局 Header、Foreach、When 或状态码路由同时使用，请先删除旧 Expect 完成迁移`)
+      }
+    }
     const extractAliases = new Set<string>()
     st.extract.forEach((ex, j) => {
       if (!ex.alias.trim()) {
@@ -545,6 +554,16 @@ function validateForm(): string[] {
     errors.push('Output 不是合法 JSON')
   }
   return errors
+}
+
+function workflowSpecForSave(globalHeaders: Record<string, unknown>): string {
+  return selectWorkflowSpec(form.spec, {
+    globalHeaders: Object.keys(globalHeaders).length > 0,
+    foreach: form.steps.some((step) => step.foreachAlias.trim() || step.foreachAs.trim() || step.foreachIndexAs.trim()),
+    controlFlow: form.steps.some((step) =>
+      step.when.trim() || step.whenGoto.trim() || step.expectRoutes.length > 0 || step.acceptedStatuses.trim()
+    )
+  })
 }
 
 function formToDef(): WorkflowDefinition {
@@ -588,7 +607,9 @@ function formToDef(): WorkflowDefinition {
       .filter(Boolean)
       .map((value) => Number(value))
       .filter((value) => Number.isInteger(value))
-    if (routes.length || acceptedStatuses.length) {
+    if (st.legacyExpect) {
+      step.expect = st.legacyExpect
+    } else if (routes.length || acceptedStatuses.length) {
       step.expect = {}
       if (routes.length) step.expect.routes = routes
       if (acceptedStatuses.length) step.expect.accepted_statuses = acceptedStatuses
@@ -597,14 +618,14 @@ function formToDef(): WorkflowDefinition {
     if (extract.length) step.extract = extract
     return step
   })
+  const globalHeaders = kvToObj(form.headers)
   const definition: WorkflowDefinition = {
-    spec: 'http-workflow/v4',
+    spec: workflowSpecForSave(globalHeaders),
     id: form.id.trim(),
     name: form.name.trim(),
     steps,
     output: JSON.parse(form.output)
   }
-  const globalHeaders = kvToObj(form.headers)
   if (Object.keys(globalHeaders).length) definition.headers = globalHeaders
   return definition
 }
