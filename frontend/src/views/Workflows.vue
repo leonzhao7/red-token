@@ -221,8 +221,6 @@ const availableAliases = computed(() => {
   return seen
 })
 
-const globalHeaderCount = computed(() => form.headers.filter((h) => h.key.trim()).length)
-
 function onFocus(e: FocusEvent) {
   activeEditor.value = e.target as HTMLInputElement | HTMLTextAreaElement
 }
@@ -801,7 +799,6 @@ onMounted(loadData)
         <div class="wf-section wf-sec-headers">
           <div class="wf-sec-head wf-section-head">
             <span class="wf-sec-title">全局 Headers <em class="wf-hint">附加到每个步骤请求</em></span>
-            <span v-if="globalHeaderCount" class="wf-adv-count">{{ globalHeaderCount }}</span>
             <div class="spacer"></div>
             <button class="btn btn-ghost btn-sm" @click="addKv(form.headers)"><Plus :size="12" /> 添加 Header</button>
           </div>
@@ -1107,15 +1104,20 @@ onMounted(loadData)
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: var(--space-4); }
+.page {
+  display: flex; flex-direction: column; gap: var(--space-4);
+  --wf-accent: var(--primary);
+  --wf-accent-soft: rgba(34, 211, 238, 0.09);
+  --wf-accent-border: rgba(34, 211, 238, 0.22);
+}
 
 .toolbar { display: flex; align-items: center; gap: var(--space-4); padding: 14px 18px; flex-wrap: wrap; }
 .wf-title-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .wf-title-icon {
   width: 38px; height: 38px; border-radius: 12px; flex: none;
   display: flex; align-items: center; justify-content: center;
-  background: var(--grad-soft); color: var(--primary);
-  border: 1px solid var(--border-strong);
+  background: var(--wf-accent-soft); color: var(--wf-accent);
+  border: 1px solid var(--wf-accent-border);
 }
 .wf-title { font-size: 15px; font-weight: 600; color: var(--text); }
 .wf-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
@@ -1137,7 +1139,7 @@ onMounted(loadData)
 .wf-row-ico {
   width: 36px; height: 36px; border-radius: 11px; flex: none;
   display: flex; align-items: center; justify-content: center;
-  background: var(--surface-3); color: var(--primary);
+  background: var(--surface-2); color: var(--text-soft);
   border: 1px solid var(--border);
 }
 .wf-row-main { min-width: 0; flex: 1; }
@@ -1169,33 +1171,44 @@ onMounted(loadData)
 .wf-alias-bar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 8px 12px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .wf-alias-label { font-size: 11px; font-weight: 700; color: var(--text-faint); margin-right: 2px; }
 .wf-alias {
-  padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  padding: 3px 10px; border-radius: var(--radius-xs); cursor: pointer;
   font-family: var(--font-mono); font-size: 11px;
-  color: var(--primary); background: var(--grad-soft);
-  border: 1px solid var(--border-strong);
-  transition: filter 0.15s ease;
+  color: var(--wf-accent); background: rgba(34, 211, 238, 0.16);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s var(--ease-out), border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
-.wf-alias:hover { filter: brightness(1.15); }
+.wf-alias:hover {
+  color: var(--text);
+  border-color: var(--wf-accent);
+  background: rgba(34, 211, 238, 0.22);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 2px 6px rgba(0, 0, 0, 0.3);
+}
 .wf-alias-tip { font-size: 11px; color: var(--text-faint); }
 
 .wf-step {
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--surface); overflow: hidden;
+  transition: border-color 0.2s ease;
 }
 .wf-step.open { border-color: var(--border-strong); }
 .wf-step-head {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; cursor: pointer; user-select: none;
   min-width: 0;
+  transition: background 0.2s ease;
 }
+.wf-step-head:hover { background: var(--surface-2); }
+.wf-step.open .wf-step-head { background: var(--surface-2); }
 .wf-step-idx {
   width: 28px; text-align: center; flex: none;
-  font-size: 11.5px; font-weight: 700; color: var(--primary);
-  background: var(--grad-soft); border: 1px solid var(--border-strong);
+  font-size: 11.5px; font-weight: 700; color: var(--wf-accent);
+  background: var(--wf-accent-soft); border: 1px solid var(--wf-accent-border);
   border-radius: 8px; padding: 3px 0;
 }
 .wf-method-tag { flex: none; font-size: 10.5px; }
@@ -1210,15 +1223,16 @@ onMounted(loadData)
 }
 .wf-chip {
   display: inline-flex; align-items: center;
-  padding: 2px 9px; border-radius: 999px;
+  padding: 2px 9px; border-radius: var(--radius-xs);
   font-family: var(--font-mono); font-size: 10.5px;
-  color: var(--primary); background: var(--grad-soft); border: 1px solid var(--border-strong);
+  color: var(--wf-accent); background: rgba(34, 211, 238, 0.16); border: 1px solid rgba(34, 211, 238, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 .wf-chip.empty { color: var(--text-faint); background: transparent; border: 1px dashed var(--border-strong); }
 .wf-step-body {
   display: flex; flex-direction: column; gap: 12px;
   padding: 12px 14px 14px;
-  border-top: 1px solid var(--border-soft);
+  border-top: 1px solid var(--border);
 }
 
 .wf-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -1235,8 +1249,8 @@ onMounted(loadData)
   position: relative;
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 10px 14px;
-  background: var(--sec-tint, var(--surface-2));
-  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
 }
 .wf-section-head::before {
   content: '';
@@ -1244,13 +1258,13 @@ onMounted(loadData)
   width: 3px;
   background: var(--sec-accent, transparent);
 }
-.wf-sec-headers { --sec-tint: rgba(34, 211, 238, 0.07); --sec-accent: #22d3ee; --sec-deep: #0891b2; --sec-deep-bg: rgba(8, 145, 178, 0.16); }
-.wf-sec-steps { --sec-tint: rgba(139, 92, 246, 0.08); --sec-accent: #8b5cf6; --sec-deep: #7c3aed; --sec-deep-bg: rgba(124, 58, 237, 0.16); }
-.wf-sec-output { --sec-tint: rgba(52, 211, 153, 0.07); --sec-accent: #34d399; --sec-deep: #059669; --sec-deep-bg: rgba(5, 150, 105, 0.16); }
+.wf-sec-headers { --sec-accent: #22d3ee; --sec-soft: rgba(34, 211, 238, 0.1); }
+.wf-sec-steps { --sec-accent: #8b5cf6; --sec-soft: rgba(139, 92, 246, 0.1); }
+.wf-sec-output { --sec-accent: #34d399; --sec-soft: rgba(52, 211, 153, 0.1); }
 
 .wf-section-head .btn {
-  background: var(--sec-deep-bg);
-  color: var(--sec-deep);
+  background: var(--sec-soft);
+  color: var(--sec-accent);
   border-color: var(--border-strong);
   box-shadow: none;
 }
@@ -1267,24 +1281,19 @@ onMounted(loadData)
   font-size: 12.5px; font-weight: 700; color: var(--text-soft);
   cursor: pointer; user-select: none; list-style: none;
   background: var(--surface-2);
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 .wf-adv-summary::-webkit-details-marker { display: none; }
-.wf-adv-summary:hover { color: var(--text); }
-.wf-adv[open] .wf-adv-summary { color: var(--text); border-bottom: 1px solid var(--border-soft); }
+.wf-adv-summary:hover { color: var(--text); background: var(--surface-3); }
+.wf-adv[open] .wf-adv-summary { color: var(--text); border-bottom: 1px solid var(--border); }
 .wf-adv-arrow { color: var(--text-faint); transition: transform 0.2s var(--ease-out); }
 .wf-adv[open] .wf-adv-arrow { transform: rotate(90deg); }
 .wf-adv-body { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; }
 .wf-adv-body .field { margin-bottom: 0; }
 .wf-adv-body .wf-sec-head.sub { margin: 2px 0 7px; }
-.wf-adv-count {
-  display: inline-flex; align-items: center;
-  padding: 1px 8px; border-radius: 999px;
-  font-size: 10.5px; font-weight: 700; font-family: var(--font-mono);
-  color: var(--primary); background: var(--grad-soft); border: 1px solid var(--border-strong);
-}
 
 .wf-body, .wf-output { min-height: 90px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
+.wf-output { min-height: 180px; }
 
 .wf-extract { display: flex; flex-direction: column; gap: 8px; }
 .wf-extract-empty { font-size: 12px; color: var(--text-faint); padding: 6px 2px; }
