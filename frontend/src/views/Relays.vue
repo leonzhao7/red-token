@@ -73,6 +73,7 @@ type RelayView = Omit<Relay, 'status'> & {
   consoleSyncSupported: boolean
   pricingModels: RelayModel[]
   quotaUnit: string
+  todayReward: number
   raw: BackendResponse
 }
 
@@ -206,7 +207,8 @@ function accountValues(backend: BackendResponse, keys: BackendApiKey[]) {
     used: account.used_quota !== undefined ? numberValue(account.used_quota) : keyUsed,
     quotaUnit: String(account.quota_unit || 'USD').trim() || 'USD',
     username: String(account.username || account.email || account.id || backend.console_username || ''),
-    checkinAt: String(account.last_checkin_at || '')
+    checkinAt: String(account.last_checkin_at || ''),
+    todayReward: numberValue(account.today_reward)
   }
 }
 
@@ -306,6 +308,7 @@ function mapBackend(backend: BackendResponse): RelayView {
     used: account.used,
     username: account.username,
     checkinAt: account.checkinAt,
+    todayReward: account.todayReward,
     proxyId: backend.proxy_id ? String(backend.proxy_id) : '',
     models,
     pricingModels,
@@ -334,6 +337,17 @@ function isToday(value: string) {
   const date = new Date(value)
   const now = new Date()
   return !Number.isNaN(date.getTime()) && date.toDateString() === now.toDateString()
+}
+
+function signinText(r: RelayView): string {
+  if (!r.consoleSyncSupported) return r.todayReward > 0 ? fmtMoney(r.todayReward, r.quotaUnit) : '无需签到'
+  if (isToday(r.checkinAt)) return fmtMoney(r.todayReward, r.quotaUnit)
+  return '未签到'
+}
+
+function signinState(r: RelayView): string {
+  if (!r.consoleSyncSupported) return r.todayReward > 0 ? 'ok' : 'faint'
+  return isToday(r.checkinAt) ? 'ok' : 'warn'
 }
 
 const platformColor: Record<string, string> = {
@@ -882,6 +896,17 @@ onMounted(loadData)
                         <div class="ra-val mono">{{ fmtMoney(r.used, r.quotaUnit) }}</div>
                       </div>
                     </div>
+                    <div
+                      class="ra-cell"
+                      :class="{ clickable: r.consoleSyncSupported && !isToday(r.checkinAt) }"
+                      @click="r.consoleSyncSupported && !isToday(r.checkinAt) && checkin(r)"
+                    >
+                      <div class="ra-ico emerald"><CalendarCheck :size="14" /></div>
+                      <div class="ra-body">
+                        <div class="ra-label">今日签到</div>
+                        <div class="ra-val mono" :class="signinState(r)">{{ signinText(r) }}</div>
+                      </div>
+                    </div>
                   </div>
                   <div class="r-info">
                     <div class="ri-row">
@@ -1347,10 +1372,16 @@ onMounted(loadData)
 .ra-ico { width: 30px; height: 30px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex: none; }
 .ra-ico.cyan { background: rgba(34,211,238,0.12); color: var(--c1); }
 .ra-ico.violet { background: rgba(139,92,246,0.12); color: var(--c2); }
+.ra-ico.emerald { background: rgba(52,211,153,0.12); color: var(--c4); }
 .ra-body { display: flex; flex-direction: column; }
 .ra-label { font-size: 10.5px; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em; }
 .ra-val { font-size: 16px; font-weight: 700; color: var(--text); }
 .ra-val.low { color: var(--danger); }
+.ra-val.ok { color: var(--success); }
+.ra-val.warn { color: var(--warning); }
+.ra-val.faint { color: var(--text-faint); font-size: 14px; }
+.ra-cell.clickable { cursor: pointer; transition: border-color 0.2s ease, background 0.2s ease; }
+.ra-cell.clickable:hover { border-color: var(--border-strong); background: var(--surface-2); }
 
 .r-info {
   display: flex; flex-direction: column; gap: 7px;
