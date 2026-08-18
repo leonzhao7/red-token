@@ -843,13 +843,15 @@ onMounted(loadData)
               </template>
               <span v-else class="wf-chip empty">未配置提取</span>
             </div>
-            <button class="icon-btn" title="上移" @click.stop="moveStep(i, -1)"><ArrowUp :size="14" /></button>
-            <button class="icon-btn" title="下移" @click.stop="moveStep(i, 1)"><ArrowDown :size="14" /></button>
-            <button class="icon-btn wf-del" title="删除步骤" @click.stop="removeStep(i)"><Trash2 :size="14" /></button>
-            <button class="icon-btn" :title="stepOpen[i] ? '折叠' : '展开'">
-              <ChevronUp v-if="stepOpen[i]" :size="15" />
-              <ChevronDown v-else :size="15" />
-            </button>
+            <div class="wf-step-actions">
+              <button class="icon-btn" title="上移" @click.stop="moveStep(i, -1)"><ArrowUp :size="14" /></button>
+              <button class="icon-btn" title="下移" @click.stop="moveStep(i, 1)"><ArrowDown :size="14" /></button>
+              <button class="icon-btn wf-del" title="删除步骤" @click.stop="removeStep(i)"><Trash2 :size="14" /></button>
+              <button class="icon-btn" :title="stepOpen[i] ? '折叠' : '展开'">
+                <ChevronUp v-if="stepOpen[i]" :size="15" />
+                <ChevronDown v-else :size="15" />
+              </button>
+            </div>
           </div>
 
           <div v-if="stepOpen[i]" class="wf-step-body">
@@ -1221,6 +1223,7 @@ onMounted(loadData)
   flex: 1; min-width: 0;
   display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap;
 }
+.wf-step-actions { display: flex; align-items: center; gap: 4px; flex: none; }
 .wf-chip {
   display: inline-flex; align-items: center;
   padding: 2px 9px; border-radius: var(--radius-xs);
