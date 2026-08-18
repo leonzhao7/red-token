@@ -883,29 +883,29 @@ onMounted(loadData)
                   <div class="rld-title">账户信息</div>
                   <div class="r-account">
                     <div class="ra-cell">
-                      <div class="ra-ico cyan"><Wallet :size="14" /></div>
-                      <div class="ra-body">
+                      <div class="ra-head">
+                        <div class="ra-ico cyan"><Wallet :size="12" /></div>
                         <div class="ra-label">账户余额</div>
-                        <div class="ra-val mono" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</div>
                       </div>
+                      <div class="ra-val mono" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</div>
                     </div>
                     <div class="ra-cell">
-                      <div class="ra-ico violet"><Coins :size="14" /></div>
-                      <div class="ra-body">
+                      <div class="ra-head">
+                        <div class="ra-ico violet"><Coins :size="12" /></div>
                         <div class="ra-label">累计用额</div>
-                        <div class="ra-val mono">{{ fmtMoney(r.used, r.quotaUnit) }}</div>
                       </div>
+                      <div class="ra-val mono">{{ fmtMoney(r.used, r.quotaUnit) }}</div>
                     </div>
                     <div
                       class="ra-cell"
                       :class="{ clickable: r.consoleSyncSupported && !isToday(r.checkinAt) }"
                       @click="r.consoleSyncSupported && !isToday(r.checkinAt) && checkin(r)"
                     >
-                      <div class="ra-ico emerald"><CalendarCheck :size="14" /></div>
-                      <div class="ra-body">
+                      <div class="ra-head">
+                        <div class="ra-ico emerald"><CalendarCheck :size="12" /></div>
                         <div class="ra-label">今日签到</div>
-                        <div class="ra-val mono" :class="signinState(r)">{{ signinText(r) }}</div>
                       </div>
+                      <div class="ra-val mono" :class="signinState(r)">{{ signinText(r) }}</div>
                     </div>
                   </div>
                   <div class="r-info">
@@ -1363,19 +1363,19 @@ onMounted(loadData)
 
 .r-account { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .ra-cell {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; gap: 6px;
   padding: 10px 10px;
   border-radius: var(--radius-sm);
   background: var(--surface);
   border: 1px solid var(--border-soft);
   min-width: 0;
 }
-.ra-ico { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex: none; }
+.ra-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ra-ico { width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex: none; }
 .ra-ico.cyan { background: rgba(34,211,238,0.12); color: var(--c1); }
 .ra-ico.violet { background: rgba(139,92,246,0.12); color: var(--c2); }
 .ra-ico.emerald { background: rgba(52,211,153,0.12); color: var(--c4); }
-.ra-body { display: flex; flex-direction: column; min-width: 0; }
-.ra-label { font-size: 10.5px; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em; }
+.ra-label { font-size: 10.5px; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ra-val { font-size: 15px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ra-val.low { color: var(--danger); }
 .ra-val.ok { color: var(--success); }
