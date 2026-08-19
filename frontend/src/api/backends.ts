@@ -1,5 +1,4 @@
 export type BackendProtocol = 'openai' | 'anthropic' | 'both'
-export type BackendType = '' | 'new-api' | 'sub2api'
 export type BackendStatus = 'normal' | 'abnormal' | 'disabled'
 
 export interface BackendApiKey {
@@ -41,15 +40,14 @@ export interface BackendResponse {
   id: number
   name: string
   protocol: string
-  backend_type: string
   base_url: string
   api_keys: BackendApiKey[]
   console_url: string
   tags: string[]
   console_username: string
   console_password: string
-  new_api_refresh: string
   console_checkin_workflow_id: string
+  manual_checkin: boolean
   console_headers: Record<string, string>
   console_account: string
   console_models: string
@@ -65,17 +63,15 @@ export interface BackendResponse {
 export interface BackendWritePayload {
   name?: string
   protocol?: BackendProtocol
-  backend_type?: BackendType
   base_url?: string
   api_keys?: BackendApiKey[]
   console_url?: string
   tags?: string[]
   console_username?: string
   console_password?: string
-  new_api_refresh?: string
   console_checkin_workflow_id?: string
+  manual_checkin?: boolean
   console_headers?: Record<string, string>
-  console_user_id?: string
   notes?: string
   proxy_id?: number
   status?: 'normal' | 'disabled'
@@ -109,7 +105,6 @@ export interface BackendWorkflowDebugLog {
 
 export interface BackendSyncResponse {
   backend: BackendResponse
-  status?: Record<string, unknown>
   checkin?: Record<string, unknown> | null
   account?: Record<string, unknown>
   pricing?: Record<string, unknown>
@@ -203,11 +198,6 @@ export function deleteBackend(id: number) {
   return request<{ deleted: number }>(`/admin/api/backends/${id}`, { method: 'DELETE' })
 }
 
-export function syncBackend(id: number, audit = true) {
-  const query = audit ? '' : '?audit=0'
-  return request<BackendSyncResponse>(`/admin/api/backends/${id}/console/sync${query}`, { method: 'POST' })
-}
-
 export function syncBackendCookies(id: number, audit = true) {
   const query = audit ? '' : '?audit=0'
   return request<{ backend: BackendResponse; cookie_count: number; authorization_updated: boolean }>(`/admin/api/backends/${id}/console/cookie/sync${query}`, { method: 'POST' })
@@ -218,14 +208,12 @@ export async function syncBackendStream(
   onRequest: (request: BackendConsoleRequestLog) => void,
   options: {
     audit?: boolean
-    checkin?: boolean
     onWorkflowLog?: (log: BackendWorkflowDebugLog) => void
   } = {}
 ): Promise<BackendSyncResponse> {
   const audit = options.audit !== false
   const params = new URLSearchParams({ stream: '1' })
   if (!audit) params.set('audit', '0')
-  if (options.checkin) params.set('checkin', '1')
 
   const response = await fetch(`${apiBase}/admin/api/backends/${id}/console/sync?${params}`, {
     method: 'POST',

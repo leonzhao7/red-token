@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"red-token/internal/domain"
+	"red-token/internal/service"
 )
 
 type backendFrontendAPIKey struct {
@@ -26,17 +27,16 @@ type backendFrontendView struct {
 	ID                     int64                   `json:"id"`
 	Name                   string                  `json:"name"`
 	Protocol               string                  `json:"protocol"`
-	BackendType            string                  `json:"backend_type"`
 	BaseURL                string                  `json:"base_url"`
 	APIKeys                []backendFrontendAPIKey `json:"api_keys"`
 	ConsoleURL             string                  `json:"console_url"`
 	ConsoleUsername        string                  `json:"console_username"`
 	ConsolePassword        string                  `json:"console_password"`
 	ConsoleCheckinWorkflow string                  `json:"console_checkin_workflow_id"`
+	ManualCheckin          bool                    `json:"manual_checkin"`
 	ConsoleHeaders         map[string]string       `json:"console_headers"`
 	ConsoleModels          string                  `json:"console_models"`
 	ConsoleAccount         string                  `json:"console_account"`
-	NewAPIRefresh          string                  `json:"new_api_refresh"`
 	Notes                  string                  `json:"notes"`
 	ProxyID                int64                   `json:"proxy_id"`
 	Status                 string                  `json:"status"`
@@ -79,30 +79,24 @@ func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) back
 	if tags == nil {
 		tags = []string{}
 	}
-	headers := newAPIConsoleHeaders(backend)
+	headers := service.ConsoleHeaders(backend)
 	if headers == nil {
 		headers = map[string]string{}
-	}
-	if authorization := strings.TrimSpace(backend.ConsoleAuthorization); domain.NormalizeBackendType(backend.BackendType) == domain.BackendTypeSub2API && authorization != "" {
-		if _, exists := headers["Authorization"]; !exists {
-			headers["Authorization"] = authorization
-		}
 	}
 	return backendFrontendView{
 		ID:                     backend.ID,
 		Name:                   backend.Name,
 		Protocol:               domain.NormalizeBackendProtocol(backend.Protocol),
-		BackendType:            domain.NormalizeBackendType(backend.BackendType),
 		BaseURL:                backend.BaseURL,
 		APIKeys:                apiKeys,
 		ConsoleURL:             backend.ConsoleURL,
 		ConsoleUsername:        backend.ConsoleUsername,
 		ConsolePassword:        backend.ConsolePassword,
 		ConsoleCheckinWorkflow: backend.ConsoleCheckinWorkflow,
+		ManualCheckin:          backend.ManualCheckin,
 		ConsoleHeaders:         headers,
 		ConsoleModels:          frontendConsoleModelsJSON(backend.ConsolePricingJSON, backend.ConsoleAccountJSON),
 		ConsoleAccount:         frontendConsoleAccountJSON(backend.ConsoleAccountJSON),
-		NewAPIRefresh:          backend.NewAPIRefresh,
 		Notes:                  backend.Notes,
 		ProxyID:                backend.ProxyID,
 		Status:                 backend.Status,

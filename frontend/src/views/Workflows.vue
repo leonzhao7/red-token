@@ -117,8 +117,8 @@ function emptyExtract(): ExtractRow {
 
 const SAMPLE_DEFINITION = `{
   "spec": "http-workflow/v4",
-  "id": "sub2api-default-checkin-profile",
-  "name": "sub2api 默认签到",
+  "id": "relay-default-checkin",
+  "name": "中转站默认签到",
   "headers": {},
   "steps": [
     {
@@ -210,6 +210,7 @@ const availableAliases = computed(() => {
     'runtime#/username',
     'runtime#/password',
     'runtime#/user_id',
+    'runtime#/manual_checkin',
     'runtime#/headers'
   ]
   for (const st of form.steps) {
@@ -786,11 +787,11 @@ onMounted(loadData)
         <div class="wf-basic">
           <div class="field">
             <label class="field-label">名称</label>
-            <input v-model="form.name" class="input" placeholder="例如：sub2api 默认签到" />
+            <input v-model="form.name" class="input" placeholder="例如：中转站默认签到" />
           </div>
           <div class="field">
             <label class="field-label">ID <em class="wf-hint">稳定标识，创建后不可修改</em></label>
-            <input v-model="form.id" class="input mono" :disabled="isEditing" placeholder="sub2api-default-checkin-profile" spellcheck="false" />
+            <input v-model="form.id" class="input mono" :disabled="isEditing" placeholder="relay-default-checkin" spellcheck="false" />
           </div>
         </div>
 

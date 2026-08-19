@@ -110,6 +110,47 @@ func TestHTTPWorkflowStoreCRUDResultsAndCascades(t *testing.T) {
 	}
 }
 
+func TestBackendManualCheckinPersistsAndPatches(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "manual-checkin.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	defaultBackend, err := st.CreateBackend(ctx, domain.Backend{
+		Name:    "manual-checkin-default",
+		BaseURL: "https://api.example.com",
+	})
+	if err != nil {
+		t.Fatalf("create default backend: %v", err)
+	}
+	if defaultBackend.ManualCheckin {
+		t.Fatalf("manual_checkin default = true, want false")
+	}
+
+	backend, err := st.CreateBackend(ctx, domain.Backend{
+		Name:          "manual-checkin-enabled",
+		BaseURL:       "https://api.example.com",
+		ManualCheckin: true,
+	})
+	if err != nil {
+		t.Fatalf("create enabled backend: %v", err)
+	}
+	if !backend.ManualCheckin {
+		t.Fatal("manual_checkin was not persisted on create")
+	}
+
+	disabled := false
+	backend, err = st.PatchBackend(ctx, backend.ID, BackendPatch{ManualCheckin: &disabled})
+	if err != nil {
+		t.Fatalf("disable manual_checkin: %v", err)
+	}
+	if backend.ManualCheckin {
+		t.Fatal("manual_checkin was not persisted on patch")
+	}
+}
+
 func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, filepath.Join(t.TempDir(), "workflow-apply.db"))

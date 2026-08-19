@@ -83,11 +83,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_socks_proxies_enabled ON socks_proxies(enabled);`,
+		// Retired platform columns stay in the physical layout so existing SQLite
+		// databases can upgrade without a destructive table rebuild.
 		`CREATE TABLE IF NOT EXISTS backends (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
 			protocol TEXT NOT NULL DEFAULT 'openai',
-			backend_type TEXT NOT NULL DEFAULT 'new-api',
+			backend_type TEXT NOT NULL DEFAULT '',
 			base_url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
 			api_keys_json TEXT NOT NULL DEFAULT '[]',
@@ -97,9 +99,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			console_password TEXT NOT NULL DEFAULT '',
 			new_api_refresh TEXT NOT NULL DEFAULT '',
 			console_authorization TEXT NOT NULL DEFAULT '',
-			console_checkin_path TEXT NOT NULL DEFAULT '',
-			console_checkin_workflow_id TEXT NOT NULL DEFAULT '',
-			channel_url TEXT NOT NULL DEFAULT '',
+				console_checkin_path TEXT NOT NULL DEFAULT '',
+				console_checkin_workflow_id TEXT NOT NULL DEFAULT '',
+				manual_checkin INTEGER NOT NULL DEFAULT 0,
+				channel_url TEXT NOT NULL DEFAULT '',
 			console_cookie TEXT NOT NULL DEFAULT '',
 			console_headers_json TEXT NOT NULL DEFAULT '{}',
 			console_account_json TEXT NOT NULL DEFAULT '{}',
@@ -252,7 +255,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends protocol: %w", err)
 	}
-	if err := ensureColumn(ctx, db, "backends", "backend_type", "TEXT NOT NULL DEFAULT 'new-api'"); err != nil {
+	if err := ensureColumn(ctx, db, "backends", "backend_type", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends backend_type: %w", err)
 	}
@@ -311,6 +314,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureColumn(ctx, db, "backends", "console_checkin_workflow_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends console_checkin_workflow_id: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "backends", "manual_checkin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate backends manual_checkin: %w", err)
 	}
 	if err := ensureColumn(ctx, db, "backends", "channel_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()

@@ -638,7 +638,7 @@ func TestGeneralWorkflowDebugLogsIncludeFailureContext(t *testing.T) {
   "output":{}
 }`)
 	logs := make([]GeneralWorkflowDebugLog, 0)
-	recorder := NewNewAPIRequestRecorder()
+	recorder := NewRequestRecorder()
 	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
 		BaseURL:  "https://console.example",
 		Recorder: recorder,

@@ -198,7 +198,6 @@ func (a *App) routes() {
 	a.mux.Handle("POST /admin/api/backends/{id}/console/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleSync))
 	a.mux.Handle("POST /admin/api/backends/{id}/console/cookie/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCookieSync))
 	a.mux.Handle("POST /admin/api/backends/{id}/console/checkin", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCheckin))
-	a.mux.Handle("POST /admin/api/backends/{id}/console/pricing", http.HandlerFunc(a.backendHandler.HandleBackendConsolePricing))
 	a.mux.Handle("POST /admin/api/backends/import", http.HandlerFunc(a.backendHandler.HandleImportBackends))
 	a.mux.Handle("PUT /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleUpdateBackend))
 	a.mux.Handle("DELETE /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleDeleteBackend))

@@ -46,7 +46,7 @@ X-Api-Key: tg-xxxxxxxx
 }
 ```
 
-控制台同步、签到和定价接口的错误响应还会包含已执行的上游请求：
+控制台同步和签到接口的错误响应还会包含已执行的上游请求：
 
 ```json
 {
@@ -58,7 +58,7 @@ X-Api-Key: tg-xxxxxxxx
     {
       "time": "2026-08-05T08:30:00.123Z",
       "method": "GET",
-      "path": "/api/status",
+      "path": "/api/account",
       "status_code": 200,
       "body": "{...}"
     }
@@ -160,14 +160,14 @@ X-Api-Key: tg-xxxxxxxx
 | `id` | integer | 后端 ID |
 | `name` | string | 名称，数据库中唯一 |
 | `protocol` | string | `openai`、`anthropic` 或 `both` |
-| `backend_type` | string | 推荐为 `new-api` 或 `sub2api` |
 | `base_url` | string | 上游推理 API 基础地址 |
 | `api_keys` | `BackendAPIKey[]` | 上游密钥及模型路由配置 |
 | `console_url` | string | 管理控制台基础地址 |
 | `tags` | string[] | 标签 |
 | `console_username` | string | 控制台用户名 |
 | `console_password` | string | 控制台密码，可省略 |
-| `new_api_refresh` | string | new-api 刷新令牌，可省略 |
+| `console_checkin_workflow_id` | string | 绑定的签到工作流 ID；空值表示不启用签到 |
+| `manual_checkin` | boolean | 传递给签到工作流 `$runtime.manual_checkin` 的手工签到标记，默认 `false` |
 | `console_headers` | object<string,string> | 控制台请求头 |
 | `console_account` | string | 已归一化账户对象的 JSON 字符串；额度均为最终金额 |
 | `console_models` | string | 已归一化模型数组的 JSON 字符串；价格均为最终价格 |
@@ -179,7 +179,7 @@ X-Api-Key: tg-xxxxxxxx
 | `updated_at` | string | 更新时间 |
 | `avg_latency_ms` | number | 历史平均请求延迟 |
 
-账户 JSON 固定使用 `id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`，有值时还包含 `last_checkin_at` 和 `last_workflow_at`。New API 与 Sub2API 的旧账户结构由服务端转换；前端不再读取 `quota_per_unit`。
+账户 JSON 固定使用 `id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`，有值时还包含 `last_checkin_at` 和 `last_workflow_at`。签到工作流的固定输出由服务端转换；前端不再读取 `quota_per_unit`。
 
 模型 JSON 是数组。按量模型使用：
 
@@ -679,7 +679,6 @@ X-Api-Key: tg-xxxxxxxx
       "id": 1,
       "name": "lyclaude",
       "protocol": "both",
-      "backend_type": "new-api",
       "base_url": "https://free.lyclaude.site/v1",
       "api_keys": [
         {
@@ -695,11 +694,10 @@ X-Api-Key: tg-xxxxxxxx
       "console_url": "https://free.lyclaude.site",
       "console_username": "user@example.com",
       "console_password": "password",
-      "console_checkin_workflow_id": "new-api-default",
+      "console_checkin_workflow_id": "relay-default-checkin",
       "console_headers": {"Cookie": "session=..."},
       "console_models": "[{\"cheapest_groups\":[\"default\"],\"in_price\":2.5,\"name\":\"gpt-5.6-sol\",\"out_price\":20,\"price_type\":0}]",
       "console_account": "{\"id\":\"49722\",\"quota\":2600,\"quota_unit\":\"USD\",\"today_reward\":0,\"used_quota\":0,\"username\":\"\"}",
-      "new_api_refresh": "refresh-token",
       "notes": "",
       "proxy_id": 0,
       "status": "normal",
@@ -716,7 +714,7 @@ X-Api-Key: tg-xxxxxxxx
 }
 ```
 
-该管理接口包含未脱敏的 API Key、控制台密码、刷新令牌和控制台请求头，只能暴露在受保护的管理端。
+该管理接口包含未脱敏的 API Key、控制台密码和控制台请求头，只能暴露在受保护的管理端。
 
 ### 6.2 后端详情
 
@@ -728,9 +726,9 @@ X-Api-Key: tg-xxxxxxxx
 
 响应 `200`：资源详情格式。
 
-- `overview`：类型、控制台地址、状态、失败次数、恢复时间、代理、协议和权重等。
+- `overview`：控制台地址、签到工作流、状态、失败次数、恢复时间、代理、协议和权重等。
 - `configuration`：已脱敏的 API Key、标签、备注、基础地址、控制台账户和定价对象。
-- `raw`：已对 API Key、控制台密码、刷新令牌、Cookie 和控制台请求头值做 `set` 标记；`console_authorization` 当前未被详情脱敏。
+- `raw`：已对 API Key、控制台密码、Cookie 和控制台请求头值做 `set` 标记。
 - `activity.usage` 与 `activity.usage_logs`：最近 10 条相关用量日志。
 - `activity.events`：最近 10 条相关事件。
 
@@ -746,7 +744,6 @@ X-Api-Key: tg-xxxxxxxx
 {
   "name": "upstream-a",
   "protocol": "openai",
-  "backend_type": "new-api",
   "base_url": "https://api.example.com",
   "api_keys": [
     {
@@ -763,13 +760,9 @@ X-Api-Key: tg-xxxxxxxx
   "tags": ["primary"],
   "console_username": "admin",
   "console_password": "password",
-  "new_api_refresh": "refresh-token",
-  "console_authorization": "",
-  "console_checkin_path": "",
-  "channel_url": "",
-  "console_cookie": "session=...",
+  "console_checkin_workflow_id": "relay-default-checkin",
+  "manual_checkin": false,
   "console_headers": {"Authorization": "Bearer ..."},
-  "console_user_id": "123",
   "notes": "main backend",
   "proxy_id": 0,
   "status": "normal",
@@ -787,7 +780,6 @@ X-Api-Key: tg-xxxxxxxx
 | --- | --- | --- |
 | `name` | 是 | 数据库唯一；当前处理器没有非空校验，因此首次提交空字符串可能被保存，不应依赖该行为 |
 | `protocol` | 否 | `anthropic`/`claude` -> `anthropic`；`both`/`dual` 等 -> `both`；其他值 -> `openai` |
-| `backend_type` | 否 | `newapi`/`new_api` -> `new-api`；`sub-2-api`/`sub_2_api` -> `sub2api`；其他非空值 -> `new-api` |
 | `base_url` | 是 | 必须是包含主机的 `http` 或 `https` URL |
 | `api_keys` | 条件必填 | 至少一项；每项必须有 `key`、`group` 和非空 `models`；读取时会返回 `id` |
 | `api_key`、`models`、`model_mapping` | 兼容字段 | `api_keys` 为空时，可用这三个旧字段构造默认分组 Key |
@@ -797,11 +789,10 @@ X-Api-Key: tg-xxxxxxxx
 
 控制台字段处理：
 
-- `new-api`：保留 `new_api_refresh` 和 `console_headers`；可用 `console_cookie` 生成 `Cookie` 请求头。
-- `sub2api`：同样使用 `console_headers`，授权值配置为 `Authorization` 请求头；旧 `console_authorization` 仍兼容读取。刷新令牌会被清空。
-- `console_checkin_path` 和 `channel_url` 非空时会自动补 `/` 前缀。
+- `console_headers` 保存工作流和 Chrome CDP 使用的控制台请求头。
 - `console_headers` 的名称和值不能为空，名称必须是合法 HTTP Header 名，值不能含非法控制字符。
-- `console_user_id` 会写入 `console_account_json` 的 `id` 字段。
+- `console_checkin_workflow_id` 非空时启用签到；工作流输出负责更新账户、API Key 和模型价格。
+- `manual_checkin` 为布尔值，默认 `false`；每次签到工作流执行都会将其作为 `$runtime.manual_checkin` 和 `{{runtime#/manual_checkin}}` 提供。
 - 请求中的 `status` 和 `endpoints` 当前会被解析但不会用于创建；新后端状态固定归一化为 `normal`。
 
 响应 `201`：创建后的统一前端 `Backend`。
@@ -818,20 +809,15 @@ X-Api-Key: tg-xxxxxxxx
 {
   "name": "upstream-a-new",
   "protocol": "both",
-  "backend_type": "new-api",
   "base_url": "https://api.example.com/v1",
   "api_keys": [],
   "console_url": "https://console.example.com",
   "tags": ["primary", "updated"],
   "console_username": "admin",
   "console_password": "new-password",
-  "new_api_refresh": "refresh-token",
-  "console_authorization": "",
-  "console_checkin_path": "",
-  "channel_url": "",
-  "console_cookie": "",
+  "console_checkin_workflow_id": "relay-default-checkin",
+  "manual_checkin": true,
   "console_headers": {"Cookie": "session=..."},
-  "console_user_id": "123",
   "notes": "updated",
   "proxy_id": 1,
   "status": "disabled",
@@ -891,17 +877,12 @@ Content-Type: application/json
     {
       "name": "upstream-a",
       "protocol": "openai",
-      "backend_type": "new-api",
       "base_url": "https://api.example.com",
       "api_keys": [],
       "console_url": "https://console.example.com",
       "tags": [],
       "console_username": "admin",
       "console_password": "password",
-      "new_api_refresh": "refresh-token",
-      "console_authorization": "",
-      "console_checkin_path": "",
-      "channel_url": "",
       "console_headers": {},
       "console_account_json": "{}",
       "console_pricing_json": "{}",
@@ -965,16 +946,14 @@ Content-Type: application/json
 前置条件：
 
 - 后端存在且 `console_url` 为合法 HTTP(S) URL。
-- `backend_type` 必须为 `new-api` 或 `sub2api`。
-- new-api 使用控制台请求头、用户名密码或 Cookie + Refresh Token 完成认证，并同步状态、账户、签到、定价及 Token。
-- sub2api 要求 `console_authorization`，并同步签到、账户、用量、渠道/定价等信息。
+- 必须配置存在的 `console_checkin_workflow_id`。
+- 工作流使用控制台请求头、用户名密码、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。
 
 普通 JSON 响应 `200`：
 
 ```json
 {
   "backend": {},
-  "status": {},
   "checkin": {},
   "account": {},
   "pricing": {},
@@ -982,7 +961,7 @@ Content-Type: application/json
     {
       "time": "2026-08-05T08:30:00Z",
       "method": "GET",
-      "path": "/api/status",
+      "path": "/api/account",
       "status_code": 200,
       "body": "{...}"
     }
@@ -990,23 +969,23 @@ Content-Type: application/json
 }
 ```
 
-`status` 仅 new-api 同步响应包含；`checkin`、`account`、`pricing` 的内部字段取决于目标平台。
+`checkin` 是工作流固定输出，`account` 和 `pricing` 是写入中转站后的归一化快照。
 
 NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON 对象。
 
 上游请求事件：
 
 ```json
-{"type":"request","request":{"time":"...","method":"GET","path":"/api/status","status_code":200,"body":"{...}"}}
+{"type":"request","request":{"time":"...","method":"GET","path":"/api/account","status_code":200,"body":"{...}"}}
 ```
 
-配置了签到工作流时，工作流执行消息也会按发生顺序实时写入同一响应流：
+工作流执行消息会按发生顺序实时写入同一响应流：
 
 ```json
 {"type":"workflow_log","log":{"time":"...","level":"info","step_id":"account","phase":"step_start","message":"step execution started"}}
 ```
 
-`workflow_log.log` 与工作流执行接口返回的 `debug_logs[]` 结构相同，包含步骤、阶段、级别、消息、耗时和可选详情。普通 `new-api`/`sub2api` 内置同步流程不产生此事件。
+`workflow_log.log` 与工作流执行接口返回的 `debug_logs[]` 结构相同，包含步骤、阶段、级别、消息、耗时和可选详情。
 
 完成事件：
 
@@ -1022,13 +1001,13 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 非流式主要错误：`400` 表示后端配置无效，`502` 表示控制台请求/响应失败，`500` 表示保存失败。
 
-### 6.9 new-api 控制台签到
+### 6.9 执行签到工作流
 
 `POST /admin/api/backends/{id}/console/checkin`
 
 请求体：无。
 
-仅支持 `backend_type=new-api`，要求合法 `console_url`，并需要可用的已存凭据、用户名密码或刷新凭据。
+要求合法 `console_url` 和已绑定的 `console_checkin_workflow_id`。工作流使用中转站保存的 Headers、用户名、密码和 Chrome CDP 凭据。
 
 响应 `200`：
 
@@ -1041,27 +1020,9 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-`checkin` 和 `account` 的字段由目标 new-api 平台决定。
+`checkin` 是工作流固定输出，`account` 为归一化后的账户快照。
 
-### 6.10 new-api 控制台定价同步
-
-`POST /admin/api/backends/{id}/console/pricing`
-
-请求体：无。
-
-仅支持 `backend_type=new-api`。定价列表会按配置项 `focus_models` 过滤；`focus_models` 为空时不过滤。
-
-响应 `200`：
-
-```json
-{
-  "backend": {},
-  "pricing": {},
-  "requests": []
-}
-```
-
-### 6.11 从 Chrome CDP 同步控制台登录凭据
+### 6.10 从 Chrome CDP 同步控制台登录凭据
 
 `POST /admin/api/backends/{id}/console/cookie/sync`
 
@@ -1157,7 +1118,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 工作流配置使用 [`http-workflow/v1`](http_workflow.md) 至 `http-workflow/v4` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或更高版本；需要对数组 alias 逐项串行发送请求时使用 v3 或更高版本；需要工作流全局请求 Header 时使用 v4。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。
 
-工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、`console_authorization`、SOCKS5 代理和全局控制台 User-Agent。工作流不会自动注入 `New-Api-User`；如有需要，可以在中转站 Headers 中显式配置。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。每次执行使用独立 Cookie jar，响应 `Set-Cookie` 自动用于后续步骤；成功后 Cookie 变更会新增或覆盖所选中转站的 `console_headers.Cookie`。
+工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、SOCKS5 代理和全局控制台 User-Agent。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。每次执行使用独立 Cookie jar，响应 `Set-Cookie` 自动用于后续步骤；成功后 Cookie 变更会新增或覆盖所选中转站的 `console_headers.Cookie`。
 
 ### 7.1 工作流列表
 
@@ -1169,12 +1130,12 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 {
   "items": [
     {
-      "id": "sub2api-default-checkin-profile",
-      "name": "sub2api 默认签到",
+      "id": "relay-default-checkin",
+      "name": "中转站默认签到",
       "definition": {
         "spec": "http-workflow/v4",
-        "id": "sub2api-default-checkin-profile",
-        "name": "sub2api 默认签到",
+        "id": "relay-default-checkin",
+        "name": "中转站默认签到",
         "headers": {},
         "steps": [],
         "output": {}
@@ -1200,10 +1161,10 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 ```json
 {
   "spec": "http-workflow/v4",
-  "id": "sub2api-default-checkin-profile",
-  "name": "sub2api 默认签到",
+  "id": "relay-default-checkin",
+  "name": "中转站默认签到",
   "headers": {
-    "X-Workflow-Profile": "sub2api-default"
+    "X-Workflow-Profile": "relay-default"
   },
   "steps": [
     {
@@ -1249,7 +1210,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 ```json
 {
-  "deleted": "sub2api-default-checkin-profile"
+  "deleted": "relay-default-checkin"
 }
 ```
 
@@ -1270,13 +1231,13 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 - `backend_id`：必填正整数，指定执行请求所使用的后端/中转站。
 - `aliases`：可选对象，作为本次运行的初始 alias store；名称和值仍受工作流规范约束。
-- `$runtime` 除规范字段外还包含 `backend_id`、`backend_name`，并使用所选中转站填充 `username`、`password`、`user_id` 和宿主提供的基础控制台 `headers` 字典。jq 表达式通过 `$runtime.username` 等字段读取；请求模板通过 `{{runtime#/username}}`、`{{runtime#/password}}`、`{{runtime#/user_id}}` 和 `{{runtime#/headers/Header-Name}}` 读取。`runtime` 不会写入响应的 `aliases`。
+- `$runtime` 除规范字段外还包含 `backend_id`、`backend_name`，并使用所选中转站填充 `username`、`password`、`user_id`、`manual_checkin` 和宿主提供的基础控制台 `headers` 字典。`manual_checkin` 是中转站配置的布尔值。jq 表达式通过 `$runtime.username`、`$runtime.manual_checkin` 等字段读取；请求模板通过 `{{runtime#/username}}`、`{{runtime#/password}}`、`{{runtime#/user_id}}`、`{{runtime#/manual_checkin}}` 和 `{{runtime#/headers/Header-Name}}` 读取。`runtime` 不会写入响应的 `aliases`。
 
 响应 `200`：
 
 ```json
 {
-  "workflow_id": "sub2api-default-checkin-profile",
+  "workflow_id": "relay-default-checkin",
   "backend": {
     "id": 1,
     "name": "relay-a"
@@ -1333,7 +1294,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 ```json
 {
-  "workflow_id": "sub2api-default-checkin-profile",
+  "workflow_id": "relay-default-checkin",
   "backend_id": 1,
   "output": {
     "user_id": "user-1",
@@ -1816,8 +1777,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 | `POST` | `/admin/api/backends/console/sync-summary` | 记录全局同步摘要 |
 | `POST` | `/admin/api/backends/{id}/console/sync` | 同步后端控制台 |
 | `POST` | `/admin/api/backends/{id}/console/cookie/sync` | 从 Chrome CDP 同步控制台登录凭据 |
-| `POST` | `/admin/api/backends/{id}/console/checkin` | new-api 签到 |
-| `POST` | `/admin/api/backends/{id}/console/pricing` | new-api 定价同步 |
+| `POST` | `/admin/api/backends/{id}/console/checkin` | 执行签到工作流 |
 | `POST` | `/admin/api/backends/import` | 导入后端 |
 | `PUT` | `/admin/api/backends/{id}` | 更新后端 |
 | `DELETE` | `/admin/api/backends/{id}` | 删除后端 |

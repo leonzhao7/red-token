@@ -99,7 +99,6 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer console-token" ||
 			r.Header.Get("Cookie") != "session=console" ||
 			r.Header.Get("X-Console") != "configured" ||
-			r.Header.Get("New-Api-User") != "" ||
 			r.Header.Get("User-Agent") != "Workflow-Test/1.0" {
 			status = http.StatusUnauthorized
 			body = `{"error":"missing host headers"}`
@@ -124,14 +123,13 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 
 	st := openWorkflowHandlerStore(t)
 	backend, err := st.CreateBackend(context.Background(), domain.Backend{
-		Name:                 "selected-backend",
-		BackendType:          domain.BackendTypeNewAPI,
-		BaseURL:              "https://api.example.com",
-		ConsoleURL:           "https://selected-console.test",
-		ConsoleAuthorization: "Bearer console-token",
+		Name:       "selected-backend",
+		BaseURL:    "https://api.example.com",
+		ConsoleURL: "https://selected-console.test",
 		ConsoleHeaders: map[string]string{
-			"Cookie":    "session=console",
-			"X-Console": "configured",
+			"Authorization": "Bearer console-token",
+			"Cookie":        "session=console",
+			"X-Console":     "configured",
 		},
 		ConsoleAccountJSON: `{"id":"account-42","balance":999,"total_actual_cost":999,"last_checkin_reward":999}`,
 		APIKeys: []domain.BackendAPIKey{{
@@ -315,9 +313,8 @@ func TestWorkflowHandlerPersistsResponseCookiesInBackendHeaders(t *testing.T) {
 		t.Fatalf("create workflow: %v", err)
 	}
 	backend, err := st.CreateBackend(context.Background(), domain.Backend{
-		Name:        "cookie-backend",
-		BackendType: domain.BackendTypeNewAPI,
-		ConsoleURL:  "https://cookie-console.test",
+		Name:       "cookie-backend",
+		ConsoleURL: "https://cookie-console.test",
 		ConsoleHeaders: map[string]string{
 			"Cookie":    "session=old; retained=yes",
 			"X-Console": "configured",
@@ -349,7 +346,6 @@ func TestWorkflowHandlerPersistsResponseCookiesInBackendHeaders(t *testing.T) {
 
 	emptyBackend, err := st.CreateBackend(context.Background(), domain.Backend{
 		Name:           "empty-cookie-backend",
-		BackendType:    domain.BackendTypeNewAPI,
 		ConsoleURL:     "https://empty-cookie-console.test",
 		ConsoleHeaders: map[string]string{"X-Console": "configured"},
 	})
@@ -365,9 +361,8 @@ func TestWorkflowHandlerPersistsResponseCookiesInBackendHeaders(t *testing.T) {
 	}
 
 	failedBackend, err := st.CreateBackend(context.Background(), domain.Backend{
-		Name:        "failed-workflow-backend",
-		BackendType: domain.BackendTypeNewAPI,
-		ConsoleURL:  "https://failed-workflow-console.test",
+		Name:       "failed-workflow-backend",
+		ConsoleURL: "https://failed-workflow-console.test",
 	})
 	if err != nil {
 		t.Fatalf("create failed-workflow backend: %v", err)
@@ -395,11 +390,12 @@ func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 			t.Fatalf("decode runtime body: %v", err)
 		}
 		want := map[string]any{
-			"username":      "relay-user",
-			"password":      "relay-password",
-			"user_id":       "account-42",
-			"authorization": "Bearer console-token",
-			"header":        "configured",
+			"username":       "relay-user",
+			"password":       "relay-password",
+			"user_id":        "account-42",
+			"authorization":  "Bearer console-token",
+			"header":         "configured",
+			"manual_checkin": true,
 		}
 		if !reflect.DeepEqual(payload, want) {
 			t.Fatalf("unexpected backend runtime body: got %#v want %#v", payload, want)
@@ -417,7 +413,7 @@ func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 	definitionText := strings.Replace(
 		workflowTestDefinition("runtime-workflow"),
 		`"request":{"method":"GET","path":"/snapshot"}`,
-		`"request":{"method":"POST","path":"/snapshot","body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}","authorization":"{{runtime#/headers/Authorization}}","header":"{{runtime#/headers/X-Console}}"}}`,
+		`"request":{"method":"POST","path":"/snapshot","body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}","authorization":"{{runtime#/headers/Authorization}}","header":"{{runtime#/headers/X-Console}}","manual_checkin":"{{runtime#/manual_checkin}}"}}`,
 		1,
 	)
 	definition, err := service.ParseGeneralWorkflow([]byte(definitionText))
@@ -432,14 +428,13 @@ func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 		t.Fatalf("create runtime workflow: %v", err)
 	}
 	backend, err := st.CreateBackend(context.Background(), domain.Backend{
-		Name:                 "runtime-backend",
-		BackendType:          domain.BackendTypeNewAPI,
-		ConsoleURL:           "https://runtime-console.test",
-		ConsoleUsername:      "relay-user",
-		ConsolePassword:      "relay-password",
-		ConsoleAuthorization: "Bearer console-token",
-		ConsoleHeaders:       map[string]string{"X-Console": "configured"},
-		ConsoleAccountJSON:   `{"id":"account-42"}`,
+		Name:               "runtime-backend",
+		ConsoleURL:         "https://runtime-console.test",
+		ConsoleUsername:    "relay-user",
+		ConsolePassword:    "relay-password",
+		ManualCheckin:      true,
+		ConsoleHeaders:     map[string]string{"Authorization": "Bearer console-token", "X-Console": "configured"},
+		ConsoleAccountJSON: `{"id":"account-42"}`,
 	})
 	if err != nil {
 		t.Fatalf("create runtime backend: %v", err)
@@ -474,7 +469,6 @@ func TestWorkflowConsoleSyncStreamsWorkflowLogsWithRequests(t *testing.T) {
 	}
 	backend, err := st.CreateBackend(context.Background(), domain.Backend{
 		Name:                   "workflow-backend",
-		BackendType:            domain.BackendTypeNewAPI,
 		ConsoleURL:             "https://workflow-console.test",
 		ConsoleCheckinWorkflow: "sync-workflow",
 		ConsoleAccountJSON:     `{"id":"account-42"}`,
@@ -492,7 +486,7 @@ func TestWorkflowConsoleSyncStreamsWorkflowLogsWithRequests(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admin/api/backends/{id}/console/sync", backendHandler.HandleBackendConsoleSync)
-	request := httptest.NewRequest(http.MethodPost, "/admin/api/backends/"+jsonInt64(backend.ID)+"/console/sync?stream=1&checkin=1", nil)
+	request := httptest.NewRequest(http.MethodPost, "/admin/api/backends/"+jsonInt64(backend.ID)+"/console/sync?stream=1", nil)
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {

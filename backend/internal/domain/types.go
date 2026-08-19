@@ -22,9 +22,6 @@ const (
 	BackendProtocolOpenAI    = "openai"
 	BackendProtocolAnthropic = "anthropic"
 	BackendProtocolBoth      = "both"
-
-	BackendTypeNewAPI  = "new-api"
-	BackendTypeSub2API = "sub2api"
 )
 
 type ClientKey struct {
@@ -77,32 +74,30 @@ func (k *BackendAPIKey) UnmarshalJSON(data []byte) error {
 }
 
 type Backend struct {
-	ID                     int64             `json:"id"`
-	Name                   string            `json:"name"`
-	Protocol               string            `json:"protocol"`
-	BackendType            string            `json:"backend_type"`
-	BaseURL                string            `json:"base_url"`
-	APIKeys                []BackendAPIKey   `json:"api_keys"`
-	ConsoleURL             string            `json:"console_url"`
-	Tags                   []string          `json:"tags"`
-	ConsoleUsername        string            `json:"console_username"`
-	ConsolePassword        string            `json:"console_password,omitempty"`
-	NewAPIRefresh          string            `json:"new_api_refresh,omitempty"`
-	ConsoleAuthorization   string            `json:"console_authorization,omitempty"`
-	ConsoleCheckinPath     string            `json:"console_checkin_path,omitempty"`
-	ConsoleCheckinWorkflow string            `json:"console_checkin_workflow_id,omitempty"`
-	ChannelURL             string            `json:"channel_url,omitempty"`
-	ConsoleCookie          string            `json:"console_cookie,omitempty"`
-	ConsoleHeaders         map[string]string `json:"console_headers,omitempty"`
-	ConsoleAccountJSON     string            `json:"console_account_json"`
-	ConsolePricingJSON     string            `json:"console_pricing_json"`
-	Notes                  string            `json:"notes"`
-	ProxyID                int64             `json:"proxy_id"`
-	Proxy                  *SocksProxy       `json:"proxy,omitempty"`
-	Status                 string            `json:"status"`
-	ConsecutiveFailures    int               `json:"consecutive_failures"`
-	RecoverAt              *time.Time        `json:"recover_at,omitempty"`
-	Weight                 int               `json:"weight"`
+	ID                     int64           `json:"id"`
+	Name                   string          `json:"name"`
+	Protocol               string          `json:"protocol"`
+	BaseURL                string          `json:"base_url"`
+	APIKeys                []BackendAPIKey `json:"api_keys"`
+	ConsoleURL             string          `json:"console_url"`
+	Tags                   []string        `json:"tags"`
+	ConsoleUsername        string          `json:"console_username"`
+	ConsolePassword        string          `json:"console_password,omitempty"`
+	ConsoleCheckinWorkflow string          `json:"console_checkin_workflow_id,omitempty"`
+	ManualCheckin          bool            `json:"manual_checkin"`
+	// ConsoleCookie is a read-compatibility fallback for old database rows.
+	// New credentials are stored only in ConsoleHeaders.
+	ConsoleCookie       string            `json:"-"`
+	ConsoleHeaders      map[string]string `json:"console_headers,omitempty"`
+	ConsoleAccountJSON  string            `json:"console_account_json"`
+	ConsolePricingJSON  string            `json:"console_pricing_json"`
+	Notes               string            `json:"notes"`
+	ProxyID             int64             `json:"proxy_id"`
+	Proxy               *SocksProxy       `json:"proxy,omitempty"`
+	Status              string            `json:"status"`
+	ConsecutiveFailures int               `json:"consecutive_failures"`
+	RecoverAt           *time.Time        `json:"recover_at,omitempty"`
+	Weight              int               `json:"weight"`
 	// Legacy routing fields are retained internally for old database rows and
 	// direct service callers. API responses use APIKeys as the canonical shape.
 	APIKey       string            `json:"-"`
@@ -186,19 +181,6 @@ func NormalizeBackendProtocol(value string) string {
 		return BackendProtocolBoth
 	default:
 		return BackendProtocolOpenAI
-	}
-}
-
-func NormalizeBackendType(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "":
-		return ""
-	case BackendTypeNewAPI, "newapi", "new_api":
-		return BackendTypeNewAPI
-	case BackendTypeSub2API, "sub-2-api", "sub_2_api":
-		return BackendTypeSub2API
-	default:
-		return BackendTypeNewAPI
 	}
 }
 

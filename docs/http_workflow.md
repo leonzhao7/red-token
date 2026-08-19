@@ -209,10 +209,11 @@ Alias 引用使用以下格式：
 {{runtime#/username}}
 {{runtime#/password}}
 {{runtime#/user_id}}
+{{runtime#/manual_checkin}}
 {{runtime#/headers/Authorization}}
 ```
 
-jq 表达式中使用 `$runtime.username`、`$runtime.password`、`$runtime.user_id` 和 `$runtime.headers` 访问同一份数据。`runtime` 是只读模板根，不会出现在 `$vars` 或执行结果的 `aliases` 中。
+jq 表达式中使用 `$runtime.username`、`$runtime.password`、`$runtime.user_id`、`$runtime.manual_checkin` 和 `$runtime.headers` 访问同一份数据。`runtime` 是只读模板根，不会出现在 `$vars` 或执行结果的 `aliases` 中。
 
 其中 `~1` 表示 `/`，`~0` 表示 `~`。
 
@@ -365,11 +366,12 @@ v3 foreach 执行期间，`$vars` 还包含 `foreach.as` 指定的当前元素�
   "username": "",
   "password": "",
   "user_id": "",
+  "manual_checkin": false,
   "headers": {}
 }
 ```
 
-宿主没有提供账户信息时，`username`、`password` 和 `user_id` 固定为空字符串，`headers` 固定为空对象。本项目对中转站执行工作流时会使用中转站控制台配置填充这些字段；`headers` 为宿主提供的基础控制台请求头字典，不包含工作流顶层 `headers`。
+宿主没有提供账户信息时，`username`、`password` 和 `user_id` 固定为空字符串，`manual_checkin` 固定为 `false`，`headers` 固定为空对象。本项目对中转站执行工作流时会使用中转站控制台配置填充这些字段；`manual_checkin` 使用该中转站的手工签到配置；`headers` 为宿主提供的基础控制台请求头字典，不包含工作流顶层 `headers`。
 
 表达式不得读取环境变量、文件、网络、进程状态或其他外部可变状态。当前时间必须从 `$runtime` 获取，不得在表达式中再次读取时钟。
 
@@ -829,8 +831,8 @@ $vars.model_rows
 ```json
 {
   "spec": "http-workflow/v1",
-  "id": "sub2api-default-checkin-profile",
-  "name": "sub2api 默认签到",
+  "id": "relay-default-checkin",
+  "name": "中转站默认签到",
   "steps": [
     {
       "id": "get_me",

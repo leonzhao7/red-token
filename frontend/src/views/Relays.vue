@@ -37,27 +37,23 @@ import {
   listBackends,
   listSocksProxies,
   recordBackendSyncSummary,
-  syncBackend,
   syncBackendCookies,
   syncBackendStream,
   updateBackend,
   type BackendApiKey,
   type BackendResponse,
   type BackendSyncResponse,
-  type BackendType,
   type SocksProxyResponse
 } from '../api/backends'
 import { listWorkflows, type WorkflowRecord } from '../api/workflows'
 import type { Relay, RelayKey, RelayModel, PlatformType } from '../types'
 
 const search = ref('')
-type ConsoleBackendType = Exclude<BackendType, ''>
-const platformFilter = ref<'all' | ConsoleBackendType>('all')
 type ModelFamily = 'gpt' | 'claude' | 'grok' | 'deepseek' | 'kimi'
 const modelFilter = ref<'all' | ModelFamily>('all')
+const manualCheckinFilter = ref(false)
 const page = ref(1)
 const pageSize = 10
-const backendTypes: ConsoleBackendType[] = ['new-api', 'sub2api']
 const modelFamilies: Array<{ value: ModelFamily; keywords: string[] }> = [
   { value: 'gpt', keywords: ['gpt'] },
   { value: 'claude', keywords: ['claude'] },
@@ -70,7 +66,6 @@ type RelayStatusView = 'active' | 'disabled' | 'abnormal'
 type RelayView = Omit<Relay, 'status'> & {
   status: RelayStatusView
   protocol: 'openai' | 'anthropic' | 'both'
-  backendType: BackendType
   consoleUrl: string
   consoleSyncSupported: boolean
   pricingModels: RelayModel[]
@@ -197,12 +192,6 @@ function parseModelMapping(raw: string) {
   return mapping
 }
 
-function consoleUserIdOf(backend: BackendResponse) {
-  const account = parseObject(backend.console_account)
-  if (typeof account.id === 'number' && Number.isFinite(account.id) && account.id > 0) return String(Math.trunc(account.id))
-  return typeof account.id === 'string' ? account.id.trim() : ''
-}
-
 function numberValue(value: unknown) {
   const parsed = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(parsed) ? parsed : 0
@@ -324,9 +313,8 @@ function mapBackend(backend: BackendResponse): RelayView {
     quotaUnit: account.quotaUnit,
     keys: relayKeys,
     protocol: protocolOf(backend.protocol),
-    backendType: backend.backend_type === 'sub2api' || backend.backend_type === 'new-api' ? backend.backend_type : '',
     consoleUrl: backend.console_url || '',
-    consoleSyncSupported: backend.backend_type === 'new-api' || backend.backend_type === 'sub2api',
+    consoleSyncSupported: Boolean(backend.console_checkin_workflow_id?.trim()),
     raw: backend
   }
 }
@@ -349,7 +337,7 @@ function isToday(value: string) {
 }
 
 function signinText(r: RelayView): string {
-  if (!r.consoleSyncSupported) return r.todayReward > 0 ? fmtMoney(r.todayReward, r.quotaUnit) : '无需签到'
+  if (!r.consoleSyncSupported) return r.todayReward > 0 ? fmtMoney(r.todayReward, r.quotaUnit) : '未配置'
   if (isToday(r.checkinAt)) return fmtMoney(r.todayReward, r.quotaUnit)
   return '未签到'
 }
@@ -373,13 +361,13 @@ const filtered = computed(() =>
   relays.value
     .filter((r) => {
       const okSearch = r.name.toLowerCase().includes(search.value.toLowerCase()) || r.url.includes(search.value) || r.username.toLowerCase().includes(search.value.toLowerCase())
-      const okPlat = platformFilter.value === 'all' || r.backendType === platformFilter.value
       const selectedFamily = modelFamilies.find((family) => family.value === modelFilter.value)
       const okModel = !selectedFamily || r.models.some((model) => {
         const name = model.name.toLowerCase()
         return selectedFamily.keywords.some((keyword) => name.includes(keyword))
       })
-      return okSearch && okPlat && okModel
+      const okManualCheckin = !manualCheckinFilter.value || r.raw.manual_checkin
+      return okSearch && okModel && okManualCheckin
     })
     .sort((a, b) => numberValue(b.raw.weight) - numberValue(a.raw.weight))
 )
@@ -399,7 +387,7 @@ function goPage(nextPage: number) {
   expandedId.value = null
 }
 
-watch([search, platformFilter, modelFilter], resetPage)
+watch([search, modelFilter, manualCheckinFilter], resetPage)
 watch(totalPages, (pages) => {
   if (page.value > pages) page.value = pages
 })
@@ -458,15 +446,15 @@ async function toggleStatus(r: RelayView) {
 
 async function syncRelay(
   r: RelayView,
-  options: { quiet?: boolean; audit?: boolean; checkin?: boolean } = {}
+  options: { quiet?: boolean; audit?: boolean } = {}
 ) {
-  const { quiet = false, audit = true, checkin = false } = options
+  const { quiet = false, audit = true } = options
   if (!r.consoleUrl) {
     if (!quiet) toast('缺少控制台地址', '请先在编辑中转站中填写 Console URL', 'warning')
     return false
   }
   if (!r.consoleSyncSupported) {
-    if (!quiet) toast('暂不支持控制台同步', '该后端未配置 backend_type，请先编辑并选择 new-api 或 sub2api', 'warning')
+    if (!quiet) toast('缺少签到工作流', '请先编辑中转站并绑定签到工作流', 'warning')
     return false
   }
   setBusy(r.id, true)
@@ -476,14 +464,13 @@ async function syncRelay(
       appendLogRow(req, r.name)
     }, {
       audit,
-      checkin,
       onWorkflowLog: (log) => appendWorkflowLogRow(log, r.name)
     })
     upsertRelay(response.backend)
-    if (!quiet) toast('中转站同步完成', `${r.name} · 账户与 API Key 已刷新`, 'success')
+    if (!quiet) toast('签到完成', `${r.name} · 账户与 API Key 已刷新`, 'success')
     return true
   } catch (error) {
-    if (!quiet) toast('中转站同步失败', errorMessage(error), 'danger')
+    if (!quiet) toast('签到失败', errorMessage(error), 'danger')
     return false
   } finally {
     setBusy(r.id, false)
@@ -492,9 +479,9 @@ async function syncRelay(
 
 async function checkin(r: RelayView) {
   if (isToday(r.checkinAt)) {
-    toast('今日已同步', `${r.name} · ${formatDate(r.checkinAt)}`, 'info')
+    toast('今日已签到', `${r.name} · ${formatDate(r.checkinAt)}`, 'info')
   }
-  await syncRelay(r, { checkin: true })
+  await syncRelay(r)
 }
 
 async function syncCookies(r: RelayView) {
@@ -526,7 +513,7 @@ async function syncCookies(r: RelayView) {
 async function checkinAll() {
   const todo = relays.value.filter((relay) => relay.consoleUrl && relay.consoleSyncSupported && !isToday(relay.checkinAt))
   if (!todo.length) {
-    toast('今日无需同步', '没有待签到且配置了控制台地址的中转站', 'info')
+    toast('今日无需签到', '没有待签到且配置了控制台地址的中转站', 'info')
     return
   }
   syncingAll.value = true
@@ -575,7 +562,7 @@ async function checkinAll() {
     // The individual sync results are already persisted; summary auditing is best effort.
   }
   syncingAll.value = false
-  toast(successCount ? '批量同步完成' : '批量同步失败', `成功 ${successCount} 个，失败 ${todo.length - successCount} 个`, successCount === todo.length ? 'success' : successCount ? 'warning' : 'danger')
+  toast(successCount ? '批量签到完成' : '批量签到失败', `成功 ${successCount} 个，失败 ${todo.length - successCount} 个`, successCount === todo.length ? 'success' : successCount ? 'warning' : 'danger')
 }
 
 const relayToDelete = ref<RelayView | null>(null)
@@ -604,14 +591,12 @@ const form = ref<{
   name: string
   url: string
   protocol: 'openai' | 'anthropic' | 'both'
-  backendType: BackendType
   consoleUrl: string
   username: string
   password: string
-  newApiRefresh: string
   consoleHeaders: string
-  consoleUserId: string
   consoleCheckinWorkflowId: string
+  manualCheckin: boolean
   proxyId: string
   weight: number
   keys: KeyFormItem[]
@@ -619,14 +604,12 @@ const form = ref<{
   name: '',
   url: '',
   protocol: 'openai',
-  backendType: 'new-api',
   consoleUrl: '',
   username: '',
   password: '',
-  newApiRefresh: '',
   consoleHeaders: '',
-  consoleUserId: '',
   consoleCheckinWorkflowId: '',
+  manualCheckin: false,
   proxyId: '',
   weight: 10,
   keys: []
@@ -635,10 +618,7 @@ const form = ref<{
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const isEditing = computed(() => editingId.value !== null)
-const isNewAPIBackendType = computed(() => form.value.backendType === 'new-api')
-const isConsoleBackendType = computed(() => form.value.backendType === 'new-api' || form.value.backendType === 'sub2api')
 const consoleHeadersError = computed(() => {
-  if (!isConsoleBackendType.value) return ''
   try {
     parseConsoleHeaders(form.value.consoleHeaders)
     return ''
@@ -657,9 +637,9 @@ const modelMappingErrors = computed(() => form.value.keys.map((key) => {
 
 function resetForm() {
   form.value = {
-    name: '', url: '', protocol: 'openai', backendType: 'new-api', consoleUrl: '', username: '', password: '',
-    newApiRefresh: '', consoleHeaders: '', consoleUserId: '',
-    consoleCheckinWorkflowId: '',
+    name: '', url: '', protocol: 'openai', consoleUrl: '', username: '', password: '',
+    consoleHeaders: '',
+    consoleCheckinWorkflowId: '', manualCheckin: false,
     proxyId: '', weight: 10, keys: []
   }
 }
@@ -676,14 +656,12 @@ function openEditRelay(r: RelayView) {
     name: r.name,
     url: r.url,
     protocol: r.protocol,
-    backendType: r.backendType,
     consoleUrl: r.raw.console_url || '',
     username: r.raw.console_username || '',
     password: r.raw.console_password || '',
-    newApiRefresh: r.raw.new_api_refresh || '',
     consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
-    consoleUserId: consoleUserIdOf(r.raw),
     consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
+    manualCheckin: Boolean(r.raw.manual_checkin),
     proxyId: r.proxyId,
     weight: numberValue(r.raw.weight) || 10,
     keys: r.keys.length
@@ -721,20 +699,17 @@ function buildPayload() {
       used_quota: Math.max(0, key.usedTokens || 0)
     }
   })
-  const backendType = form.value.backendType
   return {
     name: form.value.name.trim(),
     protocol: form.value.protocol,
-    backend_type: backendType,
     base_url: form.value.url.trim(),
     api_keys: apiKeys,
     console_url: form.value.consoleUrl.trim(),
     console_username: form.value.username.trim(),
     console_password: form.value.password,
-    new_api_refresh: backendType === 'new-api' ? form.value.newApiRefresh.trim() : '',
-    console_headers: backendType === 'new-api' || backendType === 'sub2api' ? parseConsoleHeaders(form.value.consoleHeaders) : {},
-    console_user_id: backendType === 'new-api' ? form.value.consoleUserId.trim() : '',
+    console_headers: parseConsoleHeaders(form.value.consoleHeaders),
     console_checkin_workflow_id: form.value.consoleCheckinWorkflowId.trim(),
+    manual_checkin: form.value.manualCheckin,
     proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0,
     weight: Math.min(100, Math.max(1, Math.round(numberValue(form.value.weight) || 10)))
   }
@@ -743,6 +718,10 @@ function buildPayload() {
 async function saveRelay() {
   if (!form.value.name || !form.value.url) {
     toast('请填写名称与 URL', '', 'warning')
+    return
+  }
+  if (form.value.consoleCheckinWorkflowId && !form.value.consoleUrl.trim()) {
+    toast('请填写 Server URL', '签到工作流需要控制台地址', 'warning')
     return
   }
   if (form.value.keys.some((key) => !key.key.trim() || !parseModelList(key.modelsInput).length)) {
@@ -826,10 +805,7 @@ onMounted(loadData)
         <input v-model="search" class="input" placeholder="搜索名称 / 域名 / 用户名…" />
         <button v-if="search" class="search-clear" aria-label="清除搜索" @click="search = ''"><X :size="14" /></button>
       </div>
-      <div class="filter-group">
-        <button class="filter-chip" :class="{ on: platformFilter === 'all' }" @click="platformFilter = 'all'">全部平台</button>
-        <button v-for="type in backendTypes" :key="type" class="filter-chip" :class="{ on: platformFilter === type }" @click="platformFilter = type">{{ type }}</button>
-      </div>
+      <button class="filter-chip" :class="{ on: manualCheckinFilter }" @click="manualCheckinFilter = !manualCheckinFilter">手工签到</button>
       <div class="spacer"></div>
       <div class="filter-group">
         <button class="filter-chip" :class="{ on: modelFilter === 'all' }" @click="modelFilter = 'all'">全部模型</button>
@@ -865,7 +841,7 @@ onMounted(loadData)
         <div v-for="r in pageItems" :key="r.id" class="rl-row" :class="{ open: expandedId === r.id, off: r.status !== 'active', abnormal: r.status === 'abnormal' }">
           <div class="rl-main" @click="toggleExpand(r.id)">
             <div class="rl-cell name">
-              <span class="rl-avatar" :class="r.backendType || 'generic'"><Server :size="14" /></span>
+              <span class="rl-avatar"><Server :size="14" /></span>
               <div class="rl-names">
                 <div class="rl-name-row">
                   <strong>{{ r.name }}</strong>
@@ -898,7 +874,7 @@ onMounted(loadData)
                 class="icon-btn checkin-btn"
                 :class="{ done: r.consoleSyncSupported && isToday(r.checkinAt), pending: r.consoleSyncSupported && !isToday(r.checkinAt) }"
                 :disabled="!r.consoleSyncSupported || busyIds.has(r.id)"
-                :title="!r.consoleSyncSupported ? '通用类型，无需签到' : r.checkinAt ? '已同步 ' + formatDate(r.checkinAt) + ' · 点击重新同步' : '签到并同步'"
+                :title="!r.consoleSyncSupported ? '未绑定签到工作流' : r.checkinAt ? '已签到 ' + formatDate(r.checkinAt) + ' · 点击重新签到' : '执行签到工作流'"
                 @click.stop="checkin(r)"
               >
                 <LoaderCircle v-if="busyIds.has(r.id) && !cookieBusyIds.has(r.id)" :size="14" class="spin" />
@@ -954,14 +930,9 @@ onMounted(loadData)
                   </div>
                   <div class="r-info">
                     <div class="ri-row">
-                      <Server :size="13" />
-                      <span class="ri-label">平台类型</span>
-                      <span class="ri-val mono">{{ r.backendType || '-' }}</span>
-                    </div>
-                    <div class="ri-row">
                       <User :size="13" />
                       <span class="ri-label">用户信息</span>
-                      <span class="ri-val mono">{{ r.username ? r.username + (consoleUserIdOf(r.raw) && consoleUserIdOf(r.raw) !== r.username ? ' / ' + consoleUserIdOf(r.raw) : '') : consoleUserIdOf(r.raw) || '-' }}</span>
+                      <span class="ri-val mono">{{ r.username || '-' }}</span>
                     </div>
                     <div class="ri-row">
                       <CalendarCheck :size="13" />
@@ -1031,7 +1002,7 @@ onMounted(loadData)
     </section>
 
     <!-- add / edit modal -->
-    <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改后端账户配置，保存后立即生效' : '接入后端账户并配置 API Key 与控制台同步'" :icon="Server" width="760px" @close="showForm = false">
+    <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改后端账户配置，保存后立即生效' : '接入后端账户并配置 API Key 与签到工作流'" :icon="Server" width="760px" @close="showForm = false">
       <div class="relay-form">
         <section class="relay-form-section">
           <div class="ke-head">
@@ -1039,19 +1010,9 @@ onMounted(loadData)
             <em class="ke-hint">上游 API 服务的连接信息</em>
           </div>
 
-          <div class="form-grid-2">
-            <div class="field">
-              <label class="field-label">名称 <span class="req">*</span></label>
-              <input v-model="form.name" class="input" placeholder="例如：OpenAI Primary" />
-            </div>
-            <div class="field">
-              <label class="field-label">后端类型</label>
-              <select v-model="form.backendType" class="select">
-                <option value="">通用</option>
-                <option value="new-api">new-api</option>
-                <option value="sub2api">sub2api</option>
-              </select>
-            </div>
+          <div class="field">
+            <label class="field-label">名称 <span class="req">*</span></label>
+            <input v-model="form.name" class="input" placeholder="例如：OpenAI Primary" />
           </div>
 
           <div class="field">
@@ -1059,12 +1020,29 @@ onMounted(loadData)
             <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
           </div>
 
-          <div v-if="isConsoleBackendType" class="field">
-            <label class="field-label">签到工作流 <em class="ke-hint">配置后手动签到/同步改走工作流执行</em></label>
-            <select v-model="form.consoleCheckinWorkflowId" class="select">
-              <option value="">无（使用平台默认签到）</option>
-              <option v-for="wf in workflowOptions" :key="wf.id" :value="wf.id">{{ wf.id }} · {{ wf.name }}</option>
-            </select>
+          <div class="form-grid-2 checkin-config-row">
+            <div class="field">
+              <label class="field-label">签到工作流</label>
+              <select v-model="form.consoleCheckinWorkflowId" class="select">
+                <option value="">不启用签到</option>
+                <option v-for="wf in workflowOptions" :key="wf.id" :value="wf.id">{{ wf.id }} · {{ wf.name }}</option>
+              </select>
+            </div>
+            <div class="field manual-checkin-field">
+              <label class="field-label">手工签到</label>
+              <div class="manual-checkin-control">
+                <button
+                  type="button"
+                  class="switch"
+                  :class="{ on: form.manualCheckin }"
+                  role="switch"
+                  :aria-checked="form.manualCheckin"
+                  title="手工签到"
+                  @click="form.manualCheckin = !form.manualCheckin"
+                ></button>
+                <span>{{ form.manualCheckin ? '启用' : '关闭' }}</span>
+              </div>
+            </div>
           </div>
 
           <div class="form-grid-2">
@@ -1092,20 +1070,10 @@ onMounted(loadData)
             </div>
           </div>
 
-          <div v-if="isConsoleBackendType" class="field">
+          <div class="field">
             <label class="field-label">Headers</label>
             <textarea v-model="form.consoleHeaders" class="textarea mono" rows="3" placeholder="Authorization: Bearer token&#10;Cookie: session=abc123"></textarea>
             <em v-if="consoleHeadersError" class="ke-hint">{{ consoleHeadersError }}</em>
-          </div>
-          <div v-if="isNewAPIBackendType" class="form-grid-2">
-            <div class="field">
-              <label class="field-label">new_api_refresh</label>
-              <input v-model="form.newApiRefresh" class="input mono" type="password" placeholder="Refresh token" />
-            </div>
-            <div class="field">
-              <label class="field-label">用户 ID</label>
-              <input v-model="form.consoleUserId" class="input mono" placeholder="1929" />
-            </div>
           </div>
         </section>
 
@@ -1347,11 +1315,9 @@ onMounted(loadData)
   width: 34px; height: 34px; border-radius: 10px;
   display: flex; align-items: center; justify-content: center;
   border: 1px solid var(--border);
+  background: rgba(34,211,238,0.12); color: var(--c1);
   flex: none;
 }
-.rl-avatar.generic { background: rgba(251,191,36,0.12); color: #f59e0b; }
-.rl-avatar.new-api { background: rgba(34,211,238,0.12); color: var(--c1); }
-.rl-avatar.sub2api { background: rgba(139,92,246,0.12); color: var(--c2); }
 
 .rl-cell.name { display: flex; align-items: center; gap: 10px; }
 .rl-names { min-width: 0; display: flex; flex-direction: column; }
@@ -1500,6 +1466,10 @@ onMounted(loadData)
 .relay-form-section { display: flex; flex-direction: column; gap: 7px; }
 .relay-form .field { gap: 4px; margin-bottom: 0; }
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.checkin-config-row { align-items: end; }
+.manual-checkin-field { min-width: 0; }
+.manual-checkin-control { min-height: 34px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
+.manual-checkin-control .switch { padding: 0; }
 .secret-input { position: relative; }
 .secret-input .input { width: 100%; padding-right: 38px; }
 .secret-toggle {

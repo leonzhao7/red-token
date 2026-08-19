@@ -73,7 +73,7 @@ type workflowExecuteResponse struct {
 	Output     any                               `json:"output"`
 	Aliases    map[string]any                    `json:"aliases"`
 	ExecutedAt time.Time                         `json:"executed_at"`
-	Requests   []service.NewAPIRequestLog        `json:"requests"`
+	Requests   []service.ConsoleRequestLog       `json:"requests"`
 	DebugLogs  []service.GeneralWorkflowDebugLog `json:"debug_logs"`
 }
 
@@ -246,7 +246,7 @@ type checkinWorkflowOutcome struct {
 	Output     any
 	Aliases    map[string]any
 	ExecutedAt time.Time
-	Requests   []service.NewAPIRequestLog
+	Requests   []service.ConsoleRequestLog
 	DebugLogs  []service.GeneralWorkflowDebugLog
 }
 
@@ -260,7 +260,7 @@ func (e *workflowRunError) Error() string { return e.message }
 // runCheckinWorkflow executes a stored workflow against a backend and applies
 // its validated output to the backend, persisting both the output snapshot and
 // the updated backend runtime fields.
-func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain.Backend, workflowID string, aliases map[string]any, recorder *service.NewAPIRequestRecorder, debugLogs *workflowDebugLogCollector) (checkinWorkflowOutcome, error) {
+func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain.Backend, workflowID string, aliases map[string]any, recorder *service.RequestRecorder, debugLogs *workflowDebugLogCollector) (checkinWorkflowOutcome, error) {
 	record, err := h.store.GetHTTPWorkflow(ctx, workflowID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return checkinWorkflowOutcome{}, &workflowRunError{status: http.StatusNotFound, message: "workflow not found"}
@@ -284,7 +284,7 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 	}
 	headers := workflowConsoleHeaders(backend)
 	if recorder == nil {
-		recorder = service.NewNewAPIRequestRecorder()
+		recorder = service.NewRequestRecorder()
 	}
 	if debugLogs == nil {
 		debugLogs = &workflowDebugLogCollector{Logs: []service.GeneralWorkflowDebugLog{}}
@@ -299,12 +299,13 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		Headers:        headers,
 		InitialAliases: aliases,
 		Runtime: map[string]any{
-			"backend_id":   backend.ID,
-			"backend_name": backend.Name,
-			"username":     backend.ConsoleUsername,
-			"password":     backend.ConsolePassword,
-			"user_id":      consoleStoredAccountID(backend),
-			"headers":      workflowRuntimeHeaders(headers),
+			"backend_id":     backend.ID,
+			"backend_name":   backend.Name,
+			"manual_checkin": backend.ManualCheckin,
+			"username":       backend.ConsoleUsername,
+			"password":       backend.ConsolePassword,
+			"user_id":        consoleStoredAccountID(backend),
+			"headers":        workflowRuntimeHeaders(headers),
 		},
 		Recorder:       recorder,
 		DebugLog:       debugLogs.Record,
@@ -350,7 +351,7 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 }
 
 func workflowBackendWithResponseCookies(backend domain.Backend, cookies []*http.Cookie) domain.Backend {
-	backend.ConsoleHeaders = service.ConsoleHeadersWithResponseCookies(service.NewAPIConsoleHeaders(backend), cookies, time.Now())
+	backend.ConsoleHeaders = service.ConsoleHeadersWithResponseCookies(service.ConsoleHeaders(backend), cookies, time.Now())
 	backend.ConsoleCookie = ""
 	return backend
 }
@@ -693,11 +694,8 @@ func decodeStrictWorkflowJSON(r *http.Request, dst any) error {
 
 func workflowConsoleHeaders(backend domain.Backend) http.Header {
 	headers := make(http.Header)
-	for key, value := range service.NewAPIConsoleHeaders(backend) {
+	for key, value := range service.ConsoleHeaders(backend) {
 		headers.Set(key, value)
-	}
-	if authorization := strings.TrimSpace(backend.ConsoleAuthorization); authorization != "" {
-		headers.Set("Authorization", authorization)
 	}
 	return headers
 }
@@ -741,9 +739,9 @@ func (h *WorkflowHandler) consoleUserAgent() string {
 	return strings.TrimSpace(h.cfg.BackendConsoleUserAgent)
 }
 
-func writeWorkflowExecutionError(w http.ResponseWriter, status int, message string, requests []service.NewAPIRequestLog, debugLogs []service.GeneralWorkflowDebugLog) {
+func writeWorkflowExecutionError(w http.ResponseWriter, status int, message string, requests []service.ConsoleRequestLog, debugLogs []service.GeneralWorkflowDebugLog) {
 	if requests == nil {
-		requests = []service.NewAPIRequestLog{}
+		requests = []service.ConsoleRequestLog{}
 	}
 	if debugLogs == nil {
 		debugLogs = []service.GeneralWorkflowDebugLog{}

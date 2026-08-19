@@ -55,21 +55,6 @@ func (h *BackendHandler) SetLogger(logger *slog.Logger) {
 	h.logger = logger.With("component", "backend_handler")
 }
 
-func (h *BackendHandler) newAPIPlatform() *service.PlatformNewAPI {
-	return service.NewPlatformNewAPI(service.PlatformNewAPIOptions{
-		HTTPClient: h.consoleHTTPClient,
-		UserAgent:  h.backendConsoleUserAgent(),
-		Logger:     h.logger,
-	})
-}
-
-func (h *BackendHandler) sub2APIPlatform() *service.PlatformSub2API {
-	return service.NewPlatformSub2API(service.PlatformSub2APIOptions{
-		HTTPClient: h.consoleHTTPClient,
-		UserAgent:  h.backendConsoleUserAgent(),
-	})
-}
-
 type BackendView struct {
 	domain.Backend
 	RequestCount   int                `json:"request_count"`
@@ -100,7 +85,6 @@ type backendConsoleSyncSummary struct {
 type backendUpdatePayload struct {
 	Name                   *string                 `json:"name"`
 	Protocol               *string                 `json:"protocol"`
-	BackendType            *string                 `json:"backend_type"`
 	BaseURL                *string                 `json:"base_url"`
 	APIKeys                *[]domain.BackendAPIKey `json:"api_keys"`
 	APIKey                 *string                 `json:"api_key"`
@@ -108,14 +92,9 @@ type backendUpdatePayload struct {
 	Tags                   *[]string               `json:"tags"`
 	ConsoleUsername        *string                 `json:"console_username"`
 	ConsolePassword        *string                 `json:"console_password"`
-	NewAPIRefresh          *string                 `json:"new_api_refresh"`
-	ConsoleAuthorization   *string                 `json:"console_authorization"`
-	ConsoleCheckinPath     *string                 `json:"console_checkin_path"`
 	ConsoleCheckinWorkflow *string                 `json:"console_checkin_workflow_id"`
-	ChannelURL             *string                 `json:"channel_url"`
-	ConsoleCookie          *string                 `json:"console_cookie"`
+	ManualCheckin          *bool                   `json:"manual_checkin"`
 	ConsoleHeaders         *map[string]string      `json:"console_headers"`
-	ConsoleUserID          *string                 `json:"console_user_id"`
 	Notes                  *string                 `json:"notes"`
 	ProxyID                *int64                  `json:"proxy_id"`
 	Status                 *string                 `json:"status"`
@@ -128,7 +107,6 @@ type backendUpdatePayload struct {
 type backendImportExportItem struct {
 	Name                   string                 `json:"name"`
 	Protocol               string                 `json:"protocol"`
-	BackendType            string                 `json:"backend_type"`
 	BaseURL                string                 `json:"base_url"`
 	APIKeys                []domain.BackendAPIKey `json:"api_keys"`
 	APIKey                 string                 `json:"api_key,omitempty"`
@@ -136,12 +114,8 @@ type backendImportExportItem struct {
 	Tags                   []string               `json:"tags"`
 	ConsoleUsername        string                 `json:"console_username"`
 	ConsolePassword        string                 `json:"console_password"`
-	NewAPIRefresh          string                 `json:"new_api_refresh"`
-	ConsoleAuthorization   string                 `json:"console_authorization"`
-	ConsoleCheckinPath     string                 `json:"console_checkin_path"`
 	ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id,omitempty"`
-	ChannelURL             string                 `json:"channel_url"`
-	ConsoleCookie          string                 `json:"console_cookie,omitempty"`
+	ManualCheckin          bool                   `json:"manual_checkin"`
 	ConsoleHeaders         map[string]string      `json:"console_headers"`
 	ConsoleAccountJSON     string                 `json:"console_account_json"`
 	ConsolePricingJSON     string                 `json:"console_pricing_json"`
@@ -281,7 +255,7 @@ func (h *BackendHandler) HandleImportBackends(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"imported": len(imported),
-		"backends": imported,
+		"backends": buildBackendFrontendViews(imported, nil),
 	})
 }
 
@@ -289,7 +263,6 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 	var payload struct {
 		Name                   string                 `json:"name"`
 		Protocol               string                 `json:"protocol"`
-		BackendType            string                 `json:"backend_type"`
 		BaseURL                string                 `json:"base_url"`
 		APIKeys                []domain.BackendAPIKey `json:"api_keys"`
 		APIKey                 string                 `json:"api_key"`
@@ -297,14 +270,9 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		Tags                   []string               `json:"tags"`
 		ConsoleUsername        string                 `json:"console_username"`
 		ConsolePassword        string                 `json:"console_password"`
-		NewAPIRefresh          string                 `json:"new_api_refresh"`
-		ConsoleAuthorization   string                 `json:"console_authorization"`
-		ConsoleCheckinPath     string                 `json:"console_checkin_path"`
 		ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id"`
-		ChannelURL             string                 `json:"channel_url"`
-		ConsoleCookie          string                 `json:"console_cookie"`
+		ManualCheckin          bool                   `json:"manual_checkin"`
 		ConsoleHeaders         map[string]string      `json:"console_headers"`
-		ConsoleUserID          *string                `json:"console_user_id"`
 		Notes                  string                 `json:"notes"`
 		ProxyID                int64                  `json:"proxy_id"`
 		Status                 string                 `json:"status"`
@@ -336,40 +304,12 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	backendType := domain.NormalizeBackendType(payload.BackendType)
-	consoleAuthorization := strings.TrimSpace(payload.ConsoleAuthorization)
-	consoleCheckinPath := normalizeConsoleAPIPath(payload.ConsoleCheckinPath)
 	consoleCheckinWorkflow := strings.TrimSpace(payload.ConsoleCheckinWorkflow)
-	channelURL := normalizeConsoleAPIPath(payload.ChannelURL)
-	if backendType != domain.BackendTypeSub2API {
-		consoleAuthorization = ""
-		consoleCheckinPath = ""
-		channelURL = ""
-	}
 	consoleHeaders := payload.ConsoleHeaders
-	if len(consoleHeaders) == 0 && strings.TrimSpace(payload.ConsoleCookie) != "" {
-		consoleHeaders = map[string]string{"Cookie": strings.TrimSpace(payload.ConsoleCookie)}
-	}
 	consoleHeaders, err = normalizeConsoleHeaders(consoleHeaders)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if backendType != domain.BackendTypeNewAPI && backendType != domain.BackendTypeSub2API {
-		consoleHeaders = map[string]string{}
-	}
-	newAPIRefresh := ""
-	if backendType == domain.BackendTypeNewAPI {
-		newAPIRefresh = strings.TrimSpace(payload.NewAPIRefresh)
-	}
-	consoleAccountJSON := ""
-	if payload.ConsoleUserID != nil {
-		var accountErr error
-		consoleAccountJSON, accountErr = consoleAccountJSONWithUserID("", *payload.ConsoleUserID)
-		if accountErr != nil {
-			writeError(w, http.StatusBadRequest, accountErr.Error())
-			return
-		}
 	}
 	if err := h.validateCheckinWorkflowRef(r.Context(), consoleCheckinWorkflow); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -379,20 +319,15 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 	backend, err := h.store.CreateBackend(r.Context(), domain.Backend{
 		Name:                   payload.Name,
 		Protocol:               domain.NormalizeBackendProtocol(payload.Protocol),
-		BackendType:            backendType,
 		BaseURL:                payload.BaseURL,
 		APIKeys:                apiKeys,
 		ConsoleURL:             payload.ConsoleURL,
 		Tags:                   payload.Tags,
 		ConsoleUsername:        payload.ConsoleUsername,
 		ConsolePassword:        payload.ConsolePassword,
-		NewAPIRefresh:          newAPIRefresh,
-		ConsoleAuthorization:   consoleAuthorization,
-		ConsoleCheckinPath:     consoleCheckinPath,
 		ConsoleCheckinWorkflow: consoleCheckinWorkflow,
-		ChannelURL:             channelURL,
+		ManualCheckin:          payload.ManualCheckin,
 		ConsoleHeaders:         consoleHeaders,
-		ConsoleAccountJSON:     consoleAccountJSON,
 		Notes:                  payload.Notes,
 		ProxyID:                payload.ProxyID,
 		Weight:                 payload.Weight,
@@ -453,7 +388,6 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 	patch := store.BackendPatch{
 		Name:            payload.Name,
 		Protocol:        payload.Protocol,
-		BackendType:     payload.BackendType,
 		BaseURL:         payload.BaseURL,
 		APIKeys:         nil,
 		ConsoleURL:      payload.ConsoleURL,
@@ -493,38 +427,6 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 		patch.APIKeys = &apiKeys
 	}
 
-	backendType := current.BackendType
-	if payload.BackendType != nil {
-		backendType = domain.NormalizeBackendType(*payload.BackendType)
-	}
-	if payload.NewAPIRefresh != nil || (payload.BackendType != nil && backendType != domain.BackendTypeNewAPI) {
-		value := ""
-		if backendType == domain.BackendTypeNewAPI && payload.NewAPIRefresh != nil {
-			value = strings.TrimSpace(*payload.NewAPIRefresh)
-		}
-		patch.NewAPIRefresh = &value
-	}
-	if payload.ConsoleAuthorization != nil || (payload.BackendType != nil && backendType != domain.BackendTypeSub2API) {
-		value := ""
-		if backendType == domain.BackendTypeSub2API {
-			value = strings.TrimSpace(*payload.ConsoleAuthorization)
-		}
-		patch.ConsoleAuthorization = &value
-	}
-	if payload.ConsoleCheckinPath != nil || (payload.BackendType != nil && backendType != domain.BackendTypeSub2API) {
-		value := ""
-		if backendType == domain.BackendTypeSub2API {
-			value = normalizeConsoleAPIPath(*payload.ConsoleCheckinPath)
-		}
-		patch.ConsoleCheckinPath = &value
-	}
-	if payload.ChannelURL != nil || (payload.BackendType != nil && backendType != domain.BackendTypeSub2API) {
-		value := ""
-		if backendType == domain.BackendTypeSub2API {
-			value = normalizeConsoleAPIPath(*payload.ChannelURL)
-		}
-		patch.ChannelURL = &value
-	}
 	if payload.ConsoleCheckinWorkflow != nil {
 		value := strings.TrimSpace(*payload.ConsoleCheckinWorkflow)
 		if err := h.validateCheckinWorkflowRef(r.Context(), value); err != nil {
@@ -533,42 +435,18 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 		}
 		patch.ConsoleCheckinWorkflow = &value
 	}
-	if payload.ConsoleCookie != nil {
-		value := map[string]string{}
-		if backendType == domain.BackendTypeNewAPI {
-			cookie := strings.TrimSpace(*payload.ConsoleCookie)
-			if cookie != "" {
-				value["Cookie"] = cookie
-			}
-		}
-		patch.ConsoleHeaders = &value
-		emptyCookie := ""
-		patch.ConsoleCookie = &emptyCookie
+	if payload.ManualCheckin != nil {
+		patch.ManualCheckin = payload.ManualCheckin
 	}
 	if payload.ConsoleHeaders != nil {
-		value := map[string]string{}
-		if backendType == domain.BackendTypeNewAPI || backendType == domain.BackendTypeSub2API {
-			value, err = normalizeConsoleHeaders(*payload.ConsoleHeaders)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
-		patch.ConsoleHeaders = &value
-		if backendType == domain.BackendTypeSub2API {
-			emptyAuthorization := ""
-			patch.ConsoleAuthorization = &emptyAuthorization
-		}
-		emptyCookie := ""
-		patch.ConsoleCookie = &emptyCookie
-	}
-	if payload.ConsoleUserID != nil {
-		accountJSON, accountErr := consoleAccountJSONWithUserID(current.ConsoleAccountJSON, *payload.ConsoleUserID)
-		if accountErr != nil {
-			writeError(w, http.StatusBadRequest, accountErr.Error())
+		value, err := normalizeConsoleHeaders(*payload.ConsoleHeaders)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		patch.ConsoleAccountJSON = &accountJSON
+		patch.ConsoleHeaders = &value
+		emptyCookie := ""
+		patch.ConsoleCookie = &emptyCookie
 	}
 	if payload.Status != nil {
 		switch *payload.Status {
@@ -591,163 +469,22 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *BackendHandler) HandleBackendConsoleCheckin(w http.ResponseWriter, r *http.Request) {
-	recorder := newNewAPIConsoleRequestRecorder()
+	recorder := newConsoleRequestRecorder()
 	backend, err := h.loadConsoleBackend(r)
 	if err != nil {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_rejected",
+		h.logConsoleEvent(r.Context(), slog.LevelWarn, "backend_console_checkin_rejected",
 			slog.String("error", err.Error()),
 		)
 		writeConsoleError(w, http.StatusBadRequest, err.Error(), recorder)
 		return
 	}
-	if workflowID := strings.TrimSpace(backend.ConsoleCheckinWorkflow); workflowID != "" {
-		h.handleWorkflowConsoleCheckin(w, r, backend, workflowID, recorder)
+	workflowID := strings.TrimSpace(backend.ConsoleCheckinWorkflow)
+	if workflowID == "" {
+		writeConsoleError(w, http.StatusBadRequest, "console_checkin_workflow_id is required", recorder)
 		return
 	}
-	if domain.NormalizeBackendType(backend.BackendType) != domain.BackendTypeNewAPI {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_rejected",
-			slog.String("error", "backend_type must be new-api"),
-		)
-		writeConsoleError(w, http.StatusBadRequest, "backend_type must be new-api", recorder)
-		return
-	}
-	h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_checkin_started", consoleBackendAttrs(backend)...)
-
-	accountID := consoleStoredAccountID(backend)
-	directCheckin := hasNewAPIDirectCheckinCredentials(backend, accountID)
-	var selfResult newAPIConsoleResult
-	if directCheckin {
-		h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_checkin_account_identified", append(consoleBackendAttrs(backend),
-			slog.String("stage", "stored_account"),
-			slog.String("new_api_user", accountID),
-		)...)
-	} else {
-		selfResult, backend, accountID, err = h.newAPIConsoleSelfWithLogin(r.Context(), backend, accountID, recorder)
-		if err != nil {
-			h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-				slog.String("stage", "initial_self"),
-				slog.String("error", err.Error()),
-			)...)
-			writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-			return
-		}
-		accountID = firstNonEmpty(consoleAccountID(selfResult.Payload), accountID)
-		if accountID == "" {
-			h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-				slog.String("stage", "account_id"),
-				slog.String("error", "new-api self response missing user id"),
-			)...)
-			writeConsoleError(w, http.StatusBadGateway, "new-api self response missing user id", recorder)
-			return
-		}
-		h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_checkin_account_identified", append(consoleBackendAttrs(backend),
-			slog.String("new_api_user", accountID),
-		)...)
-	}
-
-	result, err := h.newAPIPlatform().Checkin(r.Context(), backend, accountID, recorder)
-	if err != nil {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "checkin_request"),
-			slog.String("new_api_user", accountID),
-			slog.String("error", err.Error()),
-		)...)
-		writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-		return
-	}
-
-	if result.LoginRequired() && canRecoverNewAPIConsoleCheckinAuth(backend) {
-		h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_checkin_login_required", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "checkin_result"),
-			slog.String("new_api_user", accountID),
-		), consoleResultAttrs(result)...)...)
-		var recovered bool
-		backend, accountID, recovered, err = h.recoverNewAPIConsoleCheckinAuth(r.Context(), backend, accountID, recorder)
-		if err != nil {
-			h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-				slog.String("stage", "authentication_after_checkin"),
-				slog.String("new_api_user", accountID),
-				slog.String("error", err.Error()),
-			)...)
-			writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-			return
-		}
-		if recovered {
-			result, err = h.newAPIPlatform().Checkin(r.Context(), backend, accountID, recorder)
-			if err != nil {
-				h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-					slog.String("stage", "checkin_retry_request"),
-					slog.String("new_api_user", accountID),
-					slog.String("error", err.Error()),
-				)...)
-				writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-				return
-			}
-		}
-	}
-	if !result.Success() && !result.AlreadyCheckedIn() {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "checkin_result"),
-			slog.String("new_api_user", accountID),
-		), consoleResultAttrs(result)...)...)
-		writeConsoleError(w, http.StatusBadGateway, result.ErrorMessage("new-api checkin failed"), recorder)
-		return
-	}
-	lastCheckinAt := time.Now().UTC()
-
-	selfResult, err = h.newAPIPlatform().Self(r.Context(), backend, accountID, recorder)
-	if err != nil {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "refresh_self"),
-			slog.String("new_api_user", accountID),
-			slog.String("error", err.Error()),
-		)...)
-		writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-		return
-	}
-	if !selfResult.Success() {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "refresh_self_result"),
-			slog.String("new_api_user", accountID),
-		), consoleResultAttrs(selfResult)...)...)
-		writeConsoleError(w, http.StatusBadGateway, selfResult.ErrorMessage("new-api self request failed"), recorder)
-		return
-	}
-	accountJSON, err := consoleAccountSummaryJSON(selfResult.Payload, nil, lastCheckinAt, consoleCheckinReward(result.Payload), backend.ConsoleAccountJSON)
-	if err != nil {
-		h.logConsoleEvent(r.Context(), slog.LevelWarn, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "account_summary"),
-			slog.String("new_api_user", accountID),
-			slog.String("error", err.Error()),
-		)...)
-		writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-		return
-	}
-	backend.ConsoleAccountJSON = accountJSON
-	updated, err := h.store.UpdateBackend(r.Context(), backend)
-	if err != nil {
-		h.logConsoleEvent(r.Context(), slog.LevelError, "newapi_console_checkin_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "save_account_summary"),
-			slog.String("new_api_user", accountID),
-			slog.String("error", err.Error()),
-		)...)
-		writeConsoleError(w, http.StatusInternalServerError, err.Error(), recorder)
-		return
-	}
-	h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_account_summary_saved", append(consoleBackendAttrs(updated),
-		slog.String("new_api_user", accountID),
-		slog.Int("account_summary_bytes", len(accountJSON)),
-	)...)
-	h.logConsoleEvent(r.Context(), slog.LevelInfo, "newapi_console_checkin_completed", append(append(consoleBackendAttrs(updated),
-		slog.String("new_api_user", accountID),
-	), consoleResultAttrs(result)...)...)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":  buildBackendFrontendView(updated, 0),
-		"checkin":  result.Payload,
-		"account":  decodeJSONMap(accountJSON),
-		"requests": recorder.Requests,
-	})
+	h.handleWorkflowConsoleCheckin(w, r, backend, workflowID, recorder)
+	return
 }
 
 // HandleBackendConsoleCookieSync imports Cookie and Authorization credentials
@@ -772,7 +509,7 @@ func (h *BackendHandler) HandleBackendConsoleCookieSync(w http.ResponseWriter, r
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	headers := service.ConsoleHeadersWithCookieValue(service.NewAPIConsoleHeaders(backend), credentials.CookieHeader)
+	headers := service.ConsoleHeadersWithCookieValue(service.ConsoleHeaders(backend), credentials.CookieHeader)
 	headers = service.ConsoleHeadersWithAuthorizationValue(headers, credentials.Authorization)
 	emptyLegacyCookie := ""
 	updated, err := h.store.PatchBackend(r.Context(), backend.ID, store.BackendPatch{
@@ -812,7 +549,7 @@ func (h *BackendHandler) readChromeCredentials(ctx context.Context, endpoint, co
 	return cookieService.ReadCredentials(ctx, consoleURL)
 }
 
-func (h *BackendHandler) handleWorkflowConsoleCheckin(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *newAPIConsoleRequestRecorder) {
+func (h *BackendHandler) handleWorkflowConsoleCheckin(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *consoleRequestRecorder) {
 	if h.workflowHandler == nil {
 		h.logConsoleEvent(r.Context(), slog.LevelWarn, "console_checkin_workflow_unavailable", consoleBackendAttrs(backend)...)
 		writeConsoleError(w, http.StatusInternalServerError, "workflow handler unavailable", recorder)
@@ -844,7 +581,7 @@ func (h *BackendHandler) handleWorkflowConsoleCheckin(w http.ResponseWriter, r *
 	})
 }
 
-func (h *BackendHandler) handleWorkflowConsoleSync(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *newAPIConsoleRequestRecorder, stream *consoleSyncStream) {
+func (h *BackendHandler) handleWorkflowConsoleSync(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *consoleRequestRecorder, stream *consoleSyncStream) {
 	if h.workflowHandler == nil {
 		writeConsoleSyncError(w, http.StatusInternalServerError, "workflow handler unavailable", recorder, stream)
 		return
@@ -879,47 +616,9 @@ func (h *BackendHandler) handleWorkflowConsoleSync(w http.ResponseWriter, r *htt
 	}, stream)
 }
 
-func (h *BackendHandler) HandleBackendConsolePricing(w http.ResponseWriter, r *http.Request) {
-	recorder := newNewAPIConsoleRequestRecorder()
-	backend, err := h.consoleBackend(r)
-	if err != nil {
-		writeConsoleError(w, http.StatusBadRequest, err.Error(), recorder)
-		return
-	}
-
-	accountID := consoleStoredAccountID(backend)
-	result, err := h.newAPIPlatform().Pricing(r.Context(), backend, accountID, recorder)
-	if err != nil {
-		writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-		return
-	}
-	if !result.Success() {
-		writeConsoleError(w, http.StatusBadGateway, result.ErrorMessage("new-api pricing request failed"), recorder)
-		return
-	}
-	filteredPricing := filterConsolePricingPayload(result.Payload, h.focusModelPatterns())
-	pricingJSON, err := json.Marshal(filteredPricing)
-	if err != nil {
-		writeConsoleError(w, http.StatusBadGateway, err.Error(), recorder)
-		return
-	}
-	backend.ConsolePricingJSON = string(pricingJSON)
-	updated, err := h.store.UpdateBackend(r.Context(), backend)
-	if err != nil {
-		writeConsoleError(w, http.StatusInternalServerError, err.Error(), recorder)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":  buildBackendFrontendView(updated, 0),
-		"pricing":  filteredPricing,
-		"requests": recorder.Requests,
-	})
-}
-
 func (h *BackendHandler) HandleBackendConsoleSync(w http.ResponseWriter, r *http.Request) {
 	stream := newConsoleSyncStream(w, r)
-	recorder := newNewAPIConsoleRequestRecorder(func(entry newAPIConsoleRequestLog) {
+	recorder := newConsoleRequestRecorder(func(entry consoleRequestLog) {
 		if stream != nil {
 			stream.write(map[string]any{
 				"type":    "request",
@@ -927,24 +626,17 @@ func (h *BackendHandler) HandleBackendConsoleSync(w http.ResponseWriter, r *http
 			})
 		}
 	})
-	backend, err := h.consoleSyncBackend(r)
+	backend, err := h.loadConsoleBackend(r)
 	if err != nil {
 		writeConsoleSyncError(w, http.StatusBadRequest, err.Error(), recorder, stream)
 		return
 	}
-	if workflowID := strings.TrimSpace(backend.ConsoleCheckinWorkflow); workflowID != "" {
-		h.handleWorkflowConsoleSync(w, r, backend, workflowID, recorder, stream)
+	workflowID := strings.TrimSpace(backend.ConsoleCheckinWorkflow)
+	if workflowID == "" {
+		writeConsoleSyncError(w, http.StatusBadRequest, "console_checkin_workflow_id is required", recorder, stream)
 		return
 	}
-
-	switch domain.NormalizeBackendType(backend.BackendType) {
-	case domain.BackendTypeNewAPI:
-		h.handleNewAPIConsoleSync(w, r, backend, recorder, stream)
-	case domain.BackendTypeSub2API:
-		h.handleSub2APIConsoleSync(w, r, backend, recorder, stream)
-	default:
-		writeConsoleSyncError(w, http.StatusBadRequest, "backend_type must be new-api or sub2api", recorder, stream)
-	}
+	h.handleWorkflowConsoleSync(w, r, backend, workflowID, recorder, stream)
 }
 
 func (h *BackendHandler) HandleBackendConsoleSyncSummary(w http.ResponseWriter, r *http.Request) {
@@ -970,156 +662,6 @@ func (h *BackendHandler) HandleBackendConsoleSyncSummary(w http.ResponseWriter, 
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
-}
-
-func (h *BackendHandler) handleNewAPIConsoleSync(w http.ResponseWriter, r *http.Request, backend domain.Backend, recorder *newAPIConsoleRequestRecorder, stream *consoleSyncStream) {
-	accountID := consoleStoredAccountID(backend)
-	if len(newAPIConsoleHeaders(backend)) == 0 {
-		updated, loginAccountID, err := h.loginNewAPIConsole(r.Context(), backend, recorder)
-		if err != nil {
-			writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-			return
-		}
-		backend = updated
-		accountID = firstNonEmpty(loginAccountID, accountID)
-	}
-
-	statusResult, err := h.newAPIPlatform().Status(r.Context(), backend, recorder)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-		return
-	}
-	if !statusResult.Success() {
-		writeConsoleSyncError(w, http.StatusBadGateway, statusResult.ErrorMessage("new-api status request failed"), recorder, stream)
-		return
-	}
-
-	lastCheckinAt, checkedInToday := consoleLastCheckinStatus(backend, time.Now().UTC())
-	checkinEnabled := service.NewAPIStatusCheckinEnabled(statusResult.Payload)
-	recordSyncCompletionAsCheckin := !checkinEnabled || recordsConsoleCheckin(r)
-	var selfResult newAPIConsoleResult
-	var checkinPayload map[string]any
-	if checkedInToday || !checkinEnabled {
-		selfResult, backend, accountID, err = h.newAPIConsoleSelfWithLogin(r.Context(), backend, accountID, recorder)
-		if err != nil {
-			writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-			return
-		}
-		accountID = firstNonEmpty(consoleAccountID(selfResult.Payload), accountID)
-		if accountID == "" {
-			writeConsoleSyncError(w, http.StatusBadGateway, "new-api self response missing user id", recorder, stream)
-			return
-		}
-	} else {
-		checkinResult, updatedBackend, updatedAccountID, err := h.performNewAPIConsoleCheckin(r.Context(), backend, accountID, recorder)
-		if err != nil {
-			writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-			return
-		}
-		backend = updatedBackend
-		accountID = firstNonEmpty(updatedAccountID, accountID)
-		checkinPayload = checkinResult.Payload
-		lastCheckinAt = time.Now().UTC()
-
-		selfResult, err = h.newAPIPlatform().Self(r.Context(), backend, accountID, recorder)
-		if err != nil {
-			writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-			return
-		}
-		if !selfResult.Success() {
-			writeConsoleSyncError(w, http.StatusBadGateway, selfResult.ErrorMessage("new-api self request failed"), recorder, stream)
-			return
-		}
-		accountID = firstNonEmpty(consoleAccountID(selfResult.Payload), accountID)
-	}
-
-	accountJSON, err := consoleAccountSummaryJSON(selfResult.Payload, statusResult.Payload, lastCheckinAt, consoleCheckinReward(checkinPayload), backend.ConsoleAccountJSON)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-		return
-	}
-	backend.ConsoleAccountJSON = accountJSON
-	backend, err = h.store.UpdateBackend(r.Context(), backend)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusInternalServerError, err.Error(), recorder, stream)
-		return
-	}
-
-	pricingResult, err := h.newAPIPlatform().Pricing(r.Context(), backend, accountID, recorder)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-		return
-	}
-	if !pricingResult.Success() {
-		writeConsoleSyncError(w, http.StatusBadGateway, pricingResult.ErrorMessage("new-api pricing request failed"), recorder, stream)
-		return
-	}
-	filteredPricing := filterConsolePricingPayload(pricingResult.Payload, h.focusModelPatterns())
-	pricingJSON, err := json.Marshal(filteredPricing)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-		return
-	}
-	if recordSyncCompletionAsCheckin {
-		lastCheckinAt = time.Now().UTC()
-		accountJSON, err = consoleAccountSummaryJSON(selfResult.Payload, statusResult.Payload, lastCheckinAt, nil, backend.ConsoleAccountJSON)
-		if err != nil {
-			writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-			return
-		}
-		backend.ConsoleAccountJSON = accountJSON
-	}
-	backend, err = h.syncNewAPIConsoleTokens(r.Context(), backend, accountID, recorder)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusBadGateway, err.Error(), recorder, stream)
-		return
-	}
-	backend.ConsolePricingJSON = string(pricingJSON)
-
-	updated, err := h.store.UpdateBackend(r.Context(), backend)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusInternalServerError, err.Error(), recorder, stream)
-		return
-	}
-	h.appendBackendConsoleSyncAudit(r, updated)
-
-	writeConsoleSyncSuccess(w, map[string]any{
-		"backend":  buildBackendFrontendView(updated, 0),
-		"status":   statusResult.Payload,
-		"checkin":  checkinPayload,
-		"account":  decodeJSONMap(accountJSON),
-		"pricing":  filteredPricing,
-		"requests": recorder.Requests,
-	}, stream)
-}
-
-func (h *BackendHandler) handleSub2APIConsoleSync(w http.ResponseWriter, r *http.Request, backend domain.Backend, recorder *newAPIConsoleRequestRecorder, stream *consoleSyncStream) {
-	result, err := h.sub2APIPlatform().Sync(r.Context(), backend, recorder, service.Sub2APISyncOptions{
-		RecordCompletionAsCheckin: recordsConsoleCheckin(r),
-	})
-	if err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, service.ErrSub2APIConsoleAuthorizationRequired) {
-			status = http.StatusBadRequest
-		}
-		writeConsoleSyncError(w, status, err.Error(), recorder, stream)
-		return
-	}
-
-	updated, err := h.store.UpdateBackend(r.Context(), result.Backend)
-	if err != nil {
-		writeConsoleSyncError(w, http.StatusInternalServerError, err.Error(), recorder, stream)
-		return
-	}
-	h.appendBackendConsoleSyncAudit(r, updated)
-
-	writeConsoleSyncSuccess(w, map[string]any{
-		"backend":  buildBackendFrontendView(updated, 0),
-		"checkin":  result.Checkin,
-		"account":  result.Account,
-		"pricing":  result.Pricing,
-		"requests": recorder.Requests,
-	}, stream)
 }
 
 func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, payload backendImportExportPayload) ([]domain.Backend, error) {
@@ -1170,21 +712,10 @@ func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, paylo
 		if item.ConsecutiveFailures < 0 {
 			return nil, fmt.Errorf("backend %q consecutive_failures must be >= 0", name)
 		}
-		backendType := domain.NormalizeBackendType(item.BackendType)
 		consoleHeaders := item.ConsoleHeaders
-		if len(consoleHeaders) == 0 && strings.TrimSpace(item.ConsoleCookie) != "" {
-			consoleHeaders = map[string]string{"Cookie": strings.TrimSpace(item.ConsoleCookie)}
-		}
 		consoleHeaders, err = normalizeConsoleHeaders(consoleHeaders)
 		if err != nil {
 			return nil, fmt.Errorf("backend %q: %w", name, err)
-		}
-		if backendType != domain.BackendTypeNewAPI && backendType != domain.BackendTypeSub2API {
-			consoleHeaders = map[string]string{}
-		}
-		newAPIRefresh := ""
-		if backendType == domain.BackendTypeNewAPI {
-			newAPIRefresh = strings.TrimSpace(item.NewAPIRefresh)
 		}
 		apiKeys, apiKeysErr := validateBackendAPIKeys(item.APIKeys, item.APIKey, item.Models, item.ModelMapping)
 		if apiKeysErr != nil {
@@ -1197,18 +728,14 @@ func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, paylo
 		backends = append(backends, domain.Backend{
 			Name:                   name,
 			Protocol:               domain.NormalizeBackendProtocol(item.Protocol),
-			BackendType:            backendType,
 			BaseURL:                item.BaseURL,
 			APIKeys:                apiKeys,
 			ConsoleURL:             item.ConsoleURL,
 			Tags:                   item.Tags,
 			ConsoleUsername:        item.ConsoleUsername,
 			ConsolePassword:        item.ConsolePassword,
-			NewAPIRefresh:          newAPIRefresh,
-			ConsoleAuthorization:   item.ConsoleAuthorization,
-			ConsoleCheckinPath:     normalizeConsoleAPIPath(item.ConsoleCheckinPath),
 			ConsoleCheckinWorkflow: consoleCheckinWorkflow,
-			ChannelURL:             normalizeConsoleAPIPath(item.ChannelURL),
+			ManualCheckin:          item.ManualCheckin,
 			ConsoleHeaders:         consoleHeaders,
 			ConsoleAccountJSON:     item.ConsoleAccountJSON,
 			ConsolePricingJSON:     item.ConsolePricingJSON,
@@ -1226,19 +753,15 @@ func backendToImportExportItem(backend domain.Backend) backendImportExportItem {
 	return backendImportExportItem{
 		Name:                   backend.Name,
 		Protocol:               domain.NormalizeBackendProtocol(backend.Protocol),
-		BackendType:            domain.NormalizeBackendType(backend.BackendType),
 		BaseURL:                backend.BaseURL,
 		APIKeys:                backend.APIKeys,
 		ConsoleURL:             backend.ConsoleURL,
 		Tags:                   backend.Tags,
 		ConsoleUsername:        backend.ConsoleUsername,
 		ConsolePassword:        backend.ConsolePassword,
-		NewAPIRefresh:          backend.NewAPIRefresh,
-		ConsoleAuthorization:   backend.ConsoleAuthorization,
-		ConsoleCheckinPath:     backend.ConsoleCheckinPath,
 		ConsoleCheckinWorkflow: backend.ConsoleCheckinWorkflow,
-		ChannelURL:             backend.ChannelURL,
-		ConsoleHeaders:         newAPIConsoleHeaders(backend),
+		ManualCheckin:          backend.ManualCheckin,
+		ConsoleHeaders:         service.ConsoleHeaders(backend),
 		ConsoleAccountJSON:     backend.ConsoleAccountJSON,
 		ConsolePricingJSON:     backend.ConsolePricingJSON,
 		Notes:                  backend.Notes,
@@ -1305,13 +828,10 @@ func (h *BackendHandler) HandleBackendDetail(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, resourceDetailPayload{
 		Overview: []resourceDetailEntry{
 			detailEntry("name", "Name", detail.Backend.Name),
-			detailEntry("backend_type", "Backend Type", domain.NormalizeBackendType(detail.Backend.BackendType)),
 			detailEntry("console_url", "Console URL", detail.Backend.ConsoleURL),
 			detailEntry("console_username", "Console Username", detail.Backend.ConsoleUsername),
-			detailEntry("console_checkin_path", "Console Check-in Path", detail.Backend.ConsoleCheckinPath),
-			detailEntry("channel_url", "Channel URL", detail.Backend.ChannelURL),
 			detailEntry("console_password", "Console Password", secretPresenceValue(detail.Backend.ConsolePassword)),
-			detailEntry("new_api_refresh", "new_api_refresh", secretPresenceValue(detail.Backend.NewAPIRefresh)),
+			detailEntry("console_checkin_workflow_id", "Check-in Workflow", detail.Backend.ConsoleCheckinWorkflow),
 			detailEntry("console_headers", "Console Headers", consoleHeaderPresence(detail.Backend)),
 			detailEntry("status", "Status", detail.Backend.Status),
 			detailEntry("consecutive_failures", "Consecutive Failures", detail.Backend.ConsecutiveFailures),
@@ -1445,8 +965,8 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	})
 }
 
-func writeConsoleError(w http.ResponseWriter, status int, message string, recorder *newAPIConsoleRequestRecorder) {
-	requests := []newAPIConsoleRequestLog{}
+func writeConsoleError(w http.ResponseWriter, status int, message string, recorder *consoleRequestRecorder) {
+	requests := []consoleRequestLog{}
 	if recorder != nil {
 		requests = recorder.Requests
 	}
@@ -1487,10 +1007,6 @@ func wantsConsoleSyncStream(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "application/x-ndjson")
 }
 
-func recordsConsoleCheckin(r *http.Request) bool {
-	return r.URL.Query().Get("checkin") == "1"
-}
-
 func (s *consoleSyncStream) write(event map[string]any) {
 	if s == nil {
 		return
@@ -1499,9 +1015,9 @@ func (s *consoleSyncStream) write(event map[string]any) {
 	s.flusher.Flush()
 }
 
-func writeConsoleSyncError(w http.ResponseWriter, status int, message string, recorder *newAPIConsoleRequestRecorder, stream *consoleSyncStream) {
+func writeConsoleSyncError(w http.ResponseWriter, status int, message string, recorder *consoleRequestRecorder, stream *consoleSyncStream) {
 	if stream != nil {
-		requests := []newAPIConsoleRequestLog{}
+		requests := []consoleRequestLog{}
 		if recorder != nil {
 			requests = recorder.Requests
 		}
@@ -1738,9 +1254,8 @@ func consoleBackendAttrs(backend domain.Backend) []slog.Attr {
 	attrs := []slog.Attr{
 		slog.Int64("backend_id", backend.ID),
 		slog.String("backend_name", backend.Name),
-		slog.String("backend_type", domain.NormalizeBackendType(backend.BackendType)),
 		slog.String("backend_status", backend.Status),
-		slog.Int("console_header_count", len(newAPIConsoleHeaders(backend))),
+		slog.Int("console_header_count", len(service.ConsoleHeaders(backend))),
 	}
 	if parsed, err := url.Parse(strings.TrimSpace(backend.ConsoleURL)); err == nil {
 		attrs = append(attrs,
@@ -1757,51 +1272,11 @@ func consoleBackendAttrs(backend domain.Backend) []slog.Attr {
 	return attrs
 }
 
-func consoleRequestAttrs(backend domain.Backend, method, path string, body []byte, headers map[string]string, newAPIUser string) []slog.Attr {
-	newAPIUser = strings.TrimSpace(newAPIUser)
-	attrs := append(consoleBackendAttrs(backend),
-		slog.String("method", method),
-		slog.String("path", path),
-		slog.Int("request_body_bytes", len(body)),
-		slog.Int("configured_header_count", len(headers)),
-		slog.Bool("new_api_user_present", newAPIUser != ""),
-	)
-	if newAPIUser != "" {
-		attrs = append(attrs, slog.String("new_api_user", newAPIUser))
-	}
-	return attrs
-}
+type consoleRequestLog = service.ConsoleRequestLog
+type consoleRequestRecorder = service.RequestRecorder
 
-func consoleResultAttrs(result newAPIConsoleResult) []slog.Attr {
-	attrs := []slog.Attr{
-		slog.Int("console_http_status", result.StatusCode),
-		slog.Bool("console_success", result.Success()),
-		slog.Bool("console_login_required", result.LoginRequired()),
-	}
-	if message := consoleResultMessage(result); message != "" {
-		attrs = append(attrs, slog.String("console_message", message))
-	}
-	return attrs
-}
-
-func consoleResultMessage(result newAPIConsoleResult) string {
-	message := strings.TrimSpace(fmt.Sprint(result.Payload["message"]))
-	if message == "" || message == "<nil>" {
-		return ""
-	}
-	const limit = 200
-	if len([]rune(message)) <= limit {
-		return message
-	}
-	return string([]rune(message)[:limit]) + "..."
-}
-
-type newAPIConsoleResult = service.NewAPIResult
-type newAPIConsoleRequestLog = service.NewAPIRequestLog
-type newAPIConsoleRequestRecorder = service.NewAPIRequestRecorder
-
-func newNewAPIConsoleRequestRecorder(onRecord ...func(newAPIConsoleRequestLog)) *newAPIConsoleRequestRecorder {
-	return service.NewNewAPIRequestRecorder(onRecord...)
+func newConsoleRequestRecorder(onRecord ...func(consoleRequestLog)) *consoleRequestRecorder {
+	return service.NewRequestRecorder(onRecord...)
 }
 
 func (h *BackendHandler) loadConsoleBackend(r *http.Request) (domain.Backend, error) {
@@ -1820,273 +1295,6 @@ func (h *BackendHandler) loadConsoleBackend(r *http.Request) (domain.Backend, er
 		return domain.Backend{}, err
 	}
 	return backend, nil
-}
-
-func (h *BackendHandler) consoleBackend(r *http.Request) (domain.Backend, error) {
-	backend, err := h.loadConsoleBackend(r)
-	if err != nil {
-		return domain.Backend{}, err
-	}
-	if domain.NormalizeBackendType(backend.BackendType) != domain.BackendTypeNewAPI {
-		return domain.Backend{}, errors.New("backend_type must be new-api")
-	}
-	return backend, nil
-}
-
-func (h *BackendHandler) consoleSyncBackend(r *http.Request) (domain.Backend, error) {
-	backend, err := h.loadConsoleBackend(r)
-	if err != nil {
-		return domain.Backend{}, err
-	}
-	switch domain.NormalizeBackendType(backend.BackendType) {
-	case domain.BackendTypeNewAPI, domain.BackendTypeSub2API:
-		return backend, nil
-	default:
-		return domain.Backend{}, errors.New("backend_type must be new-api or sub2api")
-	}
-}
-
-func (h *BackendHandler) performNewAPIConsoleCheckin(ctx context.Context, backend domain.Backend, accountID string, recorder *newAPIConsoleRequestRecorder) (newAPIConsoleResult, domain.Backend, string, error) {
-	result, err := h.newAPIPlatform().Checkin(ctx, backend, accountID, recorder)
-	if err != nil {
-		return newAPIConsoleResult{}, backend, accountID, err
-	}
-	if result.LoginRequired() && canRecoverNewAPIConsoleCheckinAuth(backend) {
-		updated, updatedAccountID, recovered, err := h.recoverNewAPIConsoleCheckinAuth(ctx, backend, accountID, recorder)
-		if err != nil {
-			return newAPIConsoleResult{}, backend, accountID, err
-		}
-		backend = updated
-		accountID = firstNonEmpty(updatedAccountID, accountID)
-		if recovered {
-			result, err = h.newAPIPlatform().Checkin(ctx, backend, accountID, recorder)
-			if err != nil {
-				return newAPIConsoleResult{}, backend, accountID, err
-			}
-		}
-	}
-	if !result.Success() && !result.AlreadyCheckedIn() {
-		return newAPIConsoleResult{}, backend, accountID, errors.New(result.ErrorMessage("new-api checkin failed"))
-	}
-	return result, backend, accountID, nil
-}
-
-func (h *BackendHandler) recoverNewAPIConsoleCheckinAuth(ctx context.Context, backend domain.Backend, accountID string, recorder *newAPIConsoleRequestRecorder) (domain.Backend, string, bool, error) {
-	if hasNewAPIConsoleLoginCredentials(backend) {
-		updated, loginAccountID, err := h.loginNewAPIConsole(ctx, backend, recorder)
-		if err != nil {
-			return backend, accountID, false, err
-		}
-		accountID = firstNonEmpty(loginAccountID, accountID)
-		selfResult, updated, updatedAccountID, err := h.newAPIConsoleSelfWithLogin(ctx, updated, accountID, recorder)
-		if err != nil {
-			return updated, accountID, false, err
-		}
-		accountID = firstNonEmpty(updatedAccountID, consoleAccountID(selfResult.Payload), accountID)
-		if accountID == "" {
-			return updated, accountID, false, errors.New("new-api self response missing user id")
-		}
-		return updated, accountID, true, nil
-	}
-	if hasNewAPIConsoleRefreshCredentials(backend) {
-		updated, refreshAccountID, err := h.refreshNewAPIConsole(ctx, backend, recorder)
-		if err != nil {
-			return backend, accountID, false, err
-		}
-		return updated, firstNonEmpty(refreshAccountID, accountID), true, nil
-	}
-	return backend, accountID, false, nil
-}
-
-func (h *BackendHandler) focusModelPatterns() string {
-	if h.cfg == nil {
-		return ""
-	}
-	return h.cfg.FocusModels
-}
-
-func (h *BackendHandler) newAPIConsoleSelfWithLogin(ctx context.Context, backend domain.Backend, accountID string, recorder *newAPIConsoleRequestRecorder) (newAPIConsoleResult, domain.Backend, string, error) {
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_self_started", consoleBackendAttrs(backend)...)
-	selfResult, err := h.newAPIPlatform().Self(ctx, backend, accountID, recorder)
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_self_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "request"),
-			slog.String("error", err.Error()),
-		)...)
-		return newAPIConsoleResult{}, backend, accountID, err
-	}
-	if selfResult.Success() {
-		h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_self_completed", append(consoleBackendAttrs(backend), consoleResultAttrs(selfResult)...)...)
-		return selfResult, backend, firstNonEmpty(consoleAccountID(selfResult.Payload), accountID), nil
-	}
-	if !selfResult.LoginRequired() {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_self_failed", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "result"),
-		), consoleResultAttrs(selfResult)...)...)
-		return newAPIConsoleResult{}, backend, accountID, errors.New(selfResult.ErrorMessage("new-api self request failed"))
-	}
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_self_authentication_required", append(consoleBackendAttrs(backend), consoleResultAttrs(selfResult)...)...)
-
-	var (
-		updated          domain.Backend
-		authAccountID    string
-		authenticationBy string
-	)
-	switch {
-	case hasNewAPIConsoleLoginCredentials(backend):
-		authenticationBy = "login"
-		updated, authAccountID, err = h.loginNewAPIConsole(ctx, backend, recorder)
-	case hasNewAPIConsoleRefreshCredentials(backend):
-		authenticationBy = "refresh"
-		updated, authAccountID, err = h.refreshNewAPIConsole(ctx, backend, recorder)
-	default:
-		return newAPIConsoleResult{}, backend, accountID, errors.New(selfResult.ErrorMessage("new-api self request failed"))
-	}
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_self_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", authenticationBy),
-			slog.String("error", err.Error()),
-		)...)
-		return newAPIConsoleResult{}, backend, accountID, err
-	}
-	accountID = firstNonEmpty(authAccountID, accountID)
-	selfResult, err = h.newAPIPlatform().Self(ctx, updated, accountID, recorder)
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_self_failed", append(consoleBackendAttrs(updated),
-			slog.String("stage", "request_after_"+authenticationBy),
-			slog.String("error", err.Error()),
-		)...)
-		return newAPIConsoleResult{}, updated, accountID, err
-	}
-	if !selfResult.Success() {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_self_failed", append(append(consoleBackendAttrs(updated),
-			slog.String("stage", "result_after_"+authenticationBy),
-		), consoleResultAttrs(selfResult)...)...)
-		return newAPIConsoleResult{}, updated, accountID, errors.New(selfResult.ErrorMessage("new-api self request failed"))
-	}
-	accountID = firstNonEmpty(consoleAccountID(selfResult.Payload), accountID)
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_self_completed", append(append(consoleBackendAttrs(updated),
-		slog.String("stage", "after_"+authenticationBy),
-	), consoleResultAttrs(selfResult)...)...)
-	return selfResult, updated, accountID, nil
-}
-
-func (h *BackendHandler) loginNewAPIConsole(ctx context.Context, backend domain.Backend, recorder *newAPIConsoleRequestRecorder) (domain.Backend, string, error) {
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_login_started", append(consoleBackendAttrs(backend),
-		slog.Bool("console_username_present", strings.TrimSpace(backend.ConsoleUsername) != ""),
-		slog.Bool("console_password_present", strings.TrimSpace(backend.ConsolePassword) != ""),
-	)...)
-	loginResult, err := h.newAPIPlatform().Login(ctx, backend, recorder)
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_login_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "request"),
-			slog.String("error", err.Error()),
-		)...)
-		return domain.Backend{}, "", err
-	}
-	if !loginResult.Success() {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_login_failed", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "result"),
-		), consoleResultAttrs(loginResult)...)...)
-		return domain.Backend{}, "", errors.New(loginResult.ErrorMessage("new-api login failed"))
-	}
-	accessToken := service.NewAPIAccessToken(loginResult.Payload)
-	cookies, rotatedRefresh := service.SplitNewAPIRefreshCookie(service.NewAPIResponseCookies(loginResult.Header))
-	if accessToken == "" && len(cookies) == 0 {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_login_failed", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "response_credentials"),
-		), consoleResultAttrs(loginResult)...)...)
-		return domain.Backend{}, "", errors.New("new-api login did not return access token or cookies")
-	}
-	accountID := consoleAccountID(loginResult.Payload)
-	previousHeaders := newAPIConsoleHeaders(backend)
-	backend.ConsoleHeaders = service.NewAPIConsoleLoginHeaders(previousHeaders, cookies, accessToken)
-	backend.ConsoleCookie = ""
-	if rotatedRefresh != "" {
-		backend.NewAPIRefresh = rotatedRefresh
-	}
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_login_headers_refreshed", append(consoleBackendAttrs(backend),
-		slog.Int("previous_header_count", len(previousHeaders)),
-		slog.Int("updated_header_count", len(backend.ConsoleHeaders)),
-	)...)
-	updated, err := h.store.UpdateBackend(ctx, backend)
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelError, "newapi_console_login_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "save_headers"),
-			slog.String("error", err.Error()),
-		)...)
-		return domain.Backend{}, accountID, err
-	}
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_login_completed", append(append(consoleBackendAttrs(updated),
-		slog.Bool("new_api_user_present", accountID != ""),
-	), consoleResultAttrs(loginResult)...)...)
-	return updated, accountID, nil
-}
-
-func (h *BackendHandler) refreshNewAPIConsole(ctx context.Context, backend domain.Backend, recorder *newAPIConsoleRequestRecorder) (domain.Backend, string, error) {
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_refresh_started", append(consoleBackendAttrs(backend),
-		slog.Bool("cookie_present", newAPIConsoleCookieValue(backend) != ""),
-		slog.Bool("new_api_refresh_present", strings.TrimSpace(backend.NewAPIRefresh) != ""),
-	)...)
-	refreshResult, err := h.newAPIPlatform().Refresh(ctx, backend, recorder)
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_refresh_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "request"),
-			slog.String("error", err.Error()),
-		)...)
-		return backend, "", err
-	}
-	if !refreshResult.Success() {
-		h.logConsoleEvent(ctx, slog.LevelWarn, "newapi_console_refresh_failed", append(append(consoleBackendAttrs(backend),
-			slog.String("stage", "result"),
-		), consoleResultAttrs(refreshResult)...)...)
-		return backend, "", errors.New(refreshResult.ErrorMessage("new-api refresh failed"))
-	}
-
-	accessToken := service.NewAPIAccessToken(refreshResult.Payload)
-	if accessToken == "" {
-		return backend, "", errors.New("new-api refresh did not return an access token")
-	}
-	previousHeaders := newAPIConsoleHeaders(backend)
-	responseCookies, rotatedRefresh := service.SplitNewAPIRefreshCookie(service.NewAPIResponseCookies(refreshResult.Header))
-	backend.ConsoleHeaders = service.NewAPIConsoleLoginHeaders(previousHeaders, responseCookies, accessToken)
-	backend.ConsoleCookie = ""
-	if rotatedRefresh != "" {
-		backend.NewAPIRefresh = rotatedRefresh
-	}
-	accountID := consoleAccountID(refreshResult.Payload)
-	updated, err := h.store.UpdateBackend(ctx, backend)
-	if err != nil {
-		h.logConsoleEvent(ctx, slog.LevelError, "newapi_console_refresh_failed", append(consoleBackendAttrs(backend),
-			slog.String("stage", "save_credentials"),
-			slog.String("error", err.Error()),
-		)...)
-		return backend, accountID, err
-	}
-	h.logConsoleEvent(ctx, slog.LevelInfo, "newapi_console_refresh_completed", append(append(consoleBackendAttrs(updated),
-		slog.Bool("new_api_user_present", accountID != ""),
-	), consoleResultAttrs(refreshResult)...)...)
-	return updated, accountID, nil
-}
-
-func (h *BackendHandler) syncNewAPIConsoleTokens(ctx context.Context, backend domain.Backend, accountID string, recorder *newAPIConsoleRequestRecorder) (domain.Backend, error) {
-	apiKeys, err := h.newAPIPlatform().SyncTokens(ctx, backend, accountID, recorder)
-	if err != nil {
-		return backend, err
-	}
-	backend.APIKeys = apiKeys
-	return backend, nil
-}
-
-func (h *BackendHandler) backendConsoleUserAgent() string {
-	if h.cfg == nil {
-		return config.DefaultBackendConsoleUserAgent
-	}
-	value := strings.TrimSpace(h.cfg.BackendConsoleUserAgent)
-	if value == "" {
-		return config.DefaultBackendConsoleUserAgent
-	}
-	return value
 }
 
 func countCookieHeaderValues(header string) int {
@@ -2161,214 +1369,6 @@ func validHTTPHeaderValue(value string) bool {
 	return true
 }
 
-func newAPIConsoleHeaders(backend domain.Backend) map[string]string {
-	return service.NewAPIConsoleHeaders(backend)
-}
-
-func newAPIConsoleCookieValue(backend domain.Backend) string {
-	return service.NewAPIConsoleCookieValue(backend)
-}
-
-func normalizeConsoleAPIPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if !strings.HasPrefix(value, "/") {
-		value = "/" + value
-	}
-	return value
-}
-
-func consoleAccountSummaryJSON(payload map[string]any, statusPayload map[string]any, lastCheckinAt time.Time, checkinReward any, existingAccountJSON string) (string, error) {
-	data, ok := payload["data"].(map[string]any)
-	if !ok {
-		return "", errors.New("new-api self response missing data")
-	}
-	summary := map[string]any{
-		"display_name": data["display_name"],
-		"group":        data["group"],
-		"id":           data["id"],
-		"quota":        data["quota"],
-		"role":         data["role"],
-		"status":       data["status"],
-		"used_quota":   data["used_quota"],
-		"username":     data["username"],
-	}
-	if !lastCheckinAt.IsZero() {
-		summary["last_checkin_at"] = lastCheckinAt.UTC().Format(time.RFC3339)
-	}
-	if checkinReward != nil {
-		summary["last_checkin_reward"] = checkinReward
-	} else if existing := decodeJSONMap(existingAccountJSON); existing != nil {
-		if v, ok := existing["last_checkin_reward"]; ok && v != nil {
-			summary["last_checkin_reward"] = v
-		}
-	}
-	if statusData, ok := statusPayload["data"].(map[string]any); ok {
-		for _, key := range []string{"custom_currency_exchange_rate", "custom_currency_symbol", "quota_display_type", "quota_per_unit"} {
-			if value, ok := statusData[key]; ok {
-				summary[key] = value
-			}
-		}
-	}
-	encoded, err := json.Marshal(summary)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
-}
-
-func consoleCheckinReward(payload map[string]any) any {
-	if payload == nil {
-		return nil
-	}
-	data, ok := payload["data"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	for _, key := range []string{"quota", "reward"} {
-		if value, ok := data[key]; ok && value != nil {
-			return value
-		}
-	}
-	return nil
-}
-
-func consoleLastCheckinStatus(backend domain.Backend, now time.Time) (time.Time, bool) {
-	payload := decodeJSONMap(backend.ConsoleAccountJSON)
-	parsed, ok := consoleLastCheckinTime(payload, now)
-	if !ok {
-		return time.Time{}, false
-	}
-	return parsed, sameConsoleDate(parsed, now)
-}
-
-func consoleLastCheckinTime(payload map[string]any, now time.Time) (time.Time, bool) {
-	for _, key := range []string{
-		"last_checkin_at",
-		"last_checkin_time",
-		"checkin_time",
-		"checkin_at",
-		"last_checkin_date",
-		"checkin_date",
-	} {
-		parsed, ok := consoleCheckinTimeValue(payload[key], now)
-		if ok {
-			return parsed, true
-		}
-	}
-	return time.Time{}, false
-}
-
-func consoleCheckinTimeValue(value any, now time.Time) (time.Time, bool) {
-	switch value := value.(type) {
-	case string:
-		return parseConsoleCheckinTime(value, now)
-	case float64:
-		if value <= 0 {
-			return time.Time{}, false
-		}
-		return time.Unix(int64(value), 0), true
-	case int:
-		if value <= 0 {
-			return time.Time{}, false
-		}
-		return time.Unix(int64(value), 0), true
-	case int64:
-		if value <= 0 {
-			return time.Time{}, false
-		}
-		return time.Unix(value, 0), true
-	default:
-		return time.Time{}, false
-	}
-}
-
-func parseConsoleCheckinTime(raw string, now time.Time) (time.Time, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return time.Time{}, false
-	}
-	for _, layout := range []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04",
-		"2006/01/02 15:04:05",
-		"2006/01/02 15:04",
-	} {
-		if parsed, err := time.ParseInLocation(layout, raw, consoleCheckinLocation(now)); err == nil {
-			return parsed, true
-		}
-	}
-	for _, layout := range []string{"2006-01-02", "2006/01/02"} {
-		if parsed, err := time.ParseInLocation(layout, raw, consoleCheckinLocation(now)); err == nil {
-			return parsed, true
-		}
-	}
-	return time.Time{}, false
-}
-
-func consoleCheckinLocation(now time.Time) *time.Location {
-	if now.Location() != nil && now.Location() != time.UTC {
-		return now.Location()
-	}
-	if time.Local != nil {
-		return time.Local
-	}
-	return time.UTC
-}
-
-func sameConsoleDate(value, now time.Time) bool {
-	location := consoleCheckinLocation(now)
-	valueInLocation := value.In(location)
-	nowInLocation := now.In(location)
-	return valueInLocation.Year() == nowInLocation.Year() && valueInLocation.YearDay() == nowInLocation.YearDay()
-}
-
-func filterConsolePricingPayload(payload map[string]any, focusPatterns string) map[string]any {
-	out := cloneJSONMap(payload)
-	if strings.TrimSpace(focusPatterns) == "" {
-		return out
-	}
-	data, ok := out["data"].([]any)
-	if !ok {
-		return out
-	}
-	filtered := make([]any, 0, len(data))
-	for _, item := range data {
-		record, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if modelNameMatchesFocusPatterns(fmt.Sprint(record["model_name"]), focusPatterns) {
-			filtered = append(filtered, item)
-		}
-	}
-	out["data"] = filtered
-	return out
-}
-
-func cloneJSONMap(value map[string]any) map[string]any {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		out := make(map[string]any, len(value))
-		for key, item := range value {
-			out[key] = item
-		}
-		return out
-	}
-	var out map[string]any
-	if err := json.Unmarshal(encoded, &out); err != nil {
-		out = make(map[string]any, len(value))
-		for key, item := range value {
-			out[key] = item
-		}
-	}
-	return out
-}
-
 func modelNameMatchesFocusPatterns(modelName, patterns string) bool {
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
@@ -2397,44 +1397,9 @@ func modelNameMatchesFocusPatterns(modelName, patterns string) bool {
 	return false
 }
 
-func consoleAccountID(payload map[string]any) string {
-	return service.NewAPIAccountID(payload)
-}
-
 func consoleStoredAccountID(backend domain.Backend) string {
 	payload := decodeJSONMap(backend.ConsoleAccountJSON)
 	return consoleIDValue(payload["id"])
-}
-
-func hasNewAPIDirectCheckinCredentials(backend domain.Backend, accountID string) bool {
-	return len(newAPIConsoleHeaders(backend)) > 0 && strings.TrimSpace(accountID) != ""
-}
-
-func hasNewAPIConsoleLoginCredentials(backend domain.Backend) bool {
-	return service.HasNewAPIConsoleLoginCredentials(backend)
-}
-
-func hasNewAPIConsoleRefreshCredentials(backend domain.Backend) bool {
-	return service.HasNewAPIConsoleRefreshCredentials(backend)
-}
-
-func canRecoverNewAPIConsoleCheckinAuth(backend domain.Backend) bool {
-	return hasNewAPIConsoleLoginCredentials(backend) || hasNewAPIConsoleRefreshCredentials(backend)
-}
-
-func consoleAccountJSONWithUserID(raw string, userID string) (string, error) {
-	payload := decodeJSONMap(raw)
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		delete(payload, "id")
-	} else {
-		payload["id"] = userID
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
 }
 
 func consoleIDValue(value any) string {
@@ -2583,7 +1548,7 @@ func secretPresenceValue(value string) string {
 }
 
 func consoleHeaderPresence(backend domain.Backend) string {
-	if len(newAPIConsoleHeaders(backend)) == 0 {
+	if len(service.ConsoleHeaders(backend)) == 0 {
 		return ""
 	}
 	return "set"
@@ -2614,7 +1579,6 @@ func maskedBackendDetail(backend domain.Backend) domain.Backend {
 	copy.APIKey = secretPresenceValue(copy.APIKey)
 	copy.APIKeys = maskedBackendAPIKeys(copy.APIKeys)
 	copy.ConsolePassword = secretPresenceValue(copy.ConsolePassword)
-	copy.NewAPIRefresh = secretPresenceValue(copy.NewAPIRefresh)
 	copy.ConsoleCookie = secretPresenceValue(copy.ConsoleCookie)
 	if len(copy.ConsoleHeaders) > 0 {
 		copy.ConsoleHeaders = make(map[string]string, len(copy.ConsoleHeaders))

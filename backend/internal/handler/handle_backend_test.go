@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
-	"time"
 
 	"red-token/internal/config"
 	"red-token/internal/domain"
@@ -24,33 +24,12 @@ func TestValidateBackendAPIKeysAllowsEmptyList(t *testing.T) {
 	}
 }
 
-func TestSameConsoleDateDoesNotTreatPreviousLocalDayAsToday(t *testing.T) {
-	location := time.FixedZone("UTC+8", 8*60*60)
-	previousDay := time.Date(2026, time.August, 7, 23, 30, 0, 0, location)
-	today := time.Date(2026, time.August, 8, 0, 30, 0, 0, location)
-
-	if sameConsoleDate(previousDay, today) {
-		t.Fatal("expected timestamps on different local dates to require another checkin")
-	}
-}
-
-func TestSameConsoleDateTreatsSameLocalDayAsToday(t *testing.T) {
-	location := time.FixedZone("UTC+8", 8*60*60)
-	morning := time.Date(2026, time.August, 8, 0, 10, 0, 0, location)
-	evening := time.Date(2026, time.August, 8, 23, 50, 0, 0, location)
-
-	if !sameConsoleDate(morning, evening) {
-		t.Fatal("expected timestamps on the same local date to be treated as checked in today")
-	}
-}
-
 func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	backend := domain.Backend{
-		ID:          1,
-		Name:        "relay",
-		Protocol:    domain.BackendProtocolBoth,
-		BackendType: domain.BackendTypeNewAPI,
-		BaseURL:     "https://relay.example/v1",
+		ID:       1,
+		Name:     "relay",
+		Protocol: domain.BackendProtocolBoth,
+		BaseURL:  "https://relay.example/v1",
 		APIKeys: []domain.BackendAPIKey{{
 			ID:           "56382",
 			APIKey:       "sk-value",
@@ -63,6 +42,7 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 		ConsoleAccountJSON: `{"id":49722,"username":"alice","quota":1300000000,"used_quota":500000,"last_checkin_reward":500000,"quota_per_unit":500000,"quota_display_type":"USD","last_checkin_at":"2026-08-14T17:12:21Z"}`,
 		ConsolePricingJSON: `{"group_ratio":{"default":1,"partner":1,"vip":2},"data":[{"model_name":"usage-model","quota_type":0,"model_ratio":0.25,"completion_ratio":8,"enable_groups":["default","partner","vip"]},{"model_name":"fixed-model","quota_type":1,"model_price":1.75,"enable_groups":["default"]},{"model_name":"tiered-model","quota_type":0,"model_ratio":99,"completion_ratio":99,"enable_groups":["default"],"billing_mode":"tiered_expr","billing_expr":"tier(\"short_context\", p * 5 + c * 30 + cr * 0.5)"}]}`,
 		ConsoleHeaders:     map[string]string{"Cookie": "session=value"},
+		ManualCheckin:      true,
 		Status:             domain.BackendStatusNormal,
 		Tags:               []string{},
 	}
@@ -102,15 +82,16 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	if err := json.Unmarshal(encoded, &object); err != nil {
 		t.Fatalf("decode frontend view: %v", err)
 	}
-	for _, legacy := range []string{"console_account_json", "console_pricing_json", "console_authorization", "console_checkin_path", "channel_url", "request_count", "last_used_at", "model_count", "hourly_requests", "hourly_failures", "recent_stats", "consecutive_failures", "recover_at"} {
+	for _, legacy := range []string{"backend_type", "new_api_refresh", "console_cookie", "console_account_json", "console_pricing_json", "console_authorization", "console_checkin_path", "channel_url", "request_count", "last_used_at", "model_count", "hourly_requests", "hourly_failures", "recent_stats", "consecutive_failures", "recover_at"} {
 		if _, exists := object[legacy]; exists {
 			t.Fatalf("frontend view contains legacy field %q: %s", legacy, encoded)
 		}
 	}
 	requiredFields := []string{
-		"id", "name", "protocol", "backend_type", "base_url", "api_keys", "console_url",
+		"id", "name", "protocol", "base_url", "api_keys", "console_url",
 		"console_username", "console_password", "console_checkin_workflow_id", "console_headers",
-		"console_models", "console_account", "new_api_refresh", "notes", "proxy_id", "status",
+		"manual_checkin",
+		"console_models", "console_account", "notes", "proxy_id", "status",
 		"weight", "created_at", "updated_at", "avg_latency_ms", "tags",
 	}
 	if len(object) != len(requiredFields) {
@@ -121,6 +102,9 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 			t.Fatalf("frontend view is missing %q: %s", required, encoded)
 		}
 	}
+	if object["manual_checkin"] != true {
+		t.Fatalf("frontend manual_checkin=%#v want true", object["manual_checkin"])
+	}
 	serializedKeys := object["api_keys"].([]any)
 	serializedKey := serializedKeys[0].(map[string]any)
 	if serializedKey["id"] != "56382" || serializedKey["key"] != "sk-value" {
@@ -128,6 +112,40 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	}
 	if _, exists := serializedKey["api_key"]; exists {
 		t.Fatalf("frontend API key retained api_key: %+v", serializedKey)
+	}
+}
+
+func TestMaskedBackendDetailOmitsLegacyConsoleCookie(t *testing.T) {
+	encoded, err := json.Marshal(maskedBackendDetail(domain.Backend{ConsoleCookie: "legacy=value"}))
+	if err != nil {
+		t.Fatalf("encode masked backend detail: %v", err)
+	}
+	if strings.Contains(string(encoded), "console_cookie") || strings.Contains(string(encoded), "legacy=value") {
+		t.Fatalf("masked backend detail exposed legacy console cookie: %s", encoded)
+	}
+}
+
+func TestBackendConsoleCheckinRequiresWorkflow(t *testing.T) {
+	st := openWorkflowHandlerStore(t)
+	backend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:       "workflow-required",
+		ConsoleURL: "https://console.example",
+	})
+	if err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+	handler := NewBackendHandler(st)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /admin/api/backends/{id}/console/checkin", handler.HandleBackendConsoleCheckin)
+	mux.HandleFunc("POST /admin/api/backends/{id}/console/sync", handler.HandleBackendConsoleSync)
+
+	for _, path := range []string{"checkin", "sync"} {
+		request := httptest.NewRequest(http.MethodPost, "/admin/api/backends/"+strconv.FormatInt(backend.ID, 10)+"/console/"+path, nil)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "console_checkin_workflow_id is required") {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
 	}
 }
 
