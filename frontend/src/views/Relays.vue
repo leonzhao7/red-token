@@ -166,6 +166,10 @@ function parseModelList(raw: string) {
   return [...new Set(raw.split(',').map((model) => model.trim()).filter(Boolean))]
 }
 
+function parseTagList(raw: string) {
+  return [...new Set(raw.split(',').map((tag) => tag.trim()).filter(Boolean))]
+}
+
 function formatModelMapping(mapping: Record<string, string>) {
   return Object.keys(mapping).length ? JSON.stringify(mapping) : ''
 }
@@ -276,7 +280,7 @@ function mapBackend(backend: BackendResponse): RelayView {
     return {
       id: `${backend.id}-key-${index}`,
       name: key.name || '',
-      group: key.group || 'default',
+      group: key.group || '',
       username: '',
       key: key.key,
       models,
@@ -584,7 +588,7 @@ interface KeyFormItem {
 }
 
 function defaultKeyFormItem(): KeyFormItem {
-  return { id: '', name: '', serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
+  return { id: '', name: '', serverGroup: '', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
 }
 
 const form = ref<{
@@ -597,6 +601,7 @@ const form = ref<{
   consoleHeaders: string
   consoleCheckinWorkflowId: string
   manualCheckin: boolean
+  tagsInput: string
   proxyId: string
   weight: number
   keys: KeyFormItem[]
@@ -610,6 +615,7 @@ const form = ref<{
   consoleHeaders: '',
   consoleCheckinWorkflowId: '',
   manualCheckin: false,
+  tagsInput: '',
   proxyId: '',
   weight: 10,
   keys: []
@@ -617,6 +623,7 @@ const form = ref<{
 
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
+const passwordVisible = ref(false)
 const isEditing = computed(() => editingId.value !== null)
 const consoleHeadersError = computed(() => {
   try {
@@ -636,10 +643,11 @@ const modelMappingErrors = computed(() => form.value.keys.map((key) => {
 }))
 
 function resetForm() {
+  passwordVisible.value = false
   form.value = {
     name: '', url: '', protocol: 'openai', consoleUrl: '', username: '', password: '',
     consoleHeaders: '',
-    consoleCheckinWorkflowId: '', manualCheckin: false,
+    consoleCheckinWorkflowId: '', manualCheckin: false, tagsInput: '',
     proxyId: '', weight: 10, keys: []
   }
 }
@@ -652,6 +660,7 @@ function openCreate() {
 
 function openEditRelay(r: RelayView) {
   editingId.value = r.id
+  passwordVisible.value = false
   form.value = {
     name: r.name,
     url: r.url,
@@ -662,13 +671,14 @@ function openEditRelay(r: RelayView) {
     consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
     consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
     manualCheckin: Boolean(r.raw.manual_checkin),
+    tagsInput: (r.raw.tags || []).join(', '),
     proxyId: r.proxyId,
     weight: numberValue(r.raw.weight) || 10,
     keys: r.keys.length
       ? r.keys.map((key) => ({
           id: r.raw.api_keys.find((item) => item.key === key.key)?.id || '',
           name: key.name,
-          serverGroup: key.group || 'default',
+          serverGroup: key.group || '',
           key: key.key,
           keyVisible: false,
           modelsInput: key.models.join(', '),
@@ -705,6 +715,7 @@ function buildPayload() {
     base_url: form.value.url.trim(),
     api_keys: apiKeys,
     console_url: form.value.consoleUrl.trim(),
+    tags: parseTagList(form.value.tagsInput),
     console_username: form.value.username.trim(),
     console_password: form.value.password,
     console_headers: parseConsoleHeaders(form.value.consoleHeaders),
@@ -1010,14 +1021,29 @@ onMounted(loadData)
             <em class="ke-hint">上游 API 服务的连接信息</em>
           </div>
 
-          <div class="field">
-            <label class="field-label">名称 <span class="req">*</span></label>
-            <input v-model="form.name" class="input" placeholder="例如：OpenAI Primary" />
+          <div class="form-grid-2 identity-config-row">
+            <div class="field">
+              <label class="field-label">名称 <span class="req">*</span></label>
+              <input v-model="form.name" class="input" placeholder="例如：OpenAI Primary" />
+            </div>
+            <div class="field">
+              <label class="field-label">权重 <em class="ke-hint">调度优先级 1-100</em></label>
+              <input v-model.number="form.weight" class="input mono" type="number" min="1" max="100" />
+            </div>
           </div>
 
-          <div class="field">
-            <label class="field-label">Server URL</label>
-            <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
+          <div class="form-grid-2 server-config-row">
+            <div class="field">
+              <label class="field-label">Server URL</label>
+              <input v-model="form.consoleUrl" class="input mono" placeholder="https://console.example.com" />
+            </div>
+            <div class="field">
+              <label class="field-label">代理</label>
+              <select v-model="form.proxyId" class="select">
+                <option value="">无代理</option>
+                <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.address }}</option>
+              </select>
+            </div>
           </div>
 
           <div class="form-grid-2 checkin-config-row">
@@ -1045,18 +1071,9 @@ onMounted(loadData)
             </div>
           </div>
 
-          <div class="form-grid-2">
-            <div class="field">
-              <label class="field-label">权重 <em class="ke-hint">调度优先级 1-100</em></label>
-              <input v-model.number="form.weight" class="input mono" type="number" min="1" max="100" />
-            </div>
-            <div class="field">
-              <label class="field-label">代理</label>
-              <select v-model="form.proxyId" class="select">
-                <option value="">无代理</option>
-                <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.address }}</option>
-              </select>
-            </div>
+          <div class="field">
+            <label class="field-label">标签 <em class="ke-hint">多个标签使用英文逗号分隔</em></label>
+            <input v-model="form.tagsInput" class="input" placeholder="生产, 主线路, 高优先级" />
           </div>
 
           <div class="form-grid-2">
@@ -1066,7 +1083,19 @@ onMounted(loadData)
             </div>
             <div class="field">
               <label class="field-label">密码</label>
-              <input v-model="form.password" class="input mono" type="password" placeholder="••••••" />
+              <div class="secret-input">
+                <input v-model="form.password" class="input mono" :type="passwordVisible ? 'text' : 'password'" placeholder="••••••" />
+                <button
+                  type="button"
+                  class="secret-toggle"
+                  :title="passwordVisible ? '隐藏密码' : '显示密码'"
+                  :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
+                  @click="passwordVisible = !passwordVisible"
+                >
+                  <EyeOff v-if="passwordVisible" :size="15" />
+                  <Eye v-else :size="15" />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1094,25 +1123,29 @@ onMounted(loadData)
               <button class="btn btn-ghost btn-sm" @click="addKeyRow"><Plus :size="13" /> Key</button>
             </div>
             <div v-for="(k, i) in form.keys" :key="i" class="ke-card">
-              <div class="ke-head">
-                <span class="field-label">Key {{ i + 1 }}</span>
-                <button class="icon-btn danger" title="移除" @click="removeKeyRow(i)"><Trash2 :size="14" /></button>
-              </div>
-              <div class="field">
-                <label class="field-label">API Key <span class="req">*</span></label>
-                <div class="secret-input">
-                  <input v-model="k.key" class="input mono" :type="k.keyVisible ? 'text' : 'password'" placeholder="sk-..." />
-                  <button
-                    type="button"
-                    class="secret-toggle"
-                    :title="k.keyVisible ? '隐藏 API Key' : '显示 API Key'"
-                    :aria-label="k.keyVisible ? '隐藏 API Key' : '显示 API Key'"
-                    @click="k.keyVisible = !k.keyVisible"
-                  >
-                    <EyeOff v-if="k.keyVisible" :size="15" />
-                    <Eye v-else :size="15" />
-                  </button>
+              <div class="ke-top">
+                <div class="field">
+                  <label class="field-label key-label">
+                    API Key <span class="req">*</span>
+                    <span class="key-sync-inline" :title="`名称：${k.name || '-'}  分组：${k.serverGroup || '-'}`">
+                      名称：{{ k.name || '-' }}  分组：{{ k.serverGroup || '-' }}
+                    </span>
+                  </label>
+                  <div class="secret-input">
+                    <input v-model="k.key" class="input mono" :type="k.keyVisible ? 'text' : 'password'" placeholder="sk-..." />
+                    <button
+                      type="button"
+                      class="secret-toggle"
+                      :title="k.keyVisible ? '隐藏 API Key' : '显示 API Key'"
+                      :aria-label="k.keyVisible ? '隐藏 API Key' : '显示 API Key'"
+                      @click="k.keyVisible = !k.keyVisible"
+                    >
+                      <EyeOff v-if="k.keyVisible" :size="15" />
+                      <Eye v-else :size="15" />
+                    </button>
+                  </div>
                 </div>
+                <button type="button" class="icon-btn danger" title="移除" aria-label="移除 API Key" @click="removeKeyRow(i)"><Trash2 :size="14" /></button>
               </div>
               <div class="field">
                 <label class="field-label">Model <span class="req">*</span><em class="ke-hint">多个模型使用英文逗号分隔</em></label>
@@ -1462,10 +1495,27 @@ onMounted(loadData)
 .rk-model em { font-style: normal; color: var(--primary); }
 .rk-model.mapped { border-color: rgba(34,211,238,0.35); }
 
-.relay-form { display: flex; flex-direction: column; gap: 10px; }
-.relay-form-section { display: flex; flex-direction: column; gap: 7px; }
+.relay-form { display: flex; flex-direction: column; gap: 12px; }
+.relay-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.relay-form-section > .ke-head {
+  padding-bottom: 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.relay-form-section > .ke-head > .field-label { color: var(--text); }
 .relay-form .field { gap: 4px; margin-bottom: 0; }
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.identity-config-row,
+.server-config-row,
+.checkin-config-row { grid-template-columns: minmax(0, 2fr) minmax(200px, 1fr); }
 .checkin-config-row { align-items: end; }
 .manual-checkin-field { min-width: 0; }
 .manual-checkin-control { min-height: 34px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
@@ -1492,6 +1542,17 @@ onMounted(loadData)
   background: var(--surface);
   border: 1px solid var(--border);
 }
+.key-label { display: flex; align-items: center; min-width: 0; }
+.key-sync-inline {
+  min-width: 0;
+  margin-left: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
 .ke-top { display: flex; align-items: flex-end; gap: 10px; }
 .ke-top .field { flex: 1; }
 .ke-empty { font-size: 12px; color: var(--text-faint); text-align: center; padding: 14px 0; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); }
@@ -1500,5 +1561,9 @@ onMounted(loadData)
 .detail-enter-from, .detail-leave-to { opacity: 0; transform: translateY(-6px); }
 
 @media (max-width: 1200px) { .rld-grid { grid-template-columns: 1fr; } }
-@media (max-width: 640px) { .form-grid-2 { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .form-grid-2,
+  .identity-config-row,
+  .server-config-row { grid-template-columns: 1fr; }
+}
 </style>
