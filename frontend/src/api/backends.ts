@@ -208,6 +208,11 @@ export function syncBackend(id: number, audit = true) {
   return request<BackendSyncResponse>(`/admin/api/backends/${id}/console/sync${query}`, { method: 'POST' })
 }
 
+export function syncBackendCookies(id: number, audit = true) {
+  const query = audit ? '' : '?audit=0'
+  return request<{ backend: BackendResponse; cookie_count: number; authorization_updated: boolean }>(`/admin/api/backends/${id}/console/cookie/sync${query}`, { method: 'POST' })
+}
+
 export async function syncBackendStream(
   id: number,
   onRequest: (request: BackendConsoleRequestLog) => void,

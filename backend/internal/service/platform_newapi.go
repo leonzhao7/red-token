@@ -580,6 +580,46 @@ func NewAPIConsoleCookieValue(backend domain.Backend) string {
 	return ""
 }
 
+// ConsoleHeadersWithCookieValue replaces the configured request Cookie header
+// while preserving all other console headers. An empty value removes Cookie.
+func ConsoleHeadersWithCookieValue(headers map[string]string, cookieValue string) map[string]string {
+	out := make(map[string]string, len(headers)+1)
+	for key, value := range headers {
+		if strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		canonicalKey := http.CanonicalHeaderKey(strings.TrimSpace(key))
+		if canonicalKey != "" {
+			out[canonicalKey] = strings.TrimSpace(value)
+		}
+	}
+	if cookieValue = strings.TrimSpace(cookieValue); cookieValue != "" {
+		out["Cookie"] = cookieValue
+	}
+	return out
+}
+
+// ConsoleHeadersWithAuthorizationValue replaces Authorization when Chrome
+// provided a browser-stored Bearer token. An empty value preserves the
+// configured Authorization header.
+func ConsoleHeadersWithAuthorizationValue(headers map[string]string, authorization string) map[string]string {
+	authorization = strings.TrimSpace(authorization)
+	out := make(map[string]string, len(headers)+1)
+	for key, value := range headers {
+		if authorization != "" && strings.EqualFold(key, "Authorization") {
+			continue
+		}
+		canonicalKey := http.CanonicalHeaderKey(strings.TrimSpace(key))
+		if canonicalKey != "" {
+			out[canonicalKey] = strings.TrimSpace(value)
+		}
+	}
+	if authorization != "" {
+		out["Authorization"] = authorization
+	}
+	return out
+}
+
 // ConsoleHeadersWithResponseCookies applies Set-Cookie mutations to the flat
 // Cookie request header stored in a backend configuration. Other configured
 // headers are preserved unchanged.

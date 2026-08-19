@@ -7,6 +7,7 @@
 - 默认后端地址：`http://localhost:4000`
 - 默认响应类型：`application/json`
 - 默认监听地址可通过 `RT_LISTEN_ADDR` 修改。
+- Chrome CDP 登录凭据同步默认连接 `http://127.0.0.1:9222`，可通过 `RT_CHROME_CDP_URL` 修改。
 - 所有响应都会带有 `X-Request-ID`。客户端可以通过同名请求头传入请求 ID；未传时由服务端生成。
 - 时间字段使用 RFC 3339/RFC 3339 Nano 字符串，通常为 UTC，例如 `2026-08-05T08:30:00Z`。
 
@@ -1060,7 +1061,27 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 }
 ```
 
-### 6.11 记录全局同步摘要
+### 6.11 从 Chrome CDP 同步控制台登录凭据
+
+`POST /admin/api/backends/{id}/console/cookie/sync`
+
+请求体：无。服务端通过 Chrome DevTools Protocol 读取浏览器 Cookie 以及匹配页面的 `localStorage`、`sessionStorage`。Cookie 会按后端 `console_url` 的域名、路径、HTTPS 和过期条件过滤，然后替换 `console_headers.Cookie`；浏览器存储中的有效 JWT 访问令牌会更新 `console_headers.Authorization`。如果页面没有把令牌持久化到存储，服务端会临时启用 Network、刷新匹配页面并从同源实际请求头捕获 Bearer 令牌。未找到访问令牌时保留原 Authorization，其他控制台请求头保持不变；空 Cookie 会移除旧的 Cookie 请求头。响应和日志不会返回令牌值。
+
+Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0.0.1:9222`，并在连接失败后尝试 WSL 默认网关、`/etc/resolv.conf` 中的 nameserver 和 `host.docker.internal`。也可以通过环境变量 `RT_CHROME_CDP_URL` 指定 CDP HTTP 地址。宿主机 Chrome 必须以 `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --user-data-dir=<专用目录>` 启动，并允许防火墙访问该端口；Chrome 136 及以上版本要求远程调试使用非默认用户数据目录，因此需要在这个专用 Chrome 配置中登录中转站控制台。
+
+响应 `200`：
+
+```json
+{
+  "backend": {},
+  "cookie_count": 3,
+  "authorization_updated": true
+}
+```
+
+`400` 表示后端不存在、没有合法 `console_url`；`502` 表示无法连接 CDP、WebSocket 握手或 Cookie 读取失败；`500` 表示保存失败。除非 `audit=0`，成功同步会写入 `admin_backend_cookie_sync` 审计事件。
+
+### 6.12 记录全局同步摘要
 
 `POST /admin/api/backends/console/sync-summary`
 
@@ -1078,7 +1099,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 响应 `200`：原样返回上述对象，并写入一条全局同步审计事件。
 
-### 6.12 后端小时模型统计
+### 6.13 后端小时模型统计
 
 `GET /admin/api/backend-hourly-model-stats`
 
@@ -1794,6 +1815,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 | `POST` | `/admin/api/backends` | 创建后端 |
 | `POST` | `/admin/api/backends/console/sync-summary` | 记录全局同步摘要 |
 | `POST` | `/admin/api/backends/{id}/console/sync` | 同步后端控制台 |
+| `POST` | `/admin/api/backends/{id}/console/cookie/sync` | 从 Chrome CDP 同步控制台登录凭据 |
 | `POST` | `/admin/api/backends/{id}/console/checkin` | new-api 签到 |
 | `POST` | `/admin/api/backends/{id}/console/pricing` | new-api 定价同步 |
 | `POST` | `/admin/api/backends/import` | 导入后端 |

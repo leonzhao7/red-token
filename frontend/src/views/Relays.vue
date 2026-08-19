@@ -5,6 +5,7 @@ import {
   Search,
   Server,
   CalendarCheck,
+  Cookie,
   Pencil,
   Trash2,
   Globe,
@@ -37,6 +38,7 @@ import {
   listSocksProxies,
   recordBackendSyncSummary,
   syncBackend,
+  syncBackendCookies,
   syncBackendStream,
   updateBackend,
   type BackendApiKey,
@@ -85,11 +87,18 @@ const loadError = ref('')
 const saving = ref(false)
 const syncingAll = ref(false)
 const busyIds = ref<Set<string>>(new Set())
+const cookieBusyIds = ref<Set<string>>(new Set())
 
 function setBusy(id: string, busy: boolean) {
   const next = new Set(busyIds.value)
   busy ? next.add(id) : next.delete(id)
   busyIds.value = next
+}
+
+function setCookieBusy(id: string, busy: boolean) {
+  const next = new Set(cookieBusyIds.value)
+  busy ? next.add(id) : next.delete(id)
+  cookieBusyIds.value = next
 }
 
 /* ---- console request log (global) ---- */
@@ -488,6 +497,32 @@ async function checkin(r: RelayView) {
   await syncRelay(r, { checkin: true })
 }
 
+async function syncCookies(r: RelayView) {
+  if (!r.consoleUrl) {
+    toast('缺少控制台地址', '请先在编辑中转站中填写 Console URL', 'warning')
+    return
+  }
+  setCookieBusy(r.id, true)
+  setBusy(r.id, true)
+  try {
+    const response = await syncBackendCookies(Number(r.id))
+    upsertRelay(response.backend)
+    const imported = []
+    if (response.cookie_count > 0) imported.push(`${response.cookie_count} 项 Cookie`)
+    if (response.authorization_updated) imported.push('Authorization')
+    if (imported.length) {
+      toast('Chrome 登录凭据已更新', `${r.name} · ${imported.join(' · ')}`, 'success')
+    } else {
+      toast('未发现 Chrome 登录凭据', `${r.name} · 未找到 Cookie 或有效访问令牌`, 'warning')
+    }
+  } catch (error) {
+    toast('Chrome 登录凭据同步失败', errorMessage(error), 'danger')
+  } finally {
+    setBusy(r.id, false)
+    setCookieBusy(r.id, false)
+  }
+}
+
 async function checkinAll() {
   const todo = relays.value.filter((relay) => relay.consoleUrl && relay.consoleSyncSupported && !isToday(relay.checkinAt))
   if (!todo.length) {
@@ -866,8 +901,17 @@ onMounted(loadData)
                 :title="!r.consoleSyncSupported ? '通用类型，无需签到' : r.checkinAt ? '已同步 ' + formatDate(r.checkinAt) + ' · 点击重新同步' : '签到并同步'"
                 @click.stop="checkin(r)"
               >
-                <LoaderCircle v-if="busyIds.has(r.id)" :size="14" class="spin" />
+                <LoaderCircle v-if="busyIds.has(r.id) && !cookieBusyIds.has(r.id)" :size="14" class="spin" />
                 <CalendarCheck v-else :size="14" />
+              </button>
+              <button
+                class="icon-btn"
+                :disabled="!r.consoleUrl || busyIds.has(r.id)"
+                title="从 Chrome 同步登录凭据"
+                @click.stop="syncCookies(r)"
+              >
+                <LoaderCircle v-if="cookieBusyIds.has(r.id)" :size="14" class="spin" />
+                <Cookie v-else :size="14" />
               </button>
               <button class="icon-btn op-edit" title="编辑" @click.stop="openEditRelay(r)"><Pencil :size="14" /></button>
               <button class="icon-btn op-del" title="删除" @click.stop="askRemove(r)"><Trash2 :size="14" /></button>

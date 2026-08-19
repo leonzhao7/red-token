@@ -18,6 +18,7 @@ type Config struct {
 	BackendCooldown         time.Duration
 	BackendFails            int
 	BackendConsoleUserAgent string
+	ChromeCDPEndpoint       string
 	FocusModels             string
 	RequestTimeout          time.Duration
 	ShutdownTimeout         time.Duration
@@ -31,6 +32,7 @@ func Load() Config {
 		BackendCooldown:         getDuration("RT_BACKEND_COOLDOWN", 20*time.Minute),
 		BackendFails:            getInt("RT_BACKEND_FAILS", 3),
 		BackendConsoleUserAgent: getenv("RT_BACKEND_CONSOLE_USER_AGENT", DefaultBackendConsoleUserAgent),
+		ChromeCDPEndpoint:       getenv("RT_CHROME_CDP_URL", "http://127.0.0.1:9222"),
 		FocusModels:             getenv("RT_FOCUS_MODELS", ""),
 		RequestTimeout:          getDuration("RT_REQUEST_TIMEOUT", 120*time.Second),
 		ShutdownTimeout:         getDuration("RT_SHUTDOWN_TIMEOUT", 30*time.Second),

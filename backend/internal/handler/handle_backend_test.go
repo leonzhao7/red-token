@@ -1,11 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
+	"red-token/internal/config"
 	"red-token/internal/domain"
+	"red-token/internal/service"
 )
 
 func TestValidateBackendAPIKeysAllowsEmptyList(t *testing.T) {
@@ -122,6 +128,67 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	}
 	if _, exists := serializedKey["api_key"]; exists {
 		t.Fatalf("frontend API key retained api_key: %+v", serializedKey)
+	}
+}
+
+func TestBackendConsoleCookieSyncPersistsCookieHeader(t *testing.T) {
+	st := openWorkflowHandlerStore(t)
+	backend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name:          "cookie-sync",
+		ConsoleURL:    "https://console.example/admin",
+		ConsoleCookie: "legacy=value",
+		ConsoleHeaders: map[string]string{
+			"Cookie":    "old=value",
+			"X-Console": "retained",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+
+	handler := NewBackendHandler(st)
+	handler.SetConfig(&config.Config{ChromeCDPEndpoint: "http://host.test:9222"})
+	handler.chromeCredentialRead = func(ctx context.Context, endpoint, consoleURL string) (service.ChromeCDPCredentials, error) {
+		if endpoint != "http://host.test:9222" || consoleURL != backend.ConsoleURL {
+			t.Fatalf("endpoint=%q consoleURL=%q", endpoint, consoleURL)
+		}
+		return service.ChromeCDPCredentials{
+			CookieHeader:  "session=from-chrome; csrf=token",
+			Authorization: "Bearer browser-token",
+		}, nil
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /admin/api/backends/{id}/console/cookie/sync", handler.HandleBackendConsoleCookieSync)
+	request := httptest.NewRequest(http.MethodPost, "/admin/api/backends/"+strconv.FormatInt(backend.ID, 10)+"/console/cookie/sync?audit=0", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("sync status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		CookieCount          int  `json:"cookie_count"`
+		AuthorizationUpdated bool `json:"authorization_updated"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.CookieCount != 2 || !payload.AuthorizationUpdated {
+		t.Fatalf("response=%s decode_err=%v", response.Body.String(), err)
+	}
+
+	updated, err := st.GetBackend(context.Background(), backend.ID)
+	if err != nil {
+		t.Fatalf("get updated backend: %v", err)
+	}
+	if got := updated.ConsoleHeaders["Cookie"]; got != "session=from-chrome; csrf=token" {
+		t.Fatalf("stored Cookie=%q", got)
+	}
+	if got := updated.ConsoleHeaders["X-Console"]; got != "retained" {
+		t.Fatalf("non-Cookie header=%q", got)
+	}
+	if got := updated.ConsoleHeaders["Authorization"]; got != "Bearer browser-token" {
+		t.Fatalf("stored Authorization=%q", got)
+	}
+	if updated.ConsoleCookie != "" {
+		t.Fatalf("legacy console_cookie=%q", updated.ConsoleCookie)
 	}
 }
 

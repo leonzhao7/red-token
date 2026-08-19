@@ -21,11 +21,12 @@ import (
 )
 
 type BackendHandler struct {
-	store             *store.Store
-	cfg               *config.Config
-	consoleHTTPClient *http.Client
-	logger            *slog.Logger
-	workflowHandler   *WorkflowHandler
+	store                *store.Store
+	cfg                  *config.Config
+	consoleHTTPClient    *http.Client
+	chromeCredentialRead func(context.Context, string, string) (service.ChromeCDPCredentials, error)
+	logger               *slog.Logger
+	workflowHandler      *WorkflowHandler
 }
 
 func NewBackendHandler(st *store.Store) *BackendHandler {
@@ -747,6 +748,68 @@ func (h *BackendHandler) HandleBackendConsoleCheckin(w http.ResponseWriter, r *h
 		"account":  decodeJSONMap(accountJSON),
 		"requests": recorder.Requests,
 	})
+}
+
+// HandleBackendConsoleCookieSync imports Cookie and Authorization credentials
+// for a relay console from the Chrome instance exposed through CDP. Chrome is
+// commonly running on the Windows host while this service runs in WSL; the
+// service resolves the host gateway when the default CDP URL is used.
+func (h *BackendHandler) HandleBackendConsoleCookieSync(w http.ResponseWriter, r *http.Request) {
+	backend, err := h.loadConsoleBackend(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	endpoint := service.DefaultChromeCDPEndpoint
+	if h.cfg != nil && strings.TrimSpace(h.cfg.ChromeCDPEndpoint) != "" {
+		endpoint = h.cfg.ChromeCDPEndpoint
+	}
+	credentials, err := h.readChromeCredentials(r.Context(), endpoint, backend.ConsoleURL)
+	if err != nil {
+		h.logConsoleEvent(r.Context(), slog.LevelWarn, "backend_console_cookie_sync_failed", append(consoleBackendAttrs(backend),
+			slog.String("error", err.Error()),
+		)...)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	headers := service.ConsoleHeadersWithCookieValue(service.NewAPIConsoleHeaders(backend), credentials.CookieHeader)
+	headers = service.ConsoleHeadersWithAuthorizationValue(headers, credentials.Authorization)
+	emptyLegacyCookie := ""
+	updated, err := h.store.PatchBackend(r.Context(), backend.ID, store.BackendPatch{
+		ConsoleHeaders: &headers,
+		ConsoleCookie:  &emptyLegacyCookie,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if r.URL.Query().Get("audit") != "0" {
+		_ = h.store.AppendAuditEvent(r.Context(), domain.AuditEvent{
+			Level:        "info",
+			Type:         "admin_backend_cookie_sync",
+			Actor:        "admin",
+			ResourceType: "backend",
+			ResourceID:   backend.ID,
+			Message:      "backend console cookies imported from Chrome: " + backend.Name,
+			BackendName:  backend.Name,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"backend":               buildBackendFrontendView(updated, 0),
+		"cookie_count":          countCookieHeaderValues(credentials.CookieHeader),
+		"authorization_updated": credentials.Authorization != "",
+	})
+}
+
+func (h *BackendHandler) readChromeCredentials(ctx context.Context, endpoint, consoleURL string) (service.ChromeCDPCredentials, error) {
+	if h.chromeCredentialRead != nil {
+		return h.chromeCredentialRead(ctx, endpoint, consoleURL)
+	}
+	cookieService := service.NewChromeCDPCookieService(service.ChromeCDPCookieServiceOptions{
+		Endpoint:   endpoint,
+		HTTPClient: h.consoleHTTPClient,
+	})
+	return cookieService.ReadCredentials(ctx, consoleURL)
 }
 
 func (h *BackendHandler) handleWorkflowConsoleCheckin(w http.ResponseWriter, r *http.Request, backend domain.Backend, workflowID string, recorder *newAPIConsoleRequestRecorder) {
@@ -2024,6 +2087,16 @@ func (h *BackendHandler) backendConsoleUserAgent() string {
 		return config.DefaultBackendConsoleUserAgent
 	}
 	return value
+}
+
+func countCookieHeaderValues(header string) int {
+	count := 0
+	for _, part := range strings.Split(header, ";") {
+		if _, _, ok := strings.Cut(strings.TrimSpace(part), "="); ok {
+			count++
+		}
+	}
+	return count
 }
 
 func normalizeConsoleHeaders(headers map[string]string) (map[string]string, error) {
