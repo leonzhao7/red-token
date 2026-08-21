@@ -20,6 +20,7 @@ type Config struct {
 	BackendConsoleUserAgent string
 	ChromeCDPEndpoint       string
 	FocusModels             string
+	ConnectTimeout          time.Duration
 	RequestTimeout          time.Duration
 	ShutdownTimeout         time.Duration
 }
@@ -34,6 +35,7 @@ func Load() Config {
 		BackendConsoleUserAgent: getenv("RT_BACKEND_CONSOLE_USER_AGENT", DefaultBackendConsoleUserAgent),
 		ChromeCDPEndpoint:       getenv("RT_CHROME_CDP_URL", "http://127.0.0.1:9222"),
 		FocusModels:             getenv("RT_FOCUS_MODELS", ""),
+		ConnectTimeout:          getDuration("RT_CONNECT_TIMEOUT", 10*time.Second),
 		RequestTimeout:          getDuration("RT_REQUEST_TIMEOUT", 120*time.Second),
 		ShutdownTimeout:         getDuration("RT_SHUTDOWN_TIMEOUT", 30*time.Second),
 	}
@@ -63,6 +65,11 @@ func LoadDatabase(ctx context.Context, st *store.Store) (Config, error) {
 	}
 	if focusModels, ok := settings["focus_models"]; ok {
 		cfg.FocusModels = focusModels
+	}
+	if timeout, ok := settings["connect_timeout"]; ok {
+		if d, err := time.ParseDuration(timeout); err == nil && d > 0 {
+			cfg.ConnectTimeout = d
+		}
 	}
 	if timeout, ok := settings["request_timeout"]; ok {
 		if d, err := time.ParseDuration(timeout); err == nil {

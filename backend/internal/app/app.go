@@ -138,7 +138,7 @@ func New(ctx context.Context, dbPath string) (*App, error) {
 		clientKeyHandler:  handler.NewClientKeyHandler(st),
 		socksProxyHandler: handler.NewProxyHandler(st),
 		scheduler:         scheduler.New(st, cfg.BackendCooldown, cfg.BackendFails),
-		proxy:             proxy.New(cfg.RequestTimeout),
+		proxy:             proxy.New(cfg.ConnectTimeout, cfg.RequestTimeout),
 		mux:               http.NewServeMux(),
 		logger:            slog.Default().With("component", "app"),
 	}

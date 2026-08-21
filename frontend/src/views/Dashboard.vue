@@ -503,7 +503,10 @@ const modelDonutOption = computed<echarts.EChartsOption>(() => {
         itemStyle: { borderRadius: 8, borderWidth: 3, borderColor: 'transparent' },
         label: { show: false },
         emphasis: { scaleSize: 8, label: { show: false } },
-        data: models,
+        data: models.map((model) => ({
+          ...model,
+          itemStyle: { color: model.color }
+        })),
         padAngle: 3
       }
     ],
@@ -781,7 +784,7 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
 
     <!-- charts row 1 -->
     <section class="charts-1">
-      <div class="panel token-panel">
+      <div class="panel hoverable token-panel">
         <div class="panel-header">
           <div>
             <div class="panel-title"><Sparkles :size="16" /> Token 用量趋势</div>
@@ -815,7 +818,7 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
         </div>
       </div>
 
-      <div class="panel model-panel">
+      <div class="panel hoverable model-panel">
         <div class="panel-header">
           <div>
             <div class="panel-title"><Cpu :size="16" /> 模型用量分布</div>
@@ -842,7 +845,7 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
 
     <!-- charts row 2 -->
     <section class="charts-2">
-      <div class="panel request-trend-panel">
+      <div class="panel hoverable request-trend-panel">
         <div class="panel-header">
           <div>
             <div class="panel-title"><Activity :size="16" /> 请求趋势</div>
@@ -871,7 +874,7 @@ const cacheGaugeOption = computed<echarts.EChartsOption>(() => {
         </div>
       </div>
 
-      <div class="panel relay-panel">
+      <div class="panel hoverable relay-panel">
         <div class="panel-header">
           <div>
             <div class="panel-title"><Wifi :size="16" /> 中转站用量排行</div>

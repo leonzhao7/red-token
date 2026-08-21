@@ -13,9 +13,10 @@ import (
 )
 
 type socks5Dialer struct {
-	address  string
-	username string
-	password string
+	address        string
+	username       string
+	password       string
+	connectTimeout time.Duration
 }
 
 func (d *socks5Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -23,11 +24,14 @@ func (d *socks5Dialer) DialContext(ctx context.Context, network, address string)
 		return nil, fmt.Errorf("unsupported socks5 network: %s", network)
 	}
 
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimSpace(d.address))
+	connectCtx, cancel := context.WithTimeout(ctx, d.connectTimeout)
+	defer cancel()
+
+	conn, err := (&net.Dialer{}).DialContext(connectCtx, "tcp", strings.TrimSpace(d.address))
 	if err != nil {
 		return nil, err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
+	if deadline, ok := connectCtx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
 

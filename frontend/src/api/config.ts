@@ -8,6 +8,7 @@ export interface ConfigResponse {
   backend_fails: string
   backend_console_user_agent: string
   focus_models: string
+  connect_timeout: string
   request_timeout: string
   shutdown_timeout: string
 }

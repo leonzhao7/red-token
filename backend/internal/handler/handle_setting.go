@@ -38,6 +38,7 @@ func (a *SettingHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request)
 		"backend_fails":              getSettingOrDefault(settings, "backend_fails", fmt.Sprintf("%d", a.cfg.BackendFails)),
 		"backend_console_user_agent": getSettingOrDefault(settings, "backend_console_user_agent", a.cfg.BackendConsoleUserAgent),
 		"focus_models":               getSettingOrDefault(settings, "focus_models", a.cfg.FocusModels),
+		"connect_timeout":            getSettingOrDefault(settings, "connect_timeout", a.cfg.ConnectTimeout.String()),
 		"request_timeout":            getSettingOrDefault(settings, "request_timeout", a.cfg.RequestTimeout.String()),
 		"shutdown_timeout":           getSettingOrDefault(settings, "shutdown_timeout", a.cfg.ShutdownTimeout.String()),
 	}
@@ -77,6 +78,13 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 	if userAgent, ok := payload["backend_console_user_agent"]; ok {
 		if !isValidUserAgent(userAgent) {
 			writeError(w, http.StatusBadRequest, "invalid backend_console_user_agent")
+			return
+		}
+	}
+
+	if timeout, ok := payload["connect_timeout"]; ok {
+		if d, err := time.ParseDuration(timeout); err != nil || d <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid connect_timeout duration")
 			return
 		}
 	}
@@ -125,6 +133,12 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 
 	if focusModels, ok := payload["focus_models"]; ok {
 		a.cfg.FocusModels = strings.TrimSpace(focusModels)
+	}
+
+	if timeout, ok := payload["connect_timeout"]; ok {
+		if d, err := time.ParseDuration(timeout); err == nil && d > 0 {
+			a.cfg.ConnectTimeout = d
+		}
 	}
 
 	if timeout, ok := payload["request_timeout"]; ok {
@@ -176,6 +190,12 @@ func (a *SettingHandler) HandleReloadConfig(w http.ResponseWriter, r *http.Reque
 
 	if focusModels, ok := settings["focus_models"]; ok {
 		a.cfg.FocusModels = strings.TrimSpace(focusModels)
+	}
+
+	if timeout, ok := settings["connect_timeout"]; ok {
+		if d, err := time.ParseDuration(timeout); err == nil && d > 0 {
+			a.cfg.ConnectTimeout = d
+		}
 	}
 
 	if timeout, ok := settings["request_timeout"]; ok {

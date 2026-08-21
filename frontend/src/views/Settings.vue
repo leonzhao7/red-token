@@ -36,6 +36,7 @@ const form = reactive<EditableConfig>({
   backend_fails: '3',
   backend_console_user_agent: 'Red-Token/1.0',
   focus_models: '',
+  connect_timeout: '10s',
   request_timeout: '2m'
 })
 
@@ -68,6 +69,7 @@ async function loadData() {
     form.backend_fails = cfg.backend_fails
     form.backend_console_user_agent = cfg.backend_console_user_agent
     form.focus_models = cfg.focus_models
+    form.connect_timeout = cfg.connect_timeout
     form.request_timeout = cfg.request_timeout
   } catch (e: any) {
     loadError.value = e?.message || '加载配置失败'
@@ -85,6 +87,7 @@ async function save() {
     form.backend_fails = cfg.backend_fails
     form.backend_console_user_agent = cfg.backend_console_user_agent
     form.focus_models = cfg.focus_models
+    form.connect_timeout = cfg.connect_timeout
     form.request_timeout = cfg.request_timeout
     toast('配置已保存', '日志级别立即生效，其他字段已更新', 'success')
   } catch (e: any) {
@@ -157,6 +160,11 @@ onMounted(loadData)
             <div class="panel-sub">出站请求的超时与客户端标识</div>
           </div>
           <div class="panel-body">
+            <div class="field">
+              <label class="field-label">连接超时</label>
+              <input v-model="form.connect_timeout" class="input mono" placeholder="如 10s、30s" />
+              <span class="field-hint">建立 TCP/TLS 连接的最长等待时间，例如 10s、30s</span>
+            </div>
             <div class="field">
               <label class="field-label">请求超时</label>
               <input v-model="form.request_timeout" class="input mono" placeholder="如 2m、90s" />

@@ -19,14 +19,16 @@ import (
 type Service struct {
 	client                *http.Client
 	directClient          *http.Client
+	connectTimeout        time.Duration
 	responseHeaderTimeout time.Duration
 	mu                    sync.Mutex
 	proxyClients          map[string]*http.Client
 }
 
-func New(responseHeaderTimeout time.Duration) *Service {
+func New(connectTimeout, responseHeaderTimeout time.Duration) *Service {
 	return &Service{
-		directClient:          &http.Client{Transport: newTransport(responseHeaderTimeout, nil)},
+		directClient:          &http.Client{Transport: newTransport(connectTimeout, responseHeaderTimeout, nil)},
+		connectTimeout:        connectTimeout,
 		responseHeaderTimeout: responseHeaderTimeout,
 		proxyClients:          make(map[string]*http.Client),
 	}
@@ -118,7 +120,7 @@ func NewHTTPClientForBackend(backend domain.Backend, responseHeaderTimeout, time
 	if backend.ProxyID == 0 {
 		return &http.Client{
 			Timeout:   timeout,
-			Transport: newTransport(responseHeaderTimeout, nil),
+			Transport: newTransport(timeout, responseHeaderTimeout, nil),
 		}, nil
 	}
 	if backend.Proxy == nil {
@@ -132,13 +134,14 @@ func NewHTTPClientForBackend(backend domain.Backend, responseHeaderTimeout, time
 	}
 
 	dialer := &socks5Dialer{
-		address:  backend.Proxy.Address,
-		username: backend.Proxy.Username,
-		password: backend.Proxy.Password,
+		address:        backend.Proxy.Address,
+		username:       backend.Proxy.Username,
+		password:       backend.Proxy.Password,
+		connectTimeout: timeout,
 	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: newTransport(responseHeaderTimeout, dialer.DialContext),
+		Transport: newTransport(timeout, responseHeaderTimeout, dialer.DialContext),
 	}, nil
 }
 
@@ -167,18 +170,19 @@ func (s *Service) clientForBackend(backend domain.Backend) (*http.Client, error)
 	}
 
 	dialer := &socks5Dialer{
-		address:  backend.Proxy.Address,
-		username: backend.Proxy.Username,
-		password: backend.Proxy.Password,
+		address:        backend.Proxy.Address,
+		username:       backend.Proxy.Username,
+		password:       backend.Proxy.Password,
+		connectTimeout: s.connectTimeout,
 	}
 	client := &http.Client{
-		Transport: newTransport(s.responseHeaderTimeout, dialer.DialContext),
+		Transport: newTransport(s.connectTimeout, s.responseHeaderTimeout, dialer.DialContext),
 	}
 	s.proxyClients[key] = client
 	return client, nil
 }
 
-func newTransport(responseHeaderTimeout time.Duration, dialContext func(context.Context, string, string) (net.Conn, error)) *http.Transport {
+func newTransport(connectTimeout, responseHeaderTimeout time.Duration, dialContext func(context.Context, string, string) (net.Conn, error)) *http.Transport {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DisableCompression:    true,
@@ -193,6 +197,8 @@ func newTransport(responseHeaderTimeout time.Duration, dialContext func(context.
 	if dialContext != nil {
 		transport.Proxy = nil
 		transport.DialContext = dialContext
+	} else {
+		transport.DialContext = (&net.Dialer{Timeout: connectTimeout}).DialContext
 	}
 	return transport
 }
