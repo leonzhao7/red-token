@@ -180,12 +180,13 @@ func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T
 	updated.ConsoleAccountJSON = `{"quota":9}`
 	updated.ConsolePricingJSON = `{"data":[{"model_name":"new-model"}]}`
 	updated.ConsoleHeaders = map[string]string{"Cookie": "session=new", "X-Test": "configured"}
+	updated.ConsoleRefreshToken = "refresh-token-new"
 	output := json.RawMessage(`{"quota":9}`)
 	gotBackend, gotResult, err := st.ApplyHTTPWorkflowResult(ctx, workflow.ID, updated, output)
 	if err != nil {
 		t.Fatalf("apply workflow result: %v", err)
 	}
-	if gotBackend.APIKey != "new-key" || gotBackend.ConsoleAccountJSON != updated.ConsoleAccountJSON || gotBackend.ConsolePricingJSON != updated.ConsolePricingJSON || gotBackend.ConsoleHeaders["Cookie"] != "session=new" || gotBackend.ConsoleHeaders["X-Test"] != "configured" {
+	if gotBackend.APIKey != "new-key" || gotBackend.ConsoleAccountJSON != updated.ConsoleAccountJSON || gotBackend.ConsolePricingJSON != updated.ConsolePricingJSON || gotBackend.ConsoleHeaders["Cookie"] != "session=new" || gotBackend.ConsoleHeaders["X-Test"] != "configured" || gotBackend.ConsoleRefreshToken != "refresh-token-new" {
 		t.Fatalf("backend fields were not applied: %+v", gotBackend)
 	}
 	if string(gotResult.Output) != string(output) || gotResult.BackendID != backend.ID {
@@ -196,6 +197,7 @@ func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T
 	rollbackCandidate.APIKeys = []domain.BackendAPIKey{{APIKey: "should-rollback", Group: "rollback", Models: []string{"rollback-model"}}}
 	rollbackCandidate.ConsoleAccountJSON = `{"quota":999}`
 	rollbackCandidate.ConsoleHeaders = map[string]string{"Cookie": "session=should-rollback"}
+	rollbackCandidate.ConsoleRefreshToken = "refresh-token-should-rollback"
 	if _, _, err := st.ApplyHTTPWorkflowResult(ctx, "missing-workflow", rollbackCandidate, json.RawMessage(`{"quota":999}`)); err == nil {
 		t.Fatal("expected missing workflow foreign key to fail")
 	}
@@ -203,7 +205,7 @@ func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T
 	if err != nil {
 		t.Fatalf("get backend after rollback: %v", err)
 	}
-	if afterRollback.APIKey != gotBackend.APIKey || afterRollback.ConsoleAccountJSON != gotBackend.ConsoleAccountJSON || afterRollback.ConsoleHeaders["Cookie"] != gotBackend.ConsoleHeaders["Cookie"] {
+	if afterRollback.APIKey != gotBackend.APIKey || afterRollback.ConsoleAccountJSON != gotBackend.ConsoleAccountJSON || afterRollback.ConsoleHeaders["Cookie"] != gotBackend.ConsoleHeaders["Cookie"] || afterRollback.ConsoleRefreshToken != gotBackend.ConsoleRefreshToken {
 		t.Fatalf("failed snapshot write did not roll back backend: before=%+v after=%+v", gotBackend, afterRollback)
 	}
 }

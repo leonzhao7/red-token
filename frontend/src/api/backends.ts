@@ -46,6 +46,7 @@ export interface BackendResponse {
   tags: string[]
   console_username: string
   console_password: string
+  console_refresh_token: string
   console_checkin_workflow_id: string
   manual_checkin: boolean
   console_headers: Record<string, string>
@@ -69,6 +70,8 @@ export interface BackendWritePayload {
   tags?: string[]
   console_username?: string
   console_password?: string
+  console_refresh_token?: string
+  user_id?: string
   console_checkin_workflow_id?: string
   manual_checkin?: boolean
   console_headers?: Record<string, string>

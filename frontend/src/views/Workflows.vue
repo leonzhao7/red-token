@@ -40,6 +40,7 @@ import {
   type WorkflowDebugLog
 } from '../api/workflows'
 import { listBackends, type BackendResponse } from '../api/backends'
+import { selectWorkflowSpec } from '../utils/workflowSpec'
 
 const loading = ref(true)
 const loadError = ref('')
@@ -64,6 +65,7 @@ interface StepForm {
   foreachIndexAs: string
   method: string
   path: string
+  headers: KvRow[]
   body: string
   when: string
   whenGoto: string
@@ -76,7 +78,9 @@ const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'
 const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
-const WORKFLOW_OUTPUT_FIELDS = ['api_keys', 'models', 'quota', 'quota_unit', 'today_reward', 'used_quota', 'user_id', 'username']
+const WORKFLOW_OUTPUT_REQUIRED_FIELDS = ['api_keys', 'models', 'quota', 'quota_unit', 'today_reward', 'used_quota', 'user_id', 'username']
+const WORKFLOW_OUTPUT_OPTIONAL_FIELDS = ['refresh_token', 'console_headers']
+const WORKFLOW_OUTPUT_FIELDS = [...WORKFLOW_OUTPUT_REQUIRED_FIELDS, ...WORKFLOW_OUTPUT_OPTIONAL_FIELDS]
 
 const showForm = ref(false)
 const isEditing = ref(false)
@@ -98,6 +102,7 @@ function emptyStep(): StepForm {
     foreachIndexAs: '',
     method: 'GET',
     path: '',
+    headers: [],
     body: '',
     when: '',
     whenGoto: '',
@@ -248,6 +253,7 @@ function defToForm(def: WorkflowDefinition) {
     foreachIndexAs: step.foreach?.index_as || '',
     method: step.request.method,
     path: step.request.path,
+    headers: objToKv(step.request.headers),
     body: 'body' in step.request ? JSON.stringify(step.request.body, null, 2) : '',
     when: step.when?.expression || '',
     whenGoto: step.when?.goto || '',
@@ -481,6 +487,7 @@ function validateForm(): string[] {
     }
     if (!st.path.trim()) errors.push(`${label}：path 不能为空`)
     else if (!st.path.trim().startsWith('/')) errors.push(`${label}：path 必须以 / 开头`)
+    validateHeaderRows(st.headers, `${label} Headers`, errors)
     if (st.body.trim()) {
       try {
         JSON.parse(st.body)
@@ -524,7 +531,7 @@ function validateForm(): string[] {
       errors.push('Output 必须是对象')
     } else {
       const fields = Object.keys(output).sort()
-      const missing = WORKFLOW_OUTPUT_FIELDS.filter((field) => !fields.includes(field))
+      const missing = WORKFLOW_OUTPUT_REQUIRED_FIELDS.filter((field) => !fields.includes(field))
       const unknown = fields.filter((field) => !WORKFLOW_OUTPUT_FIELDS.includes(field))
       if (missing.length) errors.push(`Output 缺少固定字段：${missing.join(', ')}`)
       if (unknown.length) errors.push(`Output 包含不支持的字段：${unknown.join(', ')}`)
@@ -540,6 +547,10 @@ function formToDef(): WorkflowDefinition {
     const request: WorkflowStep['request'] = {
       method: st.method.trim().toUpperCase() || 'GET',
       path: st.path.trim()
+    }
+    const stepHeaders = kvToObj(st.headers)
+    if (Object.keys(stepHeaders).length) {
+      request.headers = stepHeaders
     }
     if (st.body.trim()) {
       request.body = JSON.parse(st.body)
@@ -582,6 +593,10 @@ function formToDef(): WorkflowDefinition {
   }
   const globalHeaders = kvToObj(form.headers)
   if (Object.keys(globalHeaders).length) definition.headers = globalHeaders
+  definition.spec = selectWorkflowSpec(definition.spec, {
+    globalHeaders: !!definition.headers,
+    stepHeaders: steps.some((step) => step.request.headers && Object.keys(step.request.headers).length)
+  })
   return definition
 }
 
@@ -811,6 +826,7 @@ onMounted(loadData)
                 <button class="icon-btn wf-del" title="移除" @click="removeKv(form.headers, headerIndex)"><X :size="13" /></button>
               </div>
             </div>
+            <div v-else class="wf-extract-empty">未配置全局 Header</div>
           </div>
         </div>
 
@@ -914,6 +930,22 @@ onMounted(loadData)
                     spellcheck="false"
                     @focus="onFocus"
                   ></textarea>
+                </div>
+
+                <div class="field">
+                  <div class="wf-sec-head sub">
+                    <span class="wf-sec-title">步骤 Headers <em class="wf-hint">覆盖同名全局 Header，值填 null 则删除全局 Header</em></span>
+                    <div class="spacer"></div>
+                    <button class="btn btn-ghost btn-sm" @click="addKv(st.headers)"><Plus :size="13" /> 添加 Header</button>
+                  </div>
+                  <div v-if="st.headers.length" class="wf-kv">
+                    <div v-for="(header, headerIndex) in st.headers" :key="headerIndex" class="wf-kv-row">
+                      <input v-model="header.key" class="input mono wf-kv-key" placeholder="Header 名称" spellcheck="false" />
+                      <input v-model="header.value" class="input mono" placeholder="值，支持 {{alias}} / {{runtime#/...}} 引用" spellcheck="false" @focus="onFocus" />
+                      <button class="icon-btn wf-del" title="移除" @click="removeKv(st.headers, headerIndex)"><X :size="13" /></button>
+                    </div>
+                  </div>
+                  <div v-else class="wf-extract-empty">未配置步骤 Header</div>
                 </div>
 
                 <div class="field">

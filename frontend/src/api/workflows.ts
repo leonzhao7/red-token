@@ -3,6 +3,7 @@ const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 export interface WorkflowRequest {
   method: string
   path: string
+  headers?: Record<string, unknown>
   body?: unknown
 }
 

@@ -598,6 +598,8 @@ const form = ref<{
   consoleUrl: string
   username: string
   password: string
+  userId: string
+  consoleRefreshToken: string
   consoleHeaders: string
   consoleCheckinWorkflowId: string
   manualCheckin: boolean
@@ -612,6 +614,8 @@ const form = ref<{
   consoleUrl: '',
   username: '',
   password: '',
+  userId: '',
+  consoleRefreshToken: '',
   consoleHeaders: '',
   consoleCheckinWorkflowId: '',
   manualCheckin: false,
@@ -646,6 +650,7 @@ function resetForm() {
   passwordVisible.value = false
   form.value = {
     name: '', url: '', protocol: 'openai', consoleUrl: '', username: '', password: '',
+    userId: '', consoleRefreshToken: '',
     consoleHeaders: '',
     consoleCheckinWorkflowId: '', manualCheckin: false, tagsInput: '',
     proxyId: '', weight: 10, keys: []
@@ -661,6 +666,7 @@ function openCreate() {
 function openEditRelay(r: RelayView) {
   editingId.value = r.id
   passwordVisible.value = false
+  const account = parseObject(r.raw.console_account)
   form.value = {
     name: r.name,
     url: r.url,
@@ -668,6 +674,8 @@ function openEditRelay(r: RelayView) {
     consoleUrl: r.raw.console_url || '',
     username: r.raw.console_username || '',
     password: r.raw.console_password || '',
+    userId: String(account.id || ''),
+    consoleRefreshToken: r.raw.console_refresh_token || '',
     consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
     consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
     manualCheckin: Boolean(r.raw.manual_checkin),
@@ -718,6 +726,8 @@ function buildPayload() {
     tags: parseTagList(form.value.tagsInput),
     console_username: form.value.username.trim(),
     console_password: form.value.password,
+    user_id: form.value.userId.trim(),
+    console_refresh_token: form.value.consoleRefreshToken.trim(),
     console_headers: parseConsoleHeaders(form.value.consoleHeaders),
     console_checkin_workflow_id: form.value.consoleCheckinWorkflowId.trim(),
     manual_checkin: form.value.manualCheckin,
@@ -1096,6 +1106,14 @@ onMounted(loadData)
                   <Eye v-else :size="15" />
                 </button>
               </div>
+            </div>
+            <div class="field">
+              <label class="field-label">用户 ID</label>
+              <input v-model="form.userId" class="input mono" placeholder="user_123456" />
+            </div>
+            <div class="field">
+              <label class="field-label">Refresh Token</label>
+              <input v-model="form.consoleRefreshToken" class="input mono" placeholder="refresh_token_value" />
             </div>
           </div>
 

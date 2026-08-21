@@ -95,6 +95,8 @@ type backendUpdatePayload struct {
 	ConsoleCheckinWorkflow *string                 `json:"console_checkin_workflow_id"`
 	ManualCheckin          *bool                   `json:"manual_checkin"`
 	ConsoleHeaders         *map[string]string      `json:"console_headers"`
+	ConsoleRefreshToken    *string                 `json:"console_refresh_token,omitempty"`
+	UserID                 *string                 `json:"user_id,omitempty"`
 	Notes                  *string                 `json:"notes"`
 	ProxyID                *int64                  `json:"proxy_id"`
 	Status                 *string                 `json:"status"`
@@ -117,6 +119,7 @@ type backendImportExportItem struct {
 	ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id,omitempty"`
 	ManualCheckin          bool                   `json:"manual_checkin"`
 	ConsoleHeaders         map[string]string      `json:"console_headers"`
+	ConsoleRefreshToken    string                 `json:"console_refresh_token"`
 	ConsoleAccountJSON     string                 `json:"console_account_json"`
 	ConsolePricingJSON     string                 `json:"console_pricing_json"`
 	Notes                  string                 `json:"notes"`
@@ -273,6 +276,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id"`
 		ManualCheckin          bool                   `json:"manual_checkin"`
 		ConsoleHeaders         map[string]string      `json:"console_headers"`
+		ConsoleRefreshToken    string                 `json:"console_refresh_token"`
 		Notes                  string                 `json:"notes"`
 		ProxyID                int64                  `json:"proxy_id"`
 		Status                 string                 `json:"status"`
@@ -328,6 +332,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		ConsoleCheckinWorkflow: consoleCheckinWorkflow,
 		ManualCheckin:          payload.ManualCheckin,
 		ConsoleHeaders:         consoleHeaders,
+		ConsoleRefreshToken:    payload.ConsoleRefreshToken,
 		Notes:                  payload.Notes,
 		ProxyID:                payload.ProxyID,
 		Weight:                 payload.Weight,
@@ -447,6 +452,20 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 		patch.ConsoleHeaders = &value
 		emptyCookie := ""
 		patch.ConsoleCookie = &emptyCookie
+	}
+	if payload.ConsoleRefreshToken != nil {
+		patch.ConsoleRefreshToken = payload.ConsoleRefreshToken
+	}
+	if payload.UserID != nil && strings.TrimSpace(*payload.UserID) != "" {
+		account := decodeJSONMap(current.ConsoleAccountJSON)
+		account["id"] = strings.TrimSpace(*payload.UserID)
+		accountJSON, err := json.Marshal(account)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update user_id")
+			return
+		}
+		accountJSONStr := string(accountJSON)
+		patch.ConsoleAccountJSON = &accountJSONStr
 	}
 	if payload.Status != nil {
 		switch *payload.Status {

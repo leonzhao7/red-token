@@ -6,7 +6,7 @@
 
 ## 1. 设计目标
 
-HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。`http-workflow/v2` 支持基于当前响应的条件跳转，`http-workflow/v3` 进一步支持对数组 alias 逐项发送请求，`http-workflow/v4` 增加应用于所有步骤的全局请求 Header。
+HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。`http-workflow/v2` 支持基于当前响应的条件跳转，`http-workflow/v3` 进一步支持对数组 alias 逐项发送请求，`http-workflow/v4` 增加应用于所有步骤的全局请求 Header，`http-workflow/v5` 增加每个步骤单独配置请求 Header 的能力。
 
 规范遵循以下原则：
 
@@ -34,7 +34,10 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
       "id": "get_profile",
       "request": {
         "method": "GET",
-        "path": "/api/profile"
+        "path": "/api/profile",
+        "headers": {
+          "X-Profile-Version": "v1"
+        }
       },
       "extract": [
         {
@@ -50,11 +53,13 @@ HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值
 }
 ```
 
+`request.headers` 属于 `http-workflow/v5`；若在步骤中使用它，`spec` 必须为 `http-workflow/v5`。
+
 ### 2.1 顶层字段
 
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
-| `spec` | string | 是 | 规范版本；支持 v1、条件跳转 v2、foreach v3，以及全局 Header v4 |
+| `spec` | string | 是 | 规范版本；支持 v1、条件跳转 v2、foreach v3、全局 Header v4，以及步骤 Header v5 |
 | `id` | string | 是 | 工作流稳定标识 |
 | `name` | string | 是 | 展示名称，不参与执行 |
 | `headers` | object | 否（v4） | 应用于所有步骤的请求 Header 模板；省略等价于 `{}` |
@@ -94,6 +99,7 @@ v3 的 foreach 配置由以下字段组成：
 | --- | --- | --- | --- |
 | `method` | string | 是 | HTTP method，执行前转为大写 |
 | `path` | string | 是 | 相对 URL 模板，可直接包含 query，必须以 `/` 开头且不得包含 scheme、authority 或 fragment |
+| `headers` | object | 否（v5） | 仅当前 step 生效的请求 Header 模板；与全局同名时覆盖全局，省略等价于 `{}` |
 | `body` | JSON value | 否 | JSON body 模板；字段省略表示不发送 body，字段存在时序列化其值 |
 
 基础 URL、认证信息、代理、超时和受保护请求头由宿主执行环境提供，不属于工作流语义。
@@ -293,7 +299,13 @@ Header 名不区分大小写。渲染后按以下规则处理：
 
 同一请求中大小写不同但语义相同的 Header 名视为冲突。宿主可以定义一组受保护 Header；工作流配置这些 Header 时必须在请求发送前失败。
 
-v4 按“宿主提供 Header、顶层 `headers`”两层合并。宿主提供 Header 不允许被工作流覆盖。当前项目把中转站 `console_headers` 作为宿主提供 Header，因此可直接在中转站配置中设置所有工作流请求共用的静态 Header。`Authorization` 和 `Cookie` 由宿主管理，不能写入顶层 Header；单个请求不支持单独配置 Header。
+v4 及更高版本按“宿主提供 Header、顶层 `headers`、步骤 `request.headers`”三层合并，优先级从高到低为：
+
+1. 宿主提供 Header：不允许被任何工作流配置覆盖，冲突时必须在请求发送前失败。
+2. 步骤 `request.headers`：与全局 Header 同名时（大小写不敏感）覆盖全局；渲染为 `null` 时省略该 Header，等效于删除同名的全局 Header。
+3. 顶层 `headers`：应用于所有步骤的全局默认。
+
+当前项目把中转站 `console_headers` 作为宿主提供 Header，因此可直接在中转站配置中设置所有工作流请求共用的静态 Header。`Authorization` 和 `Cookie` 由宿主管理，不能写入顶层或步骤 Header；`request.headers` 仅 `http-workflow/v5` 支持。
 
 当前项目为每次工作流执行创建独立 Cookie jar。中转站已有的 `Cookie` 会作为初始 Cookie；任意响应的 `Set-Cookie` 会按照标准的 domain、path、expiry 和 secure 规则自动用于后续请求，无需 jq 提取或在请求中显式配置。本次响应产生的 Cookie 变更会按 Cookie 名新增或覆盖中转站 `console_headers.Cookie`，过期 Cookie 会从配置中删除；成功工作流将 Cookie 与业务输出放在同一事务中保存，失败工作流也会独立保存已经收到的 Cookie 变更。不同中转站和不同执行之间不共享 Cookie jar。
 
@@ -943,9 +955,9 @@ $vars.model_rows
 
 ## 14. 版本兼容
 
-`spec` 决定完整语义，不允许通过字段组合猜测版本。`http-workflow/v1` 使用字符串 `expect` 且不认识 `when`；结构化状态码路由和 alias 条件跳转必须使用 `http-workflow/v2` 或更高版本；`foreach` 必须使用 `http-workflow/v3` 或更高版本；顶层 `headers` 必须使用 `http-workflow/v4`。
+`spec` 决定完整语义，不允许通过字段组合猜测版本。`http-workflow/v1` 使用字符串 `expect` 且不认识 `when`；结构化状态码路由和 alias 条件跳转必须使用 `http-workflow/v2` 或更高版本；`foreach` 必须使用 `http-workflow/v3` 或更高版本；顶层 `headers` 必须使用 `http-workflow/v4`；步骤 `request.headers` 必须使用 `http-workflow/v5`。
 
-v3 保留 v2 的结构化 Expect、When 和 Goto 语义，v4 保留 v3 的全部语义。旧版本配置保持原有行为，不会隐式启用更高版本字段。
+v3 保留 v2 的结构化 Expect、When 和 Goto 语义，v4 保留 v3 的全部语义，v5 保留 v4 的全部语义。旧版本配置保持原有行为，不会隐式启用更高版本字段。
 
 同一 major 版本内可以增加不改变现有配置含义的 jq 示例和说明，但不得增加会被旧读取方静默忽略的配置字段。新增字段、改变默认值、改变模板规则或改变 jq 求值上下文时，必须发布新的规范版本。
 

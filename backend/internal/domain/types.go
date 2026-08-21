@@ -89,6 +89,7 @@ type Backend struct {
 	// New credentials are stored only in ConsoleHeaders.
 	ConsoleCookie       string            `json:"-"`
 	ConsoleHeaders      map[string]string `json:"console_headers,omitempty"`
+	ConsoleRefreshToken string            `json:"console_refresh_token,omitempty"`
 	ConsoleAccountJSON  string            `json:"console_account_json"`
 	ConsolePricingJSON  string            `json:"console_pricing_json"`
 	Notes               string            `json:"notes"`

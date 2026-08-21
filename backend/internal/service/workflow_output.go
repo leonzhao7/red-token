@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-var checkinWorkflowOutputFields = map[string]struct{}{
+var checkinWorkflowOutputRequiredFields = map[string]struct{}{
 	"user_id":      {},
 	"username":     {},
 	"quota":        {},
@@ -15,6 +15,23 @@ var checkinWorkflowOutputFields = map[string]struct{}{
 	"today_reward": {},
 	"api_keys":     {},
 	"models":       {},
+}
+
+var checkinWorkflowOutputOptionalFields = map[string]struct{}{
+	"refresh_token":   {},
+	"console_headers": {},
+}
+
+var checkinWorkflowOutputAllFields = mergeFieldMaps(checkinWorkflowOutputRequiredFields, checkinWorkflowOutputOptionalFields)
+
+func mergeFieldMaps(maps ...map[string]struct{}) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, m := range maps {
+		for k := range m {
+			result[k] = struct{}{}
+		}
+	}
+	return result
 }
 
 var checkinWorkflowAPIKeyFields = map[string]struct{}{
@@ -46,7 +63,7 @@ func ValidateCheckinWorkflowOutputTemplate(raw json.RawMessage) error {
 	if !ok {
 		return fmt.Errorf("$: expected object, got %T", output)
 	}
-	return validateWorkflowObjectFields("$", object, checkinWorkflowOutputFields)
+	return validateWorkflowObjectFields("$", object, checkinWorkflowOutputRequiredFields, checkinWorkflowOutputAllFields)
 }
 
 // ValidateCheckinWorkflowOutput enforces the fixed business snapshot defined
@@ -57,7 +74,7 @@ func ValidateCheckinWorkflowOutput(value any) error {
 	if !ok {
 		return fmt.Errorf("$: expected object, got %T", value)
 	}
-	if err := validateWorkflowObjectFields("$", output, checkinWorkflowOutputFields); err != nil {
+	if err := validateWorkflowObjectFields("$", output, checkinWorkflowOutputRequiredFields, checkinWorkflowOutputAllFields); err != nil {
 		return err
 	}
 	for _, field := range []string{"user_id", "username", "quota_unit"} {
@@ -85,7 +102,7 @@ func ValidateCheckinWorkflowOutput(value any) error {
 		if !ok {
 			return fmt.Errorf("%s: expected object, got %T", path, value)
 		}
-		if err := validateWorkflowObjectFields(path, item, checkinWorkflowAPIKeyFields); err != nil {
+		if err := validateWorkflowObjectFields(path, item, checkinWorkflowAPIKeyFields, checkinWorkflowAPIKeyFields); err != nil {
 			return err
 		}
 		id, err := requireWorkflowString(item, "id", path+".id")
@@ -173,11 +190,11 @@ func ValidateCheckinWorkflowOutput(value any) error {
 	return nil
 }
 
-func validateWorkflowObjectFields(path string, object map[string]any, allowed map[string]struct{}) error {
+func validateWorkflowObjectFields(path string, object map[string]any, required map[string]struct{}, allowed map[string]struct{}) error {
 	if err := validateWorkflowObjectAllowedFields(path, object, allowed); err != nil {
 		return err
 	}
-	for field := range allowed {
+	for field := range required {
 		if _, exists := object[field]; !exists {
 			return fmt.Errorf("%s.%s is required", path, field)
 		}

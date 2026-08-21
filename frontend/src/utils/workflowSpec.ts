@@ -1,5 +1,6 @@
 export interface WorkflowSpecFeatures {
   globalHeaders?: boolean
+  stepHeaders?: boolean
   foreach?: boolean
   controlFlow?: boolean
 }
@@ -9,9 +10,10 @@ export function selectWorkflowSpec(currentSpec: string, features: WorkflowSpecFe
   if (features.controlFlow) requiredVersion = 2
   if (features.foreach) requiredVersion = 3
   if (features.globalHeaders) requiredVersion = 4
+  if (features.stepHeaders) requiredVersion = 5
 
   const normalized = currentSpec.trim()
-  const match = /^http-workflow\/v([1-4])$/.exec(normalized)
+  const match = /^http-workflow\/v([1-5])$/.exec(normalized)
   if (!match) return normalized
   return `http-workflow/v${Math.max(Number(match[1]), requiredVersion)}`
 }

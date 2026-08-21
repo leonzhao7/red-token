@@ -140,7 +140,7 @@ func (s *Store) ApplyHTTPWorkflowResult(ctx context.Context, workflowID string, 
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE backends
-		SET api_key = ?, api_keys_json = ?, model_list = ?, model_mapping = ?, console_cookie = ?, console_headers_json = ?, console_account_json = ?, console_pricing_json = ?, updated_at = ?
+		SET api_key = ?, api_keys_json = ?, model_list = ?, model_mapping = ?, console_cookie = ?, console_headers_json = ?, console_refresh_token = ?, console_account_json = ?, console_pricing_json = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		legacyAPIKey,
@@ -149,6 +149,7 @@ func (s *Store) ApplyHTTPWorkflowResult(ctx context.Context, workflowID string, 
 		mustEncodeMap(legacyModelMapping),
 		strings.TrimSpace(backend.ConsoleCookie),
 		consoleHeadersJSON,
+		strings.TrimSpace(backend.ConsoleRefreshToken),
 		accountJSON,
 		pricingJSON,
 		formatTime(now),

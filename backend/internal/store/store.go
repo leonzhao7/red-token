@@ -105,6 +105,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 				channel_url TEXT NOT NULL DEFAULT '',
 			console_cookie TEXT NOT NULL DEFAULT '',
 			console_headers_json TEXT NOT NULL DEFAULT '{}',
+			console_refresh_token TEXT NOT NULL DEFAULT '',
 			console_account_json TEXT NOT NULL DEFAULT '{}',
 			console_pricing_json TEXT NOT NULL DEFAULT '{}',
 			notes TEXT NOT NULL DEFAULT '',
@@ -330,6 +331,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureColumn(ctx, db, "backends", "console_headers_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends console_headers_json: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "backends", "console_refresh_token", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate backends console_refresh_token: %w", err)
 	}
 	if err := migrateBackendConsoleCookies(ctx, db); err != nil {
 		_ = db.Close()

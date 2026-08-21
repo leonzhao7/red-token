@@ -240,6 +240,262 @@ func TestGeneralWorkflowCarriesResponseCookiesAndGlobalHeaders(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowStepHeadersOverrideGlobalHeaders(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		path := request.URL.Path
+		switch path {
+		case "/step1":
+			if got := request.Header.Get("X-Global"); got != "global-value" {
+				t.Fatalf("step1 X-Global=%q, want global-value", got)
+			}
+			if got := request.Header.Get("X-Override"); got != "step1-override" {
+				t.Fatalf("step1 X-Override=%q, want step1-override", got)
+			}
+			if got := request.Header.Get("X-Step-Only"); got != "step1-only" {
+				t.Fatalf("step1 X-Step-Only=%q, want step1-only", got)
+			}
+		case "/step2":
+			if got := request.Header.Get("X-Global"); got != "global-value" {
+				t.Fatalf("step2 X-Global=%q, want global-value", got)
+			}
+			if got := request.Header.Get("X-Override"); got != "step2-override" {
+				t.Fatalf("step2 X-Override=%q, want step2-override", got)
+			}
+			if request.Header.Get("X-Step-Only") != "" {
+				t.Fatalf("step2 X-Step-Only should not exist")
+			}
+		default:
+			t.Fatalf("unexpected path %q", path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"step-headers","name":"Step headers",
+  "headers":{"X-Global":"global-value","X-Override":"global-override"},
+  "steps":[
+    {"id":"step1","request":{"method":"GET","path":"/step1","headers":{"X-Override":"step1-override","X-Step-Only":"step1-only"}}},
+    {"id":"step2","request":{"method":"GET","path":"/step2","headers":{"x-override":"step2-override"}}}
+  ],
+  "output":{}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+	})
+	if err != nil {
+		t.Fatalf("execute step headers workflow: %v", err)
+	}
+}
+
+func TestGeneralWorkflowStepHeaderNullDeletesGlobalHeader(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("X-Should-Delete") != "" {
+			t.Fatalf("X-Should-Delete should not exist, got %q", request.Header.Get("X-Should-Delete"))
+		}
+		if got := request.Header.Get("X-Keep"); got != "keep-value" {
+			t.Fatalf("X-Keep=%q, want keep-value", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"null-header","name":"Null header",
+  "headers":{"X-Should-Delete":"global-value","X-Keep":"keep-value"},
+  "steps":[
+    {"id":"test","request":{"method":"GET","path":"/test","headers":{"X-Should-Delete":null}}}
+  ],
+  "output":{}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+	})
+	if err != nil {
+		t.Fatalf("execute null header workflow: %v", err)
+	}
+}
+
+func TestGeneralWorkflowStepHeaderOverridesBaseHeader(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if header := request.Header.Get("X-Custom"); header != "workflow" {
+			t.Errorf("expected X-Custom=workflow, got %q", header)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"override","name":"Override",
+  "steps":[
+    {"id":"test","request":{"method":"GET","path":"/test","headers":{"X-Custom":"workflow"}}}
+  ],
+  "output":{}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+		Headers: http.Header{"X-Custom": []string{"base"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGeneralWorkflowStepHeaderProtectedHeaderRejected(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(``)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"protected","name":"Protected",
+  "steps":[
+    {"id":"test","request":{"method":"GET","path":"/test","headers":{"Authorization":"Bearer bad"}}}
+  ],
+  "output":{}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{
+		HTTPClient:       client,
+		ProtectedHeaders: []string{"authorization", "cookie"},
+	})
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+	})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization") {
+		t.Fatalf("expected authorization protected error, got %v", err)
+	}
+}
+
+func TestGeneralWorkflowStepHeadersTemplateReferences(t *testing.T) {
+	requestCount := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount == 1 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"token":"alias-value"}`)),
+				Request:    request,
+			}, nil
+		}
+		if got := request.Header.Get("X-Alias"); got != "alias-value" {
+			t.Fatalf("X-Alias=%q, want alias-value", got)
+		}
+		if got := request.Header.Get("X-Runtime"); got != "runtime-value" {
+			t.Fatalf("X-Runtime=%q, want runtime-value", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"template","name":"Template",
+  "steps":[
+    {"id":"step1","request":{"method":"GET","path":"/step1"},"extract":[{"alias":"token","expression":"$response.body.token"}]},
+    {"id":"step2","request":{"method":"GET","path":"/step2","headers":{"X-Alias":"{{token}}","X-Runtime":"{{runtime#/headers/X-Custom}}"}}}
+  ],
+  "output":{}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+		Runtime: map[string]any{"headers": map[string]string{"X-Custom": "runtime-value"}},
+	})
+	if err != nil {
+		t.Fatalf("execute template workflow: %v", err)
+	}
+}
+
+func TestGeneralWorkflowStepHeadersInForeach(t *testing.T) {
+	received := make([]string, 0)
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/init" {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Request:    request,
+			}, nil
+		}
+		received = append(received, request.Header.Get("X-Item"))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"foreach","name":"Foreach",
+  "steps":[
+    {"id":"initial","request":{"method":"GET","path":"/init"},"extract":[{"alias":"items","expression":"[\"apple\",\"banana\",\"cherry\"]"}]},
+    {"id":"loop","foreach":{"alias":"items","as":"item"},"request":{"method":"GET","path":"/item","headers":{"X-Item":"{{item}}"}}}
+  ],
+  "output":{}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+	})
+	if err != nil {
+		t.Fatalf("execute foreach workflow: %v", err)
+	}
+	if len(received) != 3 || received[0] != "apple" || received[1] != "banana" || received[2] != "cherry" {
+		t.Fatalf("received items=%v, want [apple banana cherry]", received)
+	}
+}
+
+func TestGeneralWorkflowStepHeadersInRequestPreview(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    request,
+		}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"preview","name":"Preview",
+  "headers":{"X-Global":"global"},
+  "steps":[
+    {"id":"test","request":{"method":"GET","path":"/test","headers":{"X-Step":"step"}},"extract":[{"alias":"preview","expression":"$request.headers"}]}
+  ],
+  "output":{"preview":"{{preview}}"}
+}`)
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+	})
+	if err != nil {
+		t.Fatalf("execute preview workflow: %v", err)
+	}
+	preview := result.Output.(map[string]any)["preview"].(map[string]any)
+	if len(preview["x-global"].([]any)) == 0 || preview["x-global"].([]any)[0] != "global" {
+		t.Fatalf("preview missing x-global: %v", preview)
+	}
+	if len(preview["x-step"].([]any)) == 0 || preview["x-step"].([]any)[0] != "step" {
+		t.Fatalf("preview missing x-step: %v", preview)
+	}
+}
+
 func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
@@ -784,9 +1040,14 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			want:       "unknown field \"query\"",
 		},
 		{
-			name:       "request headers are unsupported",
-			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/","headers":{}}}],"output":{}}`,
-			want:       "unknown field \"headers\"",
+			name:       "request headers require spec v5",
+			definition: `{"spec":"http-workflow/v4","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/","headers":{"X-Test":"value"}}}],"output":{}}`,
+			want:       "request headers require spec \"http-workflow/v5\"",
+		},
+		{
+			name:       "request headers must be an object",
+			definition: `{"spec":"http-workflow/v5","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/","headers":"value"}}],"output":{}}`,
+			want:       "request/headers must be an object",
 		},
 		{
 			name:       "step name is unsupported",

@@ -32,6 +32,7 @@ const (
 	GeneralWorkflowSpecV2              = "http-workflow/v2"
 	GeneralWorkflowSpecV3              = "http-workflow/v3"
 	GeneralWorkflowSpecV4              = "http-workflow/v4"
+	GeneralWorkflowSpecV5              = "http-workflow/v5"
 	GeneralWorkflowSpec                = GeneralWorkflowSpecV4
 	defaultGeneralWorkflowBodyLimit    = int64(10 << 20)
 	defaultGeneralWorkflowHTTPTimeout  = 30 * time.Second
@@ -142,9 +143,10 @@ func (expect GeneralWorkflowExpect) MarshalJSON() ([]byte, error) {
 }
 
 type GeneralWorkflowRequest struct {
-	Method string          `json:"method"`
-	Path   string          `json:"path"`
-	Body   json.RawMessage `json:"body,omitempty"`
+	Method  string         `json:"method"`
+	Path    string         `json:"path"`
+	Headers map[string]any `json:"headers,omitempty"`
+	Body    json.RawMessage `json:"body,omitempty"`
 }
 
 type GeneralWorkflowExtraction struct {
@@ -182,9 +184,11 @@ type GeneralWorkflowDebugLog struct {
 }
 
 type GeneralWorkflowResult struct {
-	Output          any            `json:"output"`
-	Aliases         map[string]any `json:"aliases"`
-	ResponseCookies []*http.Cookie `json:"-"`
+	Output               any               `json:"output"`
+	Aliases              map[string]any    `json:"aliases"`
+	ResponseCookies      []*http.Cookie    `json:"-"`
+	OutputRefreshToken   *string           `json:"-"`
+	OutputConsoleHeaders map[string]string `json:"-"`
 }
 
 type GeneralWorkflow struct {
@@ -435,6 +439,11 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 				return err
 			}
 		}
+		if headers, exists := request["headers"]; exists {
+			if _, ok := headers.(map[string]any); !ok {
+				return fmt.Errorf("%s/request/headers must be an object", path)
+			}
+		}
 		if expect, exists := step["expect"]; exists {
 			switch expect := expect.(type) {
 			case string:
@@ -543,7 +552,7 @@ func ValidateGeneralWorkflow(definition GeneralWorkflowDefinition) error {
 }
 
 func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGeneralWorkflow, error) {
-	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
+	if definition.Spec != GeneralWorkflowSpecV1 && definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
 		return compiledGeneralWorkflow{}, fmt.Errorf("unsupported spec %q", definition.Spec)
 	}
 	if !generalWorkflowIDPattern.MatchString(definition.ID) {
@@ -559,8 +568,8 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		return compiledGeneralWorkflow{}, errors.New("workflow output is required")
 	}
 	if definition.Headers != nil {
-		if definition.Spec != GeneralWorkflowSpecV4 {
-			return compiledGeneralWorkflow{}, fmt.Errorf("workflow headers require spec %q", GeneralWorkflowSpecV4)
+		if definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
+			return compiledGeneralWorkflow{}, fmt.Errorf("workflow headers require spec %q or higher", GeneralWorkflowSpecV4)
 		}
 		headers, err := canonicalGeneralWorkflowJSON(definition.Headers, "workflow headers")
 		if err != nil {
@@ -593,7 +602,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		}
 		stepIDs[step.ID] = index
 		if step.Foreach != nil {
-			if definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
+			if definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach requires spec %q or later", index, GeneralWorkflowSpecV3)
 			}
 			if err := validateGeneralWorkflowAlias(step.Foreach.Alias); err != nil {
@@ -616,6 +625,18 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		}
 		if err := validateGeneralWorkflowRequest(step.Request); err != nil {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] request: %w", index, err)
+		}
+		if step.Request.Headers != nil {
+			if definition.Spec != GeneralWorkflowSpecV5 {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] request headers require spec %q", index, GeneralWorkflowSpecV5)
+			}
+			stepHeaders, err := canonicalGeneralWorkflowJSON(step.Request.Headers, fmt.Sprintf("steps[%d] request headers", index))
+			if err != nil {
+				return compiledGeneralWorkflow{}, err
+			}
+			if err := validateGeneralWorkflowTemplate(stepHeaders); err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] request headers template: %w", index, err)
+			}
 		}
 		var expect *gojq.Code
 		expectRoutes := make(map[int]compiledGeneralWorkflowStatusRoute)
@@ -640,7 +661,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		}
 		var when *gojq.Code
 		if step.When != nil {
-			if definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 {
+			if definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when requires spec %q or later", index, GeneralWorkflowSpecV2)
 			}
 			if strings.TrimSpace(step.When.Expression) == "" || strings.TrimSpace(step.When.Goto) == "" {
@@ -1148,6 +1169,41 @@ stepLoop:
 		Message: "workflow output rendered",
 		Details: map[string]any{"output": generalWorkflowDebugValue("output", output)},
 	})
+
+	// Extract refresh_token and console_headers before validation
+	var outputRefreshToken *string
+	var outputConsoleHeaders map[string]string
+	if outputMap, ok := output.(map[string]any); ok {
+		if refreshToken, exists := outputMap["refresh_token"]; exists {
+			if refreshToken != nil {
+				if str, ok := refreshToken.(string); ok {
+					outputRefreshToken = &str
+				} else {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "extract output refresh_token", Err: fmt.Errorf("refresh_token must be a string, got %s", generalWorkflowJSONType(refreshToken))}
+				}
+			}
+			delete(outputMap, "refresh_token")
+		}
+		if consoleHeaders, exists := outputMap["console_headers"]; exists {
+			if consoleHeaders != nil {
+				if headersMap, ok := consoleHeaders.(map[string]any); ok {
+					outputConsoleHeaders = make(map[string]string, len(headersMap))
+					for key, value := range headersMap {
+						if str, ok := value.(string); ok {
+							outputConsoleHeaders[key] = str
+						} else {
+							return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "extract output console_headers", Err: fmt.Errorf("console_headers[%q] must be a string, got %s", key, generalWorkflowJSONType(value))}
+						}
+					}
+				} else {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "extract output console_headers", Err: fmt.Errorf("console_headers must be an object, got %s", generalWorkflowJSONType(consoleHeaders))}
+				}
+			}
+			delete(outputMap, "console_headers")
+		}
+		output = outputMap
+	}
+
 	if options.ValidateOutput != nil {
 		validationValue, err := canonicalGeneralWorkflowJSON(output, "output validation value")
 		if err != nil {
@@ -1177,7 +1233,12 @@ stepLoop:
 			"execution_count": executionCount,
 		},
 	})
-	return GeneralWorkflowResult{Output: output, Aliases: resultAliases}, nil
+	return GeneralWorkflowResult{
+		Output:               output,
+		Aliases:              resultAliases,
+		OutputRefreshToken:   outputRefreshToken,
+		OutputConsoleHeaders: outputConsoleHeaders,
+	}, nil
 }
 
 func (workflow *GeneralWorkflow) emitDebug(callback func(GeneralWorkflowDebugLog), entry GeneralWorkflowDebugLog) {
@@ -1225,10 +1286,11 @@ func generalWorkflowDebugValue(name string, value any) any {
 
 func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[string]any) (map[string]any, error) {
 	runtime := map[string]any{
-		"username": "",
-		"password": "",
-		"user_id":  "",
-		"headers":  map[string]any{},
+		"username":      "",
+		"password":      "",
+		"user_id":       "",
+		"headers":       map[string]any{},
+		"refresh_token": "",
 	}
 	if values != nil {
 		normalized, err := canonicalGeneralWorkflowJSON(values, "runtime")
@@ -1300,7 +1362,12 @@ func (workflow *GeneralWorkflow) renderRequest(globalHeaderDefinition map[string
 	if err != nil {
 		return renderedGeneralWorkflowRequest{}, err
 	}
-	headers, err := workflow.renderHeaders(workflowHeaders, baseHeaders, len(definition.Body) > 0)
+	stepHeaderDefinition := definition.Headers
+	stepHeaders, err := renderGeneralWorkflowHeaderTemplate(stepHeaderDefinition, templateValues, "step headers")
+	if err != nil {
+		return renderedGeneralWorkflowRequest{}, err
+	}
+	headers, err := workflow.renderHeaders(workflowHeaders, stepHeaders, baseHeaders, len(definition.Body) > 0)
 	if err != nil {
 		return renderedGeneralWorkflowRequest{}, err
 	}
@@ -1395,8 +1462,66 @@ func normalizeGeneralWorkflowBaseHeaders(headers http.Header) (http.Header, erro
 	return normalized, nil
 }
 
-func (workflow *GeneralWorkflow) renderHeaders(values map[string]any, baseHeaders http.Header, hasBody bool) (http.Header, error) {
-	headers := make(http.Header, len(values)+len(baseHeaders)+3)
+func (workflow *GeneralWorkflow) renderHeaders(globalValues, stepValues map[string]any, baseHeaders http.Header, hasBody bool) (http.Header, error) {
+	global, err := workflow.renderHeaderValues(globalValues)
+	if err != nil {
+		return nil, err
+	}
+	step, err := workflow.renderHeaderValues(stepValues)
+	if err != nil {
+		return nil, err
+	}
+	merged := mergeGeneralWorkflowRenderedHeaders(global, step)
+	headers := make(http.Header, len(merged)+len(baseHeaders)+3)
+
+	// Apply workflow-defined headers (step and global) first
+	for _, entry := range merged {
+		if entry.omit {
+			continue
+		}
+		if _, protected := workflow.protectedHeaders[entry.lower]; protected {
+			return nil, fmt.Errorf("header %q is protected and cannot be overridden", entry.name)
+		}
+		canonical := textproto.CanonicalMIMEHeaderKey(entry.name)
+		for _, value := range entry.values {
+			headers.Add(canonical, value)
+		}
+	}
+
+	// Apply host-provided headers, but only if not already set by workflow
+	for name, values := range baseHeaders {
+		lower := strings.ToLower(name)
+		if _, alreadySet := generalWorkflowHeaderLookup(headers, lower); !alreadySet {
+			for _, value := range values {
+				headers.Add(name, value)
+			}
+		}
+	}
+
+	if _, configured := generalWorkflowHeaderLookup(headers, "accept"); !configured {
+		headers.Set("Accept", "application/json")
+	}
+	if _, configured := generalWorkflowHeaderLookup(headers, "content-type"); hasBody && !configured {
+		headers.Set("Content-Type", "application/json")
+	}
+	if _, configured := generalWorkflowHeaderLookup(headers, "user-agent"); workflow.userAgent != "" && !configured {
+		headers.Set("User-Agent", workflow.userAgent)
+	}
+	return headers, nil
+}
+
+type generalWorkflowRenderedHeader struct {
+	name   string
+	lower  string
+	values []string
+	omit   bool
+}
+
+// renderHeaderValues validates and converts one header template. The step-level
+// header of the same name shadows the global header during merge; a step entry
+// rendered as null is omitted so it can delete a global header of the same name.
+func (workflow *GeneralWorkflow) renderHeaderValues(values map[string]any) ([]generalWorkflowRenderedHeader, error) {
+	rendered := make([]generalWorkflowRenderedHeader, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for name, value := range values {
 		if !generalWorkflowTokenPattern.MatchString(name) {
@@ -1410,39 +1535,42 @@ func (workflow *GeneralWorkflow) renderHeaders(values map[string]any, baseHeader
 		if _, protected := workflow.protectedHeaders[lower]; protected {
 			return nil, fmt.Errorf("header %q is protected", name)
 		}
-		if _, hostProvided := generalWorkflowHeaderLookup(baseHeaders, lower); hostProvided {
-			return nil, fmt.Errorf("header %q conflicts with a host-provided header", name)
-		}
 		converted, omit, err := generalWorkflowStringValues(value, true)
 		if err != nil {
 			return nil, fmt.Errorf("header %q: %w", name, err)
 		}
 		if omit {
+			rendered = append(rendered, generalWorkflowRenderedHeader{name: name, lower: lower, omit: true})
 			continue
 		}
-		canonical := textproto.CanonicalMIMEHeaderKey(name)
 		for _, item := range converted {
 			if err := validateGeneralWorkflowHeaderValue(item); err != nil {
 				return nil, fmt.Errorf("header %q: %w", name, err)
 			}
-			headers.Add(canonical, item)
 		}
+		rendered = append(rendered, generalWorkflowRenderedHeader{name: name, lower: lower, values: converted})
 	}
-	for name, values := range baseHeaders {
-		for _, value := range values {
-			headers.Add(name, value)
+	return rendered, nil
+}
+
+func mergeGeneralWorkflowRenderedHeaders(global, step []generalWorkflowRenderedHeader) []generalWorkflowRenderedHeader {
+	if len(step) == 0 {
+		return global
+	}
+	byName := make(map[string]int, len(step))
+	merged := make([]generalWorkflowRenderedHeader, 0, len(global)+len(step))
+	for _, entry := range step {
+		byName[entry.lower] = len(merged)
+		merged = append(merged, entry)
+	}
+	for _, entry := range global {
+		if _, shadowed := byName[entry.lower]; shadowed {
+			continue
 		}
+		byName[entry.lower] = len(merged)
+		merged = append(merged, entry)
 	}
-	if _, configured := generalWorkflowHeaderLookup(headers, "accept"); !configured {
-		headers.Set("Accept", "application/json")
-	}
-	if _, configured := generalWorkflowHeaderLookup(headers, "content-type"); hasBody && !configured {
-		headers.Set("Content-Type", "application/json")
-	}
-	if _, configured := generalWorkflowHeaderLookup(headers, "user-agent"); workflow.userAgent != "" && !configured {
-		headers.Set("User-Agent", workflow.userAgent)
-	}
-	return headers, nil
+	return merged
 }
 
 func generalWorkflowHeaderLookup(headers http.Header, lowerName string) ([]string, bool) {

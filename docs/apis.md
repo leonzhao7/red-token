@@ -1116,7 +1116,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 ## 7. HTTP 工作流管理
 
-工作流配置使用 [`http-workflow/v1`](http_workflow.md) 至 `http-workflow/v4` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或更高版本；需要对数组 alias 逐项串行发送请求时使用 v3 或更高版本；需要工作流全局请求 Header 时使用 v4。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。
+工作流配置使用 [`http-workflow/v1`](http_workflow.md) 至 `http-workflow/v5` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或更高版本；需要对数组 alias 逐项串行发送请求时使用 v3 或更高版本；需要工作流全局请求 Header 时使用 v4；需要为单个步骤单独配置请求 Header（覆盖同名全局 Header）时使用 v5。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。
 
 工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、SOCKS5 代理和全局控制台 User-Agent。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。每次执行使用独立 Cookie jar，响应 `Set-Cookie` 自动用于后续步骤；成功后 Cookie 变更会新增或覆盖所选中转站的 `console_headers.Cookie`。
 
