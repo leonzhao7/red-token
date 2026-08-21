@@ -35,6 +35,7 @@ type backendFrontendView struct {
 	ConsoleRefreshToken    string                  `json:"console_refresh_token"`
 	ConsoleCheckinWorkflow string                  `json:"console_checkin_workflow_id"`
 	ManualCheckin          bool                    `json:"manual_checkin"`
+	Frozen                 bool                    `json:"frozen"`
 	ConsoleHeaders         map[string]string       `json:"console_headers"`
 	ConsoleModels          string                  `json:"console_models"`
 	ConsoleAccount         string                  `json:"console_account"`
@@ -96,6 +97,7 @@ func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) back
 		ConsoleRefreshToken:    backend.ConsoleRefreshToken,
 		ConsoleCheckinWorkflow: backend.ConsoleCheckinWorkflow,
 		ManualCheckin:          backend.ManualCheckin,
+		Frozen:                 backend.Frozen,
 		ConsoleHeaders:         headers,
 		ConsoleModels:          frontendConsoleModelsJSON(backend.ConsolePricingJSON, backend.ConsoleAccountJSON),
 		ConsoleAccount:         frontendConsoleAccountJSON(backend.ConsoleAccountJSON),

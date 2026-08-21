@@ -151,6 +151,44 @@ func TestBackendManualCheckinPersistsAndPatches(t *testing.T) {
 	}
 }
 
+func TestBackendFrozenPersistsAndPatches(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "frozen.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	backend, err := st.CreateBackend(ctx, domain.Backend{
+		Name:    "frozen-backend",
+		BaseURL: "https://api.example.com",
+		Frozen:  true,
+	})
+	if err != nil {
+		t.Fatalf("create frozen backend: %v", err)
+	}
+	if !backend.Frozen {
+		t.Fatal("frozen was not persisted on create")
+	}
+
+	backend, err = st.GetBackend(ctx, backend.ID)
+	if err != nil {
+		t.Fatalf("get frozen backend: %v", err)
+	}
+	if !backend.Frozen {
+		t.Fatal("frozen was not returned after reload")
+	}
+
+	unfrozen := false
+	backend, err = st.PatchBackend(ctx, backend.ID, BackendPatch{Frozen: &unfrozen})
+	if err != nil {
+		t.Fatalf("unfreeze backend: %v", err)
+	}
+	if backend.Frozen {
+		t.Fatal("frozen was not persisted on patch")
+	}
+}
+
 func TestApplyHTTPWorkflowResultUpdatesBackendAndSnapshotAtomically(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, filepath.Join(t.TempDir(), "workflow-apply.db"))

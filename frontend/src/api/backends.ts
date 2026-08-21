@@ -49,6 +49,7 @@ export interface BackendResponse {
   console_refresh_token: string
   console_checkin_workflow_id: string
   manual_checkin: boolean
+  frozen: boolean
   console_headers: Record<string, string>
   console_account: string
   console_models: string
@@ -74,6 +75,7 @@ export interface BackendWritePayload {
   user_id?: string
   console_checkin_workflow_id?: string
   manual_checkin?: boolean
+  frozen?: boolean
   console_headers?: Record<string, string>
   notes?: string
   proxy_id?: number

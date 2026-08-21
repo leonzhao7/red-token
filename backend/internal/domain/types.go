@@ -85,6 +85,7 @@ type Backend struct {
 	ConsolePassword        string          `json:"console_password,omitempty"`
 	ConsoleCheckinWorkflow string          `json:"console_checkin_workflow_id,omitempty"`
 	ManualCheckin          bool            `json:"manual_checkin"`
+	Frozen                 bool            `json:"frozen"`
 	// ConsoleCookie is a read-compatibility fallback for old database rows.
 	// New credentials are stored only in ConsoleHeaders.
 	ConsoleCookie       string            `json:"-"`

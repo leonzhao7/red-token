@@ -52,6 +52,7 @@ const search = ref('')
 type ModelFamily = 'gpt' | 'claude' | 'grok' | 'deepseek' | 'kimi'
 const modelFilter = ref<'all' | ModelFamily>('all')
 const manualCheckinFilter = ref(false)
+const frozenFilter = ref(false)
 const page = ref(1)
 const pageSize = 10
 const modelFamilies: Array<{ value: ModelFamily; keywords: string[] }> = [
@@ -371,7 +372,8 @@ const filtered = computed(() =>
         return selectedFamily.keywords.some((keyword) => name.includes(keyword))
       })
       const okManualCheckin = !manualCheckinFilter.value || r.raw.manual_checkin
-      return okSearch && okModel && okManualCheckin
+      const okFrozen = frozenFilter.value ? r.raw.frozen : !r.raw.frozen
+      return okSearch && okModel && okManualCheckin && okFrozen
     })
     .sort((a, b) => numberValue(b.raw.weight) - numberValue(a.raw.weight))
 )
@@ -603,6 +605,7 @@ const form = ref<{
   consoleHeaders: string
   consoleCheckinWorkflowId: string
   manualCheckin: boolean
+  frozen: boolean
   tagsInput: string
   proxyId: string
   weight: number
@@ -619,6 +622,7 @@ const form = ref<{
   consoleHeaders: '',
   consoleCheckinWorkflowId: '',
   manualCheckin: false,
+  frozen: false,
   tagsInput: '',
   proxyId: '',
   weight: 10,
@@ -652,7 +656,7 @@ function resetForm() {
     name: '', url: '', protocol: 'openai', consoleUrl: '', username: '', password: '',
     userId: '', consoleRefreshToken: '',
     consoleHeaders: '',
-    consoleCheckinWorkflowId: '', manualCheckin: false, tagsInput: '',
+    consoleCheckinWorkflowId: '', manualCheckin: false, frozen: false, tagsInput: '',
     proxyId: '', weight: 10, keys: []
   }
 }
@@ -679,6 +683,7 @@ function openEditRelay(r: RelayView) {
     consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
     consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
     manualCheckin: Boolean(r.raw.manual_checkin),
+    frozen: Boolean(r.raw.frozen),
     tagsInput: (r.raw.tags || []).join(', '),
     proxyId: r.proxyId,
     weight: numberValue(r.raw.weight) || 10,
@@ -731,6 +736,7 @@ function buildPayload() {
     console_headers: parseConsoleHeaders(form.value.consoleHeaders),
     console_checkin_workflow_id: form.value.consoleCheckinWorkflowId.trim(),
     manual_checkin: form.value.manualCheckin,
+    frozen: form.value.frozen,
     proxy_id: form.value.proxyId ? Number(form.value.proxyId) : 0,
     weight: Math.min(100, Math.max(1, Math.round(numberValue(form.value.weight) || 10)))
   }
@@ -764,6 +770,9 @@ async function saveRelay() {
     const backend = isEditing.value && editingId.value
       ? await updateBackend(Number(editingId.value), payload)
       : await createBackend(payload)
+    if (backend.frozen !== payload.frozen) {
+      throw new Error('服务端未正确保存冻结状态，请确认后端已更新并重启')
+    }
     upsertRelay(backend)
     toast(isEditing.value ? '中转站已更新' : '中转站已创建', backend.name, 'success')
     showForm.value = false
@@ -826,6 +835,7 @@ onMounted(loadData)
         <input v-model="search" class="input" placeholder="搜索名称 / 域名 / 用户名…" />
         <button v-if="search" class="search-clear" aria-label="清除搜索" @click="search = ''"><X :size="14" /></button>
       </div>
+      <button class="filter-chip" :class="{ on: frozenFilter }" @click="frozenFilter = !frozenFilter">冻结</button>
       <button class="filter-chip" :class="{ on: manualCheckinFilter }" @click="manualCheckinFilter = !manualCheckinFilter">手工签到</button>
       <div class="spacer"></div>
       <div class="filter-group">
@@ -844,7 +854,7 @@ onMounted(loadData)
       <div class="rl-head">
         <span class="rl-th name">名称</span>
         <span class="rl-th">域名</span>
-        <span class="rl-th">模型</span>
+        <span class="rl-th">{{ frozenFilter ? '标签' : '模型' }}</span>
         <span class="rl-th">额度</span>
         <span class="rl-th">权重</span>
         <span class="rl-th op"></span>
@@ -877,8 +887,14 @@ onMounted(loadData)
               <span v-else class="mono rl-host faint">{{ r.url || '-' }}</span>
             </div>
             <div class="rl-cell models">
-              <span v-for="m in r.models.slice(0, 3)" :key="m.id" class="tag">{{ m.name }}</span>
-              <span v-if="r.models.length > 3" class="tag neutral">+{{ r.models.length - 3 }}</span>
+              <template v-if="frozenFilter">
+                <span v-for="tag in r.raw.tags" :key="tag" class="tag relay-tag-card">{{ tag }}</span>
+                <span v-if="!r.raw.tags.length" class="tag neutral relay-tag-card">无标签</span>
+              </template>
+              <template v-else>
+                <span v-for="m in r.models.slice(0, 3)" :key="m.id" class="tag">{{ m.name }}</span>
+                <span v-if="r.models.length > 3" class="tag neutral">+{{ r.models.length - 3 }}</span>
+              </template>
             </div>
             <div class="rl-cell money">
               <span class="mono rl-bal" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</span>
@@ -1056,7 +1072,7 @@ onMounted(loadData)
             </div>
           </div>
 
-          <div class="form-grid-2 checkin-config-row">
+          <div class="form-grid-3 checkin-config-row">
             <div class="field">
               <label class="field-label">签到工作流</label>
               <select v-model="form.consoleCheckinWorkflowId" class="select">
@@ -1077,6 +1093,21 @@ onMounted(loadData)
                   @click="form.manualCheckin = !form.manualCheckin"
                 ></button>
                 <span>{{ form.manualCheckin ? '启用' : '关闭' }}</span>
+              </div>
+            </div>
+            <div class="field manual-checkin-field">
+              <label class="field-label">冻结</label>
+              <div class="manual-checkin-control">
+                <button
+                  type="button"
+                  class="switch"
+                  :class="{ on: form.frozen }"
+                  role="switch"
+                  :aria-checked="form.frozen"
+                  title="冻结中转站"
+                  @click="form.frozen = !form.frozen"
+                ></button>
+                <span>{{ form.frozen ? '冻结' : '正常' }}</span>
               </div>
             </div>
           </div>
@@ -1385,6 +1416,7 @@ onMounted(loadData)
 
 .rl-cell.models { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 .rl-cell.models .tag { font-size: 10.5px; }
+.rl-cell.models .relay-tag-card { padding: 4px 8px; border-radius: 6px; }
 
 .rl-cell.money { display: flex; flex-direction: column; }
 .rl-bal { font-size: 13px; font-weight: 700; color: var(--text); }
@@ -1532,8 +1564,8 @@ onMounted(loadData)
 .relay-form .field { gap: 4px; margin-bottom: 0; }
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .identity-config-row,
-.server-config-row,
-.checkin-config-row { grid-template-columns: minmax(0, 2fr) minmax(200px, 1fr); }
+.server-config-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.checkin-config-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(140px, 1fr) minmax(140px, 1fr); gap: 8px; }
 .checkin-config-row { align-items: end; }
 .manual-checkin-field { min-width: 0; }
 .manual-checkin-control { min-height: 34px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }

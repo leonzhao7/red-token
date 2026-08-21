@@ -102,6 +102,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 				console_checkin_path TEXT NOT NULL DEFAULT '',
 				console_checkin_workflow_id TEXT NOT NULL DEFAULT '',
 				manual_checkin INTEGER NOT NULL DEFAULT 0,
+				frozen INTEGER NOT NULL DEFAULT 0,
 				channel_url TEXT NOT NULL DEFAULT '',
 			console_cookie TEXT NOT NULL DEFAULT '',
 			console_headers_json TEXT NOT NULL DEFAULT '{}',
@@ -319,6 +320,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureColumn(ctx, db, "backends", "manual_checkin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends manual_checkin: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "backends", "frozen", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return nil, fmt.Errorf("migrate backends frozen: %w", err)
 	}
 	if err := ensureColumn(ctx, db, "backends", "channel_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()

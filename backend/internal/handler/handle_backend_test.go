@@ -43,6 +43,7 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 		ConsolePricingJSON: `{"group_ratio":{"default":1,"partner":1,"vip":2},"data":[{"model_name":"usage-model","quota_type":0,"model_ratio":0.25,"completion_ratio":8,"enable_groups":["default","partner","vip"]},{"model_name":"fixed-model","quota_type":1,"model_price":1.75,"enable_groups":["default"]},{"model_name":"tiered-model","quota_type":0,"model_ratio":99,"completion_ratio":99,"enable_groups":["default"],"billing_mode":"tiered_expr","billing_expr":"tier(\"short_context\", p * 5 + c * 30 + cr * 0.5)"}]}`,
 		ConsoleHeaders:     map[string]string{"Cookie": "session=value"},
 		ManualCheckin:      true,
+		Frozen:             true,
 		Status:             domain.BackendStatusNormal,
 		Tags:               []string{},
 	}
@@ -90,7 +91,7 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	requiredFields := []string{
 		"id", "name", "protocol", "base_url", "api_keys", "console_url",
 		"console_username", "console_password", "console_refresh_token", "console_checkin_workflow_id", "console_headers",
-		"manual_checkin",
+		"manual_checkin", "frozen",
 		"console_models", "console_account", "notes", "proxy_id", "status",
 		"weight", "created_at", "updated_at", "avg_latency_ms", "tags",
 	}
@@ -104,6 +105,9 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	}
 	if object["manual_checkin"] != true {
 		t.Fatalf("frontend manual_checkin=%#v want true", object["manual_checkin"])
+	}
+	if object["frozen"] != true {
+		t.Fatalf("frontend frozen=%#v want true", object["frozen"])
 	}
 	serializedKeys := object["api_keys"].([]any)
 	serializedKey := serializedKeys[0].(map[string]any)
