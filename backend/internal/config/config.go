@@ -76,6 +76,9 @@ func LoadDatabase(ctx context.Context, st *store.Store) (Config, error) {
 			cfg.RequestTimeout = d
 		}
 	}
+	if cdpAddress, ok := settings["cdp_address"]; ok {
+		cfg.ChromeCDPEndpoint = cdpAddress
+	}
 	return cfg, nil
 }
 

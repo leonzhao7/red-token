@@ -517,7 +517,7 @@ async function syncCookies(r: RelayView) {
 }
 
 async function checkinAll() {
-  const todo = relays.value.filter((relay) => relay.consoleUrl && relay.consoleSyncSupported && !isToday(relay.checkinAt))
+  const todo = relays.value.filter((relay) => !relay.raw.frozen && relay.consoleUrl && relay.consoleSyncSupported && !isToday(relay.checkinAt))
   if (!todo.length) {
     toast('今日无需签到', '没有待签到且配置了控制台地址的中转站', 'info')
     return

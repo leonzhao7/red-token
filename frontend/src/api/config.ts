@@ -11,6 +11,7 @@ export interface ConfigResponse {
   connect_timeout: string
   request_timeout: string
   shutdown_timeout: string
+  cdp_address: string
 }
 
 class ApiError extends Error {

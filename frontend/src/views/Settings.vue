@@ -37,7 +37,8 @@ const form = reactive<EditableConfig>({
   backend_console_user_agent: 'Red-Token/1.0',
   focus_models: '',
   connect_timeout: '10s',
-  request_timeout: '2m'
+  request_timeout: '2m',
+  cdp_address: ''
 })
 
 const focusModelInput = ref('')
@@ -71,6 +72,7 @@ async function loadData() {
     form.focus_models = cfg.focus_models
     form.connect_timeout = cfg.connect_timeout
     form.request_timeout = cfg.request_timeout
+    form.cdp_address = cfg.cdp_address
   } catch (e: any) {
     loadError.value = e?.message || '加载配置失败'
   } finally {
@@ -89,6 +91,7 @@ async function save() {
     form.focus_models = cfg.focus_models
     form.connect_timeout = cfg.connect_timeout
     form.request_timeout = cfg.request_timeout
+    form.cdp_address = cfg.cdp_address
     toast('配置已保存', '日志级别立即生效，其他字段已更新', 'success')
   } catch (e: any) {
     toast('保存失败', e?.message || '', 'error')
@@ -194,6 +197,11 @@ onMounted(loadData)
               <label class="field-label">冷却时长</label>
               <input v-model="form.backend_cooldown" class="input mono" placeholder="20m" />
               <span class="field-hint">Go Duration 格式，例如 20m、1h；不可用中转站经过该时长后自动尝试恢复</span>
+            </div>
+            <div class="field">
+              <label class="field-label">CDP 地址</label>
+              <input v-model="form.cdp_address" class="input mono" placeholder="如 http://localhost:9222" />
+              <span class="field-hint">Chrome DevTools Protocol 远程调试地址，用于浏览器自动化</span>
             </div>
             <div class="field">
               <label class="field-label">关注模型</label>

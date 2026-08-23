@@ -41,6 +41,7 @@ func (a *SettingHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request)
 		"connect_timeout":            getSettingOrDefault(settings, "connect_timeout", a.cfg.ConnectTimeout.String()),
 		"request_timeout":            getSettingOrDefault(settings, "request_timeout", a.cfg.RequestTimeout.String()),
 		"shutdown_timeout":           getSettingOrDefault(settings, "shutdown_timeout", a.cfg.ShutdownTimeout.String()),
+		"cdp_address":                getSettingOrDefault(settings, "cdp_address", a.cfg.ChromeCDPEndpoint),
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -103,6 +104,13 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	if cdpAddress, ok := payload["cdp_address"]; ok {
+		if !isValidCDPAddress(cdpAddress) {
+			writeError(w, http.StatusBadRequest, "invalid cdp_address")
+			return
+		}
+	}
+
 	// Save to database
 	if err := a.store.SetSettings(r.Context(), payload); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -145,6 +153,10 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 		if d, err := time.ParseDuration(timeout); err == nil {
 			a.cfg.RequestTimeout = d
 		}
+	}
+
+	if cdpAddress, ok := payload["cdp_address"]; ok {
+		a.cfg.ChromeCDPEndpoint = strings.TrimSpace(cdpAddress)
 	}
 
 	if keys := sortedSettingKeys(payload); len(keys) > 0 {
@@ -204,6 +216,10 @@ func (a *SettingHandler) HandleReloadConfig(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	if cdpAddress, ok := settings["cdp_address"]; ok && isValidCDPAddress(cdpAddress) {
+		a.cfg.ChromeCDPEndpoint = strings.TrimSpace(cdpAddress)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
 }
 
@@ -235,6 +251,23 @@ func isValidLogLevel(level string) bool {
 func isValidUserAgent(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 512 {
+		return false
+	}
+	return !strings.ContainsAny(value, "\r\n")
+}
+
+func isValidCDPAddress(value string) bool {
+	value = strings.TrimSpace(value)
+	// Allow empty value
+	if value == "" {
+		return true
+	}
+	// Simple validation: should be a URL-like string
+	if len(value) > 512 {
+		return false
+	}
+	// Check if it starts with http:// or https:// or ws://
+	if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") && !strings.HasPrefix(value, "ws://") && !strings.HasPrefix(value, "wss://") {
 		return false
 	}
 	return !strings.ContainsAny(value, "\r\n")

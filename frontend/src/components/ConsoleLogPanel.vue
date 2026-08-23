@@ -108,7 +108,7 @@ function toggleDetails(id: string, body: string) {
               </tr>
               <tr v-if="expandedLogRowIds.has(row.id)" class="console-log-expanded">
                 <td colspan="4">
-                  <pre>{{ formatLogBody(row.body) }}</pre>
+                  <pre contenteditable="true" @beforeinput.prevent>{{ formatLogBody(row.body) }}</pre>
                 </td>
               </tr>
             </template>
@@ -218,5 +218,10 @@ function toggleDetails(id: string, body: string) {
   background: var(--surface-3); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 12px;
   color: var(--text-soft);
+  cursor: text;
+}
+.console-log-expanded pre:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 </style>
