@@ -2,7 +2,6 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import {
   Workflow,
-  Play,
   Pencil,
   Trash2,
   Plus,
@@ -11,7 +10,6 @@ import {
   AlertTriangle,
   Sparkles,
   Braces,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   ChevronRight,
@@ -31,15 +29,10 @@ import {
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
-  executeWorkflow,
   type WorkflowRecord,
   type WorkflowDefinition,
-  type WorkflowStep,
-  type WorkflowExecuteResult,
-  type WorkflowRequestLog,
-  type WorkflowDebugLog
+  type WorkflowStep
 } from '../api/workflows'
-import { listBackends, type BackendResponse } from '../api/backends'
 import { selectWorkflowSpec } from '../utils/workflowSpec'
 
 const loading = ref(true)
@@ -628,73 +621,6 @@ async function save() {
   }
 }
 
-const showExecute = ref(false)
-const executingWorkflow = ref<WorkflowRecord | null>(null)
-const backends = ref<BackendResponse[]>([])
-const selectedBackendId = ref<number | 0>(0)
-const aliasesText = ref('')
-const executing = ref(false)
-const executeResult = ref<WorkflowExecuteResult | null>(null)
-const executeError = ref('')
-const executeRequests = ref<WorkflowRequestLog[]>([])
-const executeDebugLogs = ref<WorkflowDebugLog[]>([])
-
-async function openExecute(record: WorkflowRecord) {
-  executingWorkflow.value = record
-  selectedBackendId.value = 0
-  aliasesText.value = ''
-  executeResult.value = null
-  executeError.value = ''
-  executeRequests.value = []
-  executeDebugLogs.value = []
-  showExecute.value = true
-  try {
-    if (!backends.value.length) {
-      const page = await listBackends()
-      backends.value = page.items.filter((b) => b.console_url && b.console_url.trim())
-    }
-  } catch {}
-}
-
-const selectedBackend = computed(() => backends.value.find((b) => b.id === selectedBackendId.value))
-
-async function runExecute() {
-  const wf = executingWorkflow.value
-  if (!wf || !selectedBackendId.value) return
-  executeResult.value = null
-  executeError.value = ''
-  executeRequests.value = []
-  executeDebugLogs.value = []
-  executing.value = true
-  let aliases: Record<string, unknown> | undefined
-  if (aliasesText.value.trim()) {
-    try {
-      aliases = JSON.parse(aliasesText.value)
-    } catch (e: any) {
-      toast('输入别名解析失败', e?.message || '', 'danger')
-      executing.value = false
-      return
-    }
-  }
-  try {
-    const result = await executeWorkflow(wf.id, {
-      backend_id: selectedBackendId.value,
-      aliases
-    })
-    executeResult.value = result
-    executeRequests.value = result.requests || []
-    executeDebugLogs.value = result.debug_logs || []
-    toast('执行成功', `${result.backend.name} · ${new Date(result.executed_at).toLocaleString('zh-CN')}`, 'success')
-  } catch (e: any) {
-    executeError.value = e?.message || '执行失败'
-    executeRequests.value = e?.requests || []
-    executeDebugLogs.value = e?.debugLogs || []
-    toast('执行失败', executeError.value, 'danger')
-  } finally {
-    executing.value = false
-  }
-}
-
 const workflowToDelete = ref<WorkflowRecord | null>(null)
 
 async function doDelete() {
@@ -708,10 +634,6 @@ async function doDelete() {
   } catch (e: any) {
     toast('删除失败', e?.message || '', 'danger')
   }
-}
-
-function fmtTime(s: string) {
-  return new Date(s).toLocaleString('zh-CN', { hour12: false })
 }
 
 function statusClass(code: number) {
@@ -732,6 +654,12 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+}
+
+function fmtTime(s: string) {
+  if (!s) return '—'
+  const d = new Date(s)
+  return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 onMounted(loadData)
@@ -778,9 +706,6 @@ onMounted(loadData)
             </div>
           </div>
           <div class="wf-row-actions">
-            <button class="btn btn-ghost btn-sm btn-purple" @click="openExecute(w)">
-              <Play :size="13" /> 执行
-            </button>
             <button class="icon-btn" title="导出" @click="exportWorkflow(w)"><Download :size="15" /></button>
             <button class="icon-btn" title="编辑" @click="openEdit(w)"><Pencil :size="15" /></button>
             <button class="icon-btn wf-del" title="删除" @click="workflowToDelete = w"><Trash2 :size="15" /></button>
@@ -1014,109 +939,6 @@ onMounted(loadData)
       </template>
     </Modal>
 
-    <!-- execute -->
-    <Modal
-      :open="showExecute"
-      title="执行工作流"
-      :subtitle="executingWorkflow ? executingWorkflow.name : ''"
-      :icon="Play"
-      width="900px"
-      @close="showExecute = false"
-    >
-      <div class="wf-form">
-        <div class="wf-form-grid">
-          <div class="field">
-            <label class="field-label">目标中转站</label>
-            <select v-model="selectedBackendId" class="select">
-              <option :value="0" disabled>选择要执行的中转站…</option>
-              <option v-for="b in backends" :key="b.id" :value="b.id">{{ b.name }}（{{ b.console_url }}）</option>
-            </select>
-            <span v-if="selectedBackend" class="field-hint">基础 URL 与认证信息取自中转站控制台配置</span>
-          </div>
-          <div class="field">
-            <label class="field-label">输入 Alias <em class="wf-hint">可选</em></label>
-            <textarea v-model="aliasesText" class="textarea mono wf-aliases" placeholder='{ "some_key": "value" }' spellcheck="false"></textarea>
-          </div>
-        </div>
-
-        <div v-if="executing" class="wf-run-state"><LoaderCircle :size="18" class="spin" /><span>正在执行…</span></div>
-
-        <div v-else-if="executeResult" class="wf-result">
-          <div class="wf-result-head ok">
-            <CheckCircle2 :size="15" />
-            <span>执行成功 · {{ executeResult.backend.name }} · {{ fmtTime(executeResult.executed_at) }}</span>
-          </div>
-          <div class="wf-result-block">
-            <div class="wf-result-label">Output</div>
-            <pre class="wf-pre">{{ JSON.stringify(executeResult.output, null, 2) }}</pre>
-          </div>
-          <div v-if="executeRequests.length" class="wf-result-block">
-            <div class="wf-result-label">请求记录</div>
-            <div class="wf-req-list">
-              <details v-for="(r, i) in executeRequests" :key="i" class="wf-req" :open="r.status_code === 0 || r.status_code >= 400">
-                <summary class="wf-req-summary">
-                  <span class="wf-req-seq mono">{{ i + 1 }}</span>
-                  <span class="tag mono wf-method">{{ r.method }}</span>
-                  <span class="mono wf-req-path">{{ r.path }}</span>
-                  <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code || '未收到响应' }}</span>
-                </summary>
-                <pre v-if="r.body" class="wf-req-body">{{ r.body }}</pre>
-              </details>
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="executeError" class="wf-result">
-          <div class="wf-result-head err"><AlertTriangle :size="15" /><span>执行失败：{{ executeError }}</span></div>
-          <div v-if="executeRequests.length" class="wf-result-block">
-            <div class="wf-result-label">请求记录</div>
-            <div class="wf-req-list">
-              <details v-for="(r, i) in executeRequests" :key="i" class="wf-req" :open="r.status_code === 0 || r.status_code >= 400">
-                <summary class="wf-req-summary">
-                  <span class="wf-req-seq mono">{{ i + 1 }}</span>
-                  <span class="tag mono wf-method">{{ r.method }}</span>
-                  <span class="mono wf-req-path">{{ r.path }}</span>
-                  <span class="wf-status mono" :class="statusClass(r.status_code)">{{ r.status_code || '未收到响应' }}</span>
-                </summary>
-                <pre v-if="r.body" class="wf-req-body">{{ r.body }}</pre>
-              </details>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="!executing && executeDebugLogs.length" class="wf-result-block">
-          <div class="wf-result-label">调试日志</div>
-          <div class="wf-debug-list">
-            <details
-              v-for="(entry, i) in executeDebugLogs"
-              :key="`${entry.time}-${i}`"
-              class="wf-debug-entry"
-              :class="`level-${entry.level}`"
-              :open="entry.level === 'error'"
-            >
-              <summary class="wf-debug-summary">
-                <span class="wf-debug-time mono">{{ fmtTime(entry.time) }}</span>
-                <span class="wf-debug-level mono">{{ entry.level }}</span>
-                <span v-if="entry.step_id" class="tag mono">{{ entry.step_id }}</span>
-                <span class="wf-debug-phase mono">{{ entry.phase }}</span>
-                <span class="wf-debug-message">{{ entry.message }}</span>
-                <span v-if="entry.duration_ms != null" class="wf-debug-duration mono">{{ entry.duration_ms }} ms</span>
-              </summary>
-              <pre v-if="entry.details" class="wf-debug-details">{{ JSON.stringify(entry.details, null, 2) }}</pre>
-            </details>
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <button class="btn btn-ghost" @click="showExecute = false">关闭</button>
-        <button class="btn btn-primary" :disabled="executing || !selectedBackendId" @click="runExecute">
-          <LoaderCircle v-if="executing" :size="15" class="spin" />
-          <Play v-else :size="15" />
-          执行
-        </button>
-      </template>
-    </Modal>
-
     <!-- delete confirm -->
     <Modal
       :open="workflowToDelete !== null"
@@ -1340,66 +1162,6 @@ onMounted(loadData)
 .wf-legacy-expect { display: flex; align-items: center; gap: 8px; color: var(--warning); }
 
 .wf-aliases { min-height: 84px; font-size: 12px; line-height: 1.5; background: var(--bg-soft); }
-
-.wf-run-state {
-  display: flex; align-items: center; gap: 10px;
-  padding: 18px; color: var(--text-soft); font-size: 13px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
-}
-.wf-result { display: flex; flex-direction: column; gap: 12px; }
-.wf-result-head {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; font-weight: 600;
-  padding: 10px 13px; border-radius: var(--radius-sm);
-}
-.wf-result-head.ok { color: var(--success); background: var(--success-soft); }
-.wf-result-head.err { color: var(--danger); background: var(--danger-soft); }
-.wf-result-block { display: flex; flex-direction: column; gap: 7px; }
-.wf-result-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
-.wf-pre {
-  margin: 0;
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--text-soft);
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: auto;
-  max-height: 320px;
-}
-.wf-req-list { display: flex; flex-direction: column; gap: 6px; }
-.wf-req {
-  padding: 0 12px;
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-}
-.wf-req-summary { display: flex; align-items: center; gap: 10px; min-height: 36px; cursor: pointer; list-style: none; }
-.wf-req-summary::-webkit-details-marker { display: none; }
-.wf-req-body { margin: 0 0 10px 28px; padding: 9px 11px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-soft); background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); font: 11px/1.5 var(--font-mono); }
-.wf-req-seq { color: var(--text-faint); width: 18px; text-align: right; }
-.wf-method { font-size: 10.5px; flex: none; }
-.wf-req-path { color: var(--text-soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.wf-status { flex: none; font-weight: 700; }
-.wf-status.ok { color: var(--success); }
-.wf-status.info { color: var(--info); }
-.wf-status.warn { color: var(--warning); }
-.wf-status.err { color: var(--danger); }
-.wf-debug-list { display: flex; flex-direction: column; gap: 5px; }
-.wf-debug-entry { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface); }
-.wf-debug-entry.level-error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-.wf-debug-summary { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 10px; cursor: pointer; list-style: none; font-size: 11.5px; }
-.wf-debug-summary::-webkit-details-marker { display: none; }
-.wf-debug-time { color: var(--text-faint); flex: none; }
-.wf-debug-level { color: var(--info); text-transform: uppercase; width: 42px; flex: none; }
-.wf-debug-entry.level-error .wf-debug-level { color: var(--danger); }
-.wf-debug-phase { color: var(--primary); flex: none; }
-.wf-debug-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); flex: 1; }
-.wf-debug-duration { color: var(--text-faint); flex: none; }
-.wf-debug-details { margin: 0 10px 10px; padding: 9px 11px; max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-soft); background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); font: 11px/1.5 var(--font-mono); }
 
 .wf-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 8px 0; color: var(--text-soft); font-size: 13.5px; }
 .wf-confirm svg { color: var(--warning); }
