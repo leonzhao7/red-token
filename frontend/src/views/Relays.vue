@@ -23,6 +23,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Copy,
   Eye,
   EyeOff,
   X
@@ -434,6 +435,15 @@ const hostOf = (url: string) => {
 const expandedId = ref<string | null>(null)
 function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
+}
+
+async function copyModelName(name: string) {
+  try {
+    await navigator.clipboard.writeText(name)
+    toast('模型名称已复制', name, 'info')
+  } catch {
+    toast('复制失败', '无法访问剪贴板，请手动复制模型名称', 'danger')
+  }
 }
 
 async function toggleStatus(r: RelayView) {
@@ -1009,10 +1019,15 @@ onMounted(loadData)
                   <div class="rld-title">可用模型 · {{ r.pricingModels.length }}</div>
                   <div class="rm-list">
                     <div v-for="m in r.pricingModels" :key="m.id" class="rm-item">
-                      <span class="tag rm-tag">{{ m.name }}</span>
+                      <button type="button" class="tag rm-tag" title="点击复制模型名称" @click.stop="copyModelName(m.name)">
+                        <span>{{ m.name }}</span><Copy :size="11" />
+                      </button>
                       <span class="rm-group">{{ m.group || '-' }}</span>
                       <span v-if="m.billingType === 'fixed'" class="rm-price mono">{{ fmtPrice(m.priceIn, r.quotaUnit) }} / 次</span>
-                      <span v-else class="rm-price mono">in {{ fmtPrice(m.priceIn, r.quotaUnit) }} / out {{ fmtPrice(m.priceOut, r.quotaUnit) }}</span>
+                      <span v-else class="rm-price mono">
+                        <span>in {{ fmtPrice(m.priceIn, r.quotaUnit) }}</span>
+                        <span>out {{ fmtPrice(m.priceOut, r.quotaUnit) }}</span>
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1493,7 +1508,7 @@ onMounted(loadData)
 .rm-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; padding-right: 2px; }
 .rm-item {
   display: grid;
-  grid-template-columns: 1.2fr 1fr 1.5fr;
+  grid-template-columns: 2fr 2fr 1fr;
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
@@ -1502,9 +1517,46 @@ onMounted(loadData)
   border-radius: var(--radius-sm);
   font-size: 11.5px;
 }
-.rm-tag { font-size: 11px; justify-self: start; }
-.rm-group { font-size: 11px; color: var(--text-muted); }
-.rm-price { font-size: 11px; color: var(--text-muted); text-align: right; justify-self: end; }
+.rm-tag {
+  min-width: 0;
+  max-width: 100%;
+  justify-self: start;
+  gap: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: normal;
+}
+.rm-tag span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.4;
+  text-align: left;
+}
+.rm-tag svg { flex: none; color: var(--text-faint); }
+.rm-tag:hover { color: var(--primary); border-color: var(--primary); }
+.rm-tag:hover svg { color: currentColor; }
+.rm-tag:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.rm-group {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.rm-price {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  white-space: nowrap;
+  line-height: 1.45;
+}
 
 .rld-keys { display: flex; flex-direction: column; gap: 10px; }
 .rk-item {
@@ -1599,9 +1651,8 @@ onMounted(loadData)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-faint);
+  font: inherit;
+  color: inherit;
 }
 .ke-top { display: flex; align-items: flex-end; gap: 10px; }
 .ke-top .field { flex: 1; }

@@ -753,7 +753,7 @@ $vars.model_rows
   "properties": {
     "user_id": { "type": "string" },
     "username": { "type": "string" },
-    "quota": { "type": "number", "minimum": 0 },
+    "quota": { "type": "number" },
     "quota_unit": { "type": "string" },
     "used_quota": { "type": "number", "minimum": 0 },
     "today_reward": { "type": "number", "minimum": 0 },
@@ -812,7 +812,7 @@ $vars.model_rows
 - `api_keys` 和 `models` 必须始终是数组；无数据时使用空数组。
 - `cheapest_groups` 必须始终是字符串数组；不存在可用分组时使用空数组。
 - 同一个输出中，非空 Key ID 应当唯一，模型 name 应当唯一，单个模型中的 group 应当唯一。
-- 所有配额和价格数值字段都允许有限小数，且不得小于零；只有 `price_type` 仍要求整数。
+- `quota`、`used_quota`、`today_reward`、Key 的 `used_quota` 以及价格数值字段都允许有限小数；除 `quota` 外，其余配额和价格数值不得小于零。`quota` 允许为负数；只有 `price_type` 仍要求整数。
 - 模型始终允许 `in_price`、`out_price` 和 `price`，不按 `price_type` 限制字段组合，但至少要提供其中一个。`price_type` 必须是整数 `0`（按量）或 `1`（按次）。
 - `balance`、`used_balance` 和 `total_cost` 是旧输出字段，不再支持；出现这些字段会导致 Schema 校验失败。
 - 持久化时如果 `today_reward` 为 `0`，表示本次没有新的签到奖励，账户和最近成功结果会保留原来的 `today_reward`。

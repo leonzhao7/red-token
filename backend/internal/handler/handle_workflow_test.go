@@ -112,6 +112,8 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 			body = `{"user_id":"user-2","username":"broken","quota":8,"api_keys":[],"models":[]}`
 		case 3:
 			body = strings.Replace(body, `"today_reward":123.25`, `"today_reward":0`, 1)
+		case 4:
+			body = strings.Replace(body, `"quota":2400.5`, `"quota":-12.5`, 1)
 		}
 		return &http.Response{
 			StatusCode: status,
@@ -237,6 +239,20 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	account = decodeJSONMap(updatedBackend.ConsoleAccountJSON)
 	if account["today_reward"] != 123.25 {
 		t.Fatalf("zero workflow reward overwrote account value: %s", updatedBackend.ConsoleAccountJSON)
+	}
+
+	mode.Store(4)
+	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/execute-workflow/execute", executeBody)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"quota":-12.5`) {
+		t.Fatalf("negative workflow quota was not accepted: status=%d body=%s", response.Code, response.Body.String())
+	}
+	updatedBackend, err = st.GetBackend(context.Background(), backend.ID)
+	if err != nil {
+		t.Fatalf("get backend after negative quota workflow: %v", err)
+	}
+	account = decodeJSONMap(updatedBackend.ConsoleAccountJSON)
+	if account["quota"] != -12.5 {
+		t.Fatalf("negative workflow quota was not persisted: %s", updatedBackend.ConsoleAccountJSON)
 	}
 
 	resultPath := "/admin/api/workflows/execute-workflow/results/" + jsonInt64(backend.ID)

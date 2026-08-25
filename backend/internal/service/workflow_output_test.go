@@ -36,6 +36,11 @@ func TestValidateCheckinWorkflowOutput(t *testing.T) {
 	if err := ValidateCheckinWorkflowOutput(valid); err != nil {
 		t.Fatalf("validate output: %v", err)
 	}
+	negativeQuota := cloneWorkflowOutputFixture(valid)
+	negativeQuota["quota"] = -2400.0
+	if err := ValidateCheckinWorkflowOutput(negativeQuota); err != nil {
+		t.Fatalf("validate output with negative quota: %v", err)
+	}
 	legacyFixedPrice := cloneWorkflowOutputFixture(valid)
 	legacyFixedPrice["models"].([]any)[1] = map[string]any{"name": "fixed-model", "cheapest_groups": []any{"default"}, "in_price": 0.03, "out_price": 0.03, "price_type": 1}
 	if err := ValidateCheckinWorkflowOutput(legacyFixedPrice); err != nil {

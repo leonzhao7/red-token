@@ -82,7 +82,10 @@ func ValidateCheckinWorkflowOutput(value any) error {
 			return err
 		}
 	}
-	for _, field := range []string{"quota", "used_quota", "today_reward"} {
+	if _, err := requireWorkflowNumber(output, "quota", "$.quota", false); err != nil {
+		return err
+	}
+	for _, field := range []string{"used_quota", "today_reward"} {
 		if _, err := requireWorkflowNumber(output, field, "$."+field, true); err != nil {
 			return err
 		}

@@ -313,6 +313,33 @@ function triggerImport() {
   importFileInput.value?.click()
 }
 
+function normalizeImportedWorkflowId(raw: string) {
+  let normalized = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-')
+  normalized = normalized.replace(/^[^a-z]+/, '')
+  if (!normalized) normalized = 'workflow-copy'
+  if (!/^[a-z]/.test(normalized)) normalized = `workflow-${normalized}`
+  normalized = normalized.slice(0, 64).replace(/[-_]+$/, '')
+  return normalized || 'workflow-copy'
+}
+
+function uniqueImportedWorkflowId(raw: string) {
+  const base = normalizeImportedWorkflowId(raw)
+  const existing = new Set(workflows.value.map((workflow) => workflow.id))
+  let candidate = base
+  let index = 1
+  while (existing.has(candidate)) {
+    const suffix = index === 1 ? '-copy' : `-copy-${index}`
+    candidate = `${base.slice(0, 64 - suffix.length)}${suffix}`
+    index += 1
+  }
+  return candidate
+}
+
+function normalizeWorkflowIdField() {
+  if (!form.id.trim()) return
+  form.id = normalizeImportedWorkflowId(form.id)
+}
+
 function handleImportFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
@@ -321,11 +348,15 @@ function handleImportFile(event: Event) {
     try {
       const def = JSON.parse(e.target?.result as string) as WorkflowDefinition
       if (!def.spec || !def.id || !def.steps) throw new Error('不是合法的工作流 JSON')
+      const importedId = uniqueImportedWorkflowId(def.id)
       isEditing.value = false
       formError.value = ''
-      defToForm(def)
+      defToForm({ ...def, id: importedId })
       stepOpen.value = form.steps.map(() => false)
       showForm.value = true
+      if (importedId !== def.id) {
+        toast('工作流已导入', `已使用新 ID：${importedId}`, 'info')
+      }
     } catch (err: any) {
       toast('导入失败', err?.message || '解析 JSON 失败', 'danger')
     }
@@ -731,7 +762,7 @@ onMounted(loadData)
           </div>
           <div class="field">
             <label class="field-label">ID <em class="wf-hint">稳定标识，创建后不可修改</em></label>
-            <input v-model="form.id" class="input mono" :disabled="isEditing" placeholder="relay-default-checkin" spellcheck="false" />
+            <input v-model="form.id" class="input mono" :disabled="isEditing" placeholder="relay-default-checkin" spellcheck="false" @blur="normalizeWorkflowIdField" />
           </div>
         </div>
 
