@@ -24,6 +24,43 @@ func TestValidateBackendAPIKeysAllowsEmptyList(t *testing.T) {
 	}
 }
 
+func TestCreateBackendAcceptsUserID(t *testing.T) {
+	st := openWorkflowHandlerStore(t)
+	handler := NewBackendHandler(st)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /admin/api/backends", handler.HandleCreateBackend)
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/api/backends", strings.NewReader(`{"name":"relay","base_url":"https://relay.example","user_id":"account-42"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var view struct {
+		ID             int64  `json:"id"`
+		ConsoleAccount string `json:"console_account"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	var account map[string]any
+	if err := json.Unmarshal([]byte(view.ConsoleAccount), &account); err != nil {
+		t.Fatalf("decode created account: %v", err)
+	}
+	if view.ID == 0 || account["id"] != "account-42" {
+		t.Fatalf("unexpected created backend account: id=%d account=%s", view.ID, view.ConsoleAccount)
+	}
+	backend, err := st.GetBackend(context.Background(), view.ID)
+	if err != nil {
+		t.Fatalf("get created backend: %v", err)
+	}
+	if backend.ConsoleAccountJSON != `{"id":"account-42"}` {
+		t.Fatalf("stored account=%s", backend.ConsoleAccountJSON)
+	}
+}
+
 func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	backend := domain.Backend{
 		ID:       1,

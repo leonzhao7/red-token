@@ -275,6 +275,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		Tags                   []string               `json:"tags"`
 		ConsoleUsername        string                 `json:"console_username"`
 		ConsolePassword        string                 `json:"console_password"`
+		UserID                 string                 `json:"user_id"`
 		ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id"`
 		ManualCheckin          bool                   `json:"manual_checkin"`
 		Frozen                 bool                   `json:"frozen"`
@@ -322,6 +323,15 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	consoleAccountJSON := "{}"
+	if userID := strings.TrimSpace(payload.UserID); userID != "" {
+		accountJSON, err := json.Marshal(map[string]any{"id": userID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to initialize user_id")
+			return
+		}
+		consoleAccountJSON = string(accountJSON)
+	}
 
 	backend, err := h.store.CreateBackend(r.Context(), domain.Backend{
 		Name:                   payload.Name,
@@ -332,6 +342,7 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		Tags:                   payload.Tags,
 		ConsoleUsername:        payload.ConsoleUsername,
 		ConsolePassword:        payload.ConsolePassword,
+		ConsoleAccountJSON:     consoleAccountJSON,
 		ConsoleCheckinWorkflow: consoleCheckinWorkflow,
 		ManualCheckin:          payload.ManualCheckin,
 		Frozen:                 payload.Frozen,
