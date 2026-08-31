@@ -600,7 +600,7 @@ interface KeyFormItem {
 }
 
 function defaultKeyFormItem(): KeyFormItem {
-  return { id: '', name: '', serverGroup: '', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
+  return { id: '', name: '', serverGroup: 'default', key: '', keyVisible: false, modelsInput: '', modelMappingInput: '', usedTokens: 0 }
 }
 
 const form = ref<{
@@ -726,7 +726,7 @@ function buildPayload() {
       id: key.id,
       key: key.key.trim(),
       name: key.name,
-      group: key.serverGroup,
+      group: key.serverGroup.trim() || 'default',
       models: parseModelList(key.modelsInput),
       model_mapping: parseModelMapping(key.modelMappingInput),
       used_quota: Math.max(0, key.usedTokens || 0)
