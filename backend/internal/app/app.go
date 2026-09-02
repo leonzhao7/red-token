@@ -397,15 +397,13 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 	)...)
 
 	var (
-		lastErr error
+		lastErr                 error
+		requestPreviewTruncated = usageLog.PreviewTruncated
 	)
 
 	for index, backend := range selection.Candidates {
 		attempt := index + 1
-		if err := r.Context().Err(); requestContextCanceled(r.Context(), err) {
-			a.finishCanceledProxyRequest(w, r, &usageLog, client, endpoint, model, &backend, attempt, err)
-			return
-		}
+		resetAttemptUsageLog(&usageLog, requestPreviewTruncated)
 		usageLog.Attempts = attempt
 		attemptStartedAt := time.Now()
 		usageLogStartedAt = attemptStartedAt
@@ -417,6 +415,10 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 			usageLog.ProxyName = backend.Proxy.Name
 		} else {
 			usageLog.ProxyName = "direct"
+		}
+		if err := r.Context().Err(); requestContextCanceled(r.Context(), err) {
+			a.finishCanceledProxyRequest(w, r, &usageLog, client, endpoint, model, &backend, attempt, err)
+			return
 		}
 		upstreamModel := handler.MappedBackendModel(backend, model)
 		requestBody := body
@@ -669,6 +671,27 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 		slog.String("error", "all candidate backends failed"),
 	)...)
 	writeError(w, http.StatusServiceUnavailable, "no backend available")
+}
+
+// resetAttemptUsageLog removes fields that describe an upstream attempt before
+// the shared usage log is reused for the next failover candidate.
+func resetAttemptUsageLog(log *domain.UsageLog, requestPreviewTruncated bool) {
+	log.StatusCode = 0
+	log.StatusFamily = ""
+	log.DurationMS = 0
+	log.ErrorMessage = ""
+	log.BackendID = 0
+	log.BackendName = ""
+	log.ProxyID = 0
+	log.ProxyName = ""
+	log.ResponseBytes = 0
+	log.InputTokens = 0
+	log.OutputTokens = 0
+	log.InputCacheTokens = 0
+	log.ResponseHeadersJSON = ""
+	log.ResponseBodyPreview = ""
+	log.PreviewTruncated = requestPreviewTruncated
+	log.IsStream = false
 }
 
 func requestContextCanceled(ctx context.Context, err error) bool {
