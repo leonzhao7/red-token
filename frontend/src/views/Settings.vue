@@ -166,12 +166,12 @@ onMounted(loadData)
             <div class="field">
               <label class="field-label">连接超时</label>
               <input v-model="form.connect_timeout" class="input mono" placeholder="如 10s、30s" />
-              <span class="field-hint">建立 TCP/TLS 连接的最长等待时间，例如 10s、30s</span>
+              <span class="field-hint">建立 TCP/TLS 连接的最长等待时间，例如 10s、30s。该值会同时用于 SOCKS5 代理连接。</span>
             </div>
             <div class="field">
               <label class="field-label">请求超时</label>
               <input v-model="form.request_timeout" class="input mono" placeholder="如 2m、90s" />
-              <span class="field-hint">Go Duration 格式，例如 2m、90s、1m30s</span>
+              <span class="field-hint">整个请求的超时时限，包括等待响应头与读取响应体。默认为连接超时的 3 倍。例如 2m、90s、1m30s</span>
             </div>
             <div class="field">
               <label class="field-label">控制台 User-Agent</label>

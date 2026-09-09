@@ -27,7 +27,10 @@ type Service struct {
 
 func New(connectTimeout, responseHeaderTimeout time.Duration) *Service {
 	return &Service{
-		directClient:          &http.Client{Transport: newTransport(connectTimeout, responseHeaderTimeout, nil)},
+		directClient: &http.Client{
+			Timeout:   responseHeaderTimeout * 3,
+			Transport: newTransport(connectTimeout, responseHeaderTimeout, nil),
+		},
 		connectTimeout:        connectTimeout,
 		responseHeaderTimeout: responseHeaderTimeout,
 		proxyClients:          make(map[string]*http.Client),
@@ -176,6 +179,7 @@ func (s *Service) clientForBackend(backend domain.Backend) (*http.Client, error)
 		connectTimeout: s.connectTimeout,
 	}
 	client := &http.Client{
+		Timeout:   s.responseHeaderTimeout * 3,
 		Transport: newTransport(s.connectTimeout, s.responseHeaderTimeout, dialer.DialContext),
 	}
 	s.proxyClients[key] = client
