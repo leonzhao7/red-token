@@ -565,13 +565,6 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		if resp.StatusCode/100 == 2 {
-			_ = a.scheduler.MarkSuccess(r.Context(), backend.ID)
-			usageLog.ErrorMessage = ""
-		} else {
-			_ = a.scheduler.MarkFailure(r.Context(), backend.ID, errors.New(resp.Status))
-			usageLog.ErrorMessage = resp.Status
-		}
 		usageLog.StatusCode = resp.StatusCode
 		usageLog.StatusFamily = handler.StatusFamily(resp.StatusCode)
 		resp, err = exchange.AdaptResponse(resp)
@@ -602,6 +595,8 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		resp = bufferedResp
 		handler.ApplyResponseLogFields(&usageLog, resp, responseBody, responseBytes, responsePreview, truncated)
+
+		// Check for zero token usage before marking success/failure
 		if resp.StatusCode == http.StatusOK && usageLog.InputTokens+usageLog.OutputTokens+usageLog.InputCacheTokens == 0 && r.URL.Path != "/v1/messages/count_tokens" {
 			_ = a.scheduler.MarkFailure(r.Context(), backend.ID, errors.New("response has zero token usage"))
 			usageLog.StatusCode = http.StatusServiceUnavailable
@@ -626,6 +621,15 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			break
+		}
+
+		// Mark success or failure based on status code
+		if resp.StatusCode/100 == 2 {
+			_ = a.scheduler.MarkSuccess(r.Context(), backend.ID)
+			usageLog.ErrorMessage = ""
+		} else {
+			_ = a.scheduler.MarkFailure(r.Context(), backend.ID, errors.New(resp.Status))
+			usageLog.ErrorMessage = resp.Status
 		}
 
 		a.logEvent(r.Context(), slog.LevelInfo, "backend_response_selected", append(append(clientAttrs(client),
