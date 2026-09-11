@@ -17,23 +17,23 @@ import (
 )
 
 type Service struct {
-	client                *http.Client
-	directClient          *http.Client
-	connectTimeout        time.Duration
-	responseHeaderTimeout time.Duration
-	mu                    sync.Mutex
-	proxyClients          map[string]*http.Client
+	client         *http.Client
+	directClient   *http.Client
+	connectTimeout time.Duration
+	requestTimeout time.Duration
+	mu             sync.Mutex
+	proxyClients   map[string]*http.Client
 }
 
-func New(connectTimeout, responseHeaderTimeout time.Duration) *Service {
+func New(connectTimeout, requestTimeout time.Duration) *Service {
 	return &Service{
 		directClient: &http.Client{
-			Timeout:   responseHeaderTimeout * 3,
-			Transport: newTransport(connectTimeout, responseHeaderTimeout, nil),
+			Timeout:   requestTimeout,
+			Transport: newTransport(connectTimeout, requestTimeout, nil),
 		},
-		connectTimeout:        connectTimeout,
-		responseHeaderTimeout: responseHeaderTimeout,
-		proxyClients:          make(map[string]*http.Client),
+		connectTimeout: connectTimeout,
+		requestTimeout: requestTimeout,
+		proxyClients:   make(map[string]*http.Client),
 	}
 }
 
@@ -119,11 +119,11 @@ func (s *Service) DoWithPath(ctx context.Context, incoming *http.Request, backen
 	return client.Do(request)
 }
 
-func NewHTTPClientForBackend(backend domain.Backend, responseHeaderTimeout, timeout time.Duration) (*http.Client, error) {
+func NewHTTPClientForBackend(backend domain.Backend, connectTimeout, requestTimeout time.Duration) (*http.Client, error) {
 	if backend.ProxyID == 0 {
 		return &http.Client{
-			Timeout:   timeout,
-			Transport: newTransport(timeout, responseHeaderTimeout, nil),
+			Timeout:   requestTimeout,
+			Transport: newTransport(connectTimeout, requestTimeout, nil),
 		}, nil
 	}
 	if backend.Proxy == nil {
@@ -140,11 +140,11 @@ func NewHTTPClientForBackend(backend domain.Backend, responseHeaderTimeout, time
 		address:        backend.Proxy.Address,
 		username:       backend.Proxy.Username,
 		password:       backend.Proxy.Password,
-		connectTimeout: timeout,
+		connectTimeout: connectTimeout,
 	}
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: newTransport(timeout, responseHeaderTimeout, dialer.DialContext),
+		Timeout:   requestTimeout,
+		Transport: newTransport(connectTimeout, requestTimeout, dialer.DialContext),
 	}, nil
 }
 
@@ -179,14 +179,14 @@ func (s *Service) clientForBackend(backend domain.Backend) (*http.Client, error)
 		connectTimeout: s.connectTimeout,
 	}
 	client := &http.Client{
-		Timeout:   s.responseHeaderTimeout * 3,
-		Transport: newTransport(s.connectTimeout, s.responseHeaderTimeout, dialer.DialContext),
+		Timeout:   s.requestTimeout,
+		Transport: newTransport(s.connectTimeout, s.requestTimeout, dialer.DialContext),
 	}
 	s.proxyClients[key] = client
 	return client, nil
 }
 
-func newTransport(connectTimeout, responseHeaderTimeout time.Duration, dialContext func(context.Context, string, string) (net.Conn, error)) *http.Transport {
+func newTransport(connectTimeout, requestTimeout time.Duration, dialContext func(context.Context, string, string) (net.Conn, error)) *http.Transport {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DisableCompression:    true,
@@ -195,7 +195,7 @@ func newTransport(connectTimeout, responseHeaderTimeout time.Duration, dialConte
 		MaxIdleConnsPerHost:   50,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: responseHeaderTimeout,
+		ResponseHeaderTimeout: requestTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	if dialContext != nil {
