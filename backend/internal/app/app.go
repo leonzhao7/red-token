@@ -602,7 +602,11 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		resp = bufferedResp
 		handler.ApplyResponseLogFields(&usageLog, resp, responseBody, responseBytes, responsePreview, truncated)
-		if resp.StatusCode == http.StatusOK && usageLog.InputTokens+usageLog.OutputTokens+usageLog.InputCacheTokens == 0 {
+		if resp.StatusCode == http.StatusOK && usageLog.InputTokens+usageLog.OutputTokens+usageLog.InputCacheTokens == 0 && r.URL.Path != "/v1/messages/count_tokens" {
+			_ = a.scheduler.MarkFailure(r.Context(), backend.ID, errors.New("response has zero token usage"))
+			usageLog.StatusCode = http.StatusServiceUnavailable
+			usageLog.StatusFamily = handler.StatusFamily(http.StatusServiceUnavailable)
+			usageLog.ErrorMessage = "backend returned 200 but zero token usage"
 			a.logEvent(r.Context(), slog.LevelWarn, "backend_response_zero_tokens", append(append(clientAttrs(client),
 				backendAttemptAttrs(backend, attempt)...),
 				slog.String("endpoint", endpoint),
@@ -614,7 +618,14 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 				slog.String("response_body_preview", usageLog.ResponseBodyPreview),
 				slog.Bool("preview_truncated", usageLog.PreviewTruncated),
 				slog.Bool("is_stream", usageLog.IsStream),
+				slog.Bool("will_failover", index < len(selection.Candidates)-1),
 			)...)
+			lastErr = errors.New("backend returned 200 but zero token usage")
+			if index < len(selection.Candidates)-1 {
+				a.usageLogHandler.AppendAttemptUsageLog(r.Context(), usageLog, attemptStartedAt)
+				continue
+			}
+			break
 		}
 
 		a.logEvent(r.Context(), slog.LevelInfo, "backend_response_selected", append(append(clientAttrs(client),
