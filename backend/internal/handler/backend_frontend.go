@@ -2,10 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
-	"math"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -58,8 +54,6 @@ func buildBackendFrontendViews(backends []domain.Backend, averageLatency map[int
 }
 
 func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) backendFrontendView {
-	account := decodeJSONMap(backend.ConsoleAccountJSON)
-	apiKeyQuotaFactor := frontendQuotaConversionFactor(account)
 	apiKeys := make([]backendFrontendAPIKey, 0, len(backend.APIKeys))
 	for _, apiKey := range backend.APIKeys {
 		models := append([]string(nil), apiKey.Models...)
@@ -74,7 +68,7 @@ func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) back
 			Group:        apiKey.Group,
 			Models:       models,
 			ModelMapping: mapping,
-			UsedQuota:    apiKey.UsedQuota * apiKeyQuotaFactor,
+			UsedQuota:    apiKey.UsedQuota,
 		})
 	}
 	tags := append([]string(nil), backend.Tags...)
@@ -99,7 +93,7 @@ func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) back
 		ManualCheckin:          backend.ManualCheckin,
 		Frozen:                 backend.Frozen,
 		ConsoleHeaders:         headers,
-		ConsoleModels:          frontendConsoleModelsJSON(backend.ConsolePricingJSON, backend.ConsoleAccountJSON),
+		ConsoleModels:          frontendConsoleModelsJSON(backend.ConsolePricingJSON),
 		ConsoleAccount:         frontendConsoleAccountJSON(backend.ConsoleAccountJSON),
 		Notes:                  backend.Notes,
 		ProxyID:                backend.ProxyID,
@@ -117,33 +111,15 @@ func frontendConsoleAccountJSON(raw string) string {
 	if len(account) == 0 {
 		return "{}"
 	}
-	quotaUnit := frontendQuotaUnit(account)
 	quota, hasQuota := frontendNumber(account["quota"])
 	usedQuota, hasUsedQuota := frontendNumber(account["used_quota"])
 	todayReward, hasTodayReward := frontendNumber(account["today_reward"])
-	valuesAlreadyFinal := frontendQuotaValuesAreFinal(account)
-
-	if balance, ok := frontendNumber(account["balance"]); ok {
-		quota, hasQuota = balance, true
-	}
-	if used, ok := frontendNumber(account["total_actual_cost"]); ok {
-		usedQuota, hasUsedQuota = used, true
-	}
-	if reward, ok := frontendNumber(account["last_checkin_reward"]); ok && !hasTodayReward {
-		todayReward, hasTodayReward = reward, true
-	}
-	if !valuesAlreadyFinal {
-		factor := frontendQuotaConversionFactor(account)
-		quota *= factor
-		usedQuota *= factor
-		todayReward *= factor
-	}
 
 	normalized := map[string]any{
 		"id":           frontendString(account["id"]),
 		"username":     firstNonEmpty(frontendString(account["username"]), frontendString(account["email"])),
 		"quota":        valueOrZero(quota, hasQuota),
-		"quota_unit":   quotaUnit,
+		"quota_unit":   frontendString(account["quota_unit"]),
 		"used_quota":   valueOrZero(usedQuota, hasUsedQuota),
 		"today_reward": valueOrZero(todayReward, hasTodayReward),
 	}
@@ -155,71 +131,14 @@ func frontendConsoleAccountJSON(raw string) string {
 	return frontendJSONString(normalized, "{}")
 }
 
-func frontendQuotaValuesAreFinal(account map[string]any) bool {
-	if strings.TrimSpace(frontendString(account["quota_unit"])) != "" {
-		return true
-	}
-	_, hasBalance := account["balance"]
-	_, hasActualCost := account["total_actual_cost"]
-	return hasBalance || hasActualCost
-}
-
-func frontendQuotaConversionFactor(account map[string]any) float64 {
-	if frontendQuotaValuesAreFinal(account) {
-		return 1
-	}
-	unit, ok := frontendNumber(account["quota_per_unit"])
-	if !ok || unit <= 0 {
-		unit = 500000
-	}
-	exchangeRate, ok := frontendNumber(account["custom_currency_exchange_rate"])
-	if !ok || exchangeRate <= 0 {
-		exchangeRate = 1
-	}
-	return exchangeRate / unit
-}
-
-func frontendQuotaUnit(account map[string]any) string {
-	if value := strings.TrimSpace(frontendString(account["quota_unit"])); value != "" {
-		return value
-	}
-	displayType := strings.TrimSpace(frontendString(account["quota_display_type"]))
-	if strings.EqualFold(displayType, "CUSTOM") {
-		if symbol := strings.TrimSpace(frontendString(account["custom_currency_symbol"])); symbol != "" {
-			return symbol
-		}
-	}
-	if displayType != "" {
-		return displayType
-	}
-	return "USD"
-}
-
-func frontendConsoleModelsJSON(pricingRaw, accountRaw string) string {
-	var payload any
+func frontendConsoleModelsJSON(pricingRaw string) string {
+	var payload map[string]any
 	if err := json.Unmarshal([]byte(pricingRaw), &payload); err != nil {
 		return "[]"
 	}
-	var records []any
-	groupRatios := map[string]any{}
-	switch value := payload.(type) {
-	case []any:
-		records = value
-	case map[string]any:
-		records, _ = value["data"].([]any)
-		groupRatios, _ = value["group_ratio"].(map[string]any)
-	}
+	records, _ := payload["data"].([]any)
 	if records == nil {
 		return "[]"
-	}
-	account := decodeJSONMap(accountRaw)
-	unit, ok := frontendNumber(account["quota_per_unit"])
-	if !ok || unit <= 0 {
-		unit = 500000
-	}
-	exchangeRate, ok := frontendNumber(account["custom_currency_exchange_rate"])
-	if !ok || exchangeRate <= 0 {
-		exchangeRate = 1
 	}
 
 	models := make([]any, 0, len(records))
@@ -228,48 +147,26 @@ func frontendConsoleModelsJSON(pricingRaw, accountRaw string) string {
 		if !ok {
 			continue
 		}
-		name := firstNonEmpty(frontendString(record["name"]), frontendString(record["model_name"]), frontendString(record["model"]))
+		name := frontendString(record["model_name"])
 		if name == "" {
 			continue
 		}
-		priceTypeValue, _ := frontendNumber(firstPresent(record, "price_type", "quota_type"))
+		priceTypeValue, _ := frontendNumber(record["price_type"])
 		priceType := 0
 		if priceTypeValue == 1 {
 			priceType = 1
 		}
-		groups, groupRatio := frontendCheapestGroups(record, groupRatios)
 		model := map[string]any{
 			"name":            name,
-			"cheapest_groups": groups,
+			"cheapest_groups": frontendStringList(record["enable_groups"]),
 			"price_type":      priceType,
 		}
 		if priceType == 1 {
-			price, _ := frontendNumber(firstPresent(record, "price", "model_price", "in_price", "input_price"))
-			if _, alreadyFinal := record["price"]; !alreadyFinal {
-				if _, workflowPrice := record["input_price"]; !workflowPrice {
-					price *= groupRatio
-				}
-			}
+			price, _ := frontendNumber(record["price"])
 			model["price"] = price
 		} else {
-			inPrice, directIn := frontendNumber(firstPresent(record, "in_price", "input_price", "prompt_price", "input_cost"))
-			outPrice, directOut := frontendNumber(firstPresent(record, "out_price", "output_price", "completion_price", "output_cost"))
-			if !directIn && !directOut {
-				if tieredIn, tieredOut, ok := frontendTieredPrices(record, groupRatio, exchangeRate); ok {
-					inPrice = tieredIn
-					outPrice = tieredOut
-				} else {
-					ratio, _ := frontendNumber(firstPresent(record, "model_ratio", "model_price"))
-					completionRatio, ok := frontendNumber(record["completion_ratio"])
-					if !ok || completionRatio <= 0 {
-						completionRatio = 1
-					}
-					inPrice = ratio * 1000000 / unit * exchangeRate * groupRatio
-					outPrice = inPrice * completionRatio
-				}
-			} else if !directOut {
-				outPrice = inPrice
-			}
+			inPrice, _ := frontendNumber(record["input_price"])
+			outPrice, _ := frontendNumber(record["output_price"])
 			model["in_price"] = inPrice
 			model["out_price"] = outPrice
 		}
@@ -278,87 +175,9 @@ func frontendConsoleModelsJSON(pricingRaw, accountRaw string) string {
 	return frontendJSONString(models, "[]")
 }
 
-var (
-	frontendTierExpressionPattern = regexp.MustCompile(`(?i)tier\s*\(\s*["'][^"']+["']\s*,\s*([^)]*)\)`)
-	frontendNumberPattern         = `[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?`
-)
-
-func frontendTieredPrices(record map[string]any, groupRatio, exchangeRate float64) (float64, float64, bool) {
-	if !strings.EqualFold(strings.TrimSpace(frontendString(record["billing_mode"])), "tiered_expr") {
-		return 0, 0, false
-	}
-	expression := frontendString(record["billing_expr"])
-	match := frontendTierExpressionPattern.FindStringSubmatch(expression)
-	if len(match) != 2 {
-		return 0, 0, false
-	}
-	inputCoefficient, inputOK := frontendExpressionCoefficient(match[1], "p")
-	outputCoefficient, outputOK := frontendExpressionCoefficient(match[1], "c")
-	if !inputOK || !outputOK {
-		return 0, 0, false
-	}
-	return groupRatio * inputCoefficient * exchangeRate,
-		groupRatio * outputCoefficient * exchangeRate,
-		true
-}
-
-func frontendExpressionCoefficient(expression, variable string) (float64, bool) {
-	escaped := regexp.QuoteMeta(variable)
-	patterns := []string{
-		`(?i)\b` + escaped + `\b\s*\*\s*(` + frontendNumberPattern + `)`,
-		`(?i)(` + frontendNumberPattern + `)\s*\*\s*\b` + escaped + `\b`,
-	}
-	for _, pattern := range patterns {
-		match := regexp.MustCompile(pattern).FindStringSubmatch(expression)
-		if len(match) != 2 {
-			continue
-		}
-		coefficient, err := strconv.ParseFloat(match[1], 64)
-		if err == nil && !math.IsNaN(coefficient) && !math.IsInf(coefficient, 0) {
-			return coefficient, true
-		}
-	}
-	if regexp.MustCompile(`(?i)\b` + escaped + `\b`).MatchString(expression) {
-		return 1, true
-	}
-	return 0, false
-}
-
-func frontendCheapestGroups(record, ratios map[string]any) ([]string, float64) {
-	if groups := frontendStringList(record["cheapest_groups"]); len(groups) > 0 {
-		return groups, 1
-	}
-	groups := frontendStringList(record["enable_groups"])
-	if len(groups) == 0 {
-		return []string{}, 1
-	}
-	minimum := math.Inf(1)
-	cheapest := make([]string, 0, len(groups))
-	for _, group := range groups {
-		ratio, ok := frontendNumber(ratios[group])
-		if !ok || ratio < 0 {
-			continue
-		}
-		switch {
-		case ratio < minimum:
-			minimum = ratio
-			cheapest = []string{group}
-		case ratio == minimum:
-			cheapest = append(cheapest, group)
-		}
-	}
-	if len(cheapest) == 0 {
-		return groups, 1
-	}
-	return cheapest, minimum
-}
-
 func frontendStringList(value any) []string {
 	raw, ok := value.([]any)
 	if !ok {
-		if values, ok := value.([]string); ok {
-			return append([]string(nil), values...)
-		}
 		return []string{}
 	}
 	values := make([]string, 0, len(raw))
@@ -377,34 +196,13 @@ func frontendStringList(value any) []string {
 	return values
 }
 
-func firstPresent(object map[string]any, fields ...string) any {
-	for _, field := range fields {
-		if value, exists := object[field]; exists && value != nil {
-			return value
-		}
-	}
-	return nil
-}
-
 func frontendNumber(value any) (float64, bool) {
-	if number, ok := workflowOutputNumber(value); ok {
-		return number, true
-	}
-	if text, ok := value.(string); ok {
-		number, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
-		return number, err == nil && !math.IsNaN(number) && !math.IsInf(number, 0)
-	}
-	return 0, false
+	number, ok := workflowOutputNumber(value)
+	return number, ok
 }
 
 func frontendString(value any) string {
-	if value == nil {
-		return ""
-	}
-	text := fmt.Sprint(value)
-	if text == "<nil>" {
-		return ""
-	}
+	text, _ := value.(string)
 	return text
 }
 

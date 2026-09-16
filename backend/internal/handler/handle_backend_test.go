@@ -76,8 +76,8 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 			ModelMapping: map[string]string{"model-a": "upstream-a"},
 			UsedQuota:    500000,
 		}},
-		ConsoleAccountJSON: `{"id":49722,"username":"alice","quota":1300000000,"used_quota":500000,"last_checkin_reward":500000,"quota_per_unit":500000,"quota_display_type":"USD","last_checkin_at":"2026-08-14T17:12:21Z"}`,
-		ConsolePricingJSON: `{"group_ratio":{"default":1,"partner":1,"vip":2},"data":[{"model_name":"usage-model","quota_type":0,"model_ratio":0.25,"completion_ratio":8,"enable_groups":["default","partner","vip"]},{"model_name":"fixed-model","quota_type":1,"model_price":1.75,"enable_groups":["default"]},{"model_name":"tiered-model","quota_type":0,"model_ratio":99,"completion_ratio":99,"enable_groups":["default"],"billing_mode":"tiered_expr","billing_expr":"tier(\"short_context\", p * 5 + c * 30 + cr * 0.5)"}]}`,
+		ConsoleAccountJSON: `{"id":"49722","username":"alice","quota":342.25,"used_quota":150.5,"today_reward":10,"quota_unit":" ","last_checkin_at":"2026-08-14T17:12:21Z"}`,
+		ConsolePricingJSON: `{"data":[{"model_name":"usage-model","price_type":0,"input_price":0.5,"output_price":1.5,"enable_groups":["default","partner"]},{"model_name":"fixed-model","price_type":1,"price":1.75,"enable_groups":["default"]}]}`,
 		ConsoleHeaders:     map[string]string{"Cookie": "session=value"},
 		ManualCheckin:      true,
 		Frozen:             true,
@@ -88,28 +88,30 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	if len(view.APIKeys) != 1 || view.APIKeys[0].ID != "56382" || view.APIKeys[0].Key != "sk-value" {
 		t.Fatalf("unexpected frontend API keys: %+v", view.APIKeys)
 	}
-	if view.APIKeys[0].UsedQuota != 1 {
-		t.Fatalf("frontend API key quota was not converted to final amount: %+v", view.APIKeys[0])
+	if view.APIKeys[0].UsedQuota != 500000 {
+		t.Fatalf("frontend API key quota should not be converted: expected 500000, got %f", view.APIKeys[0].UsedQuota)
 	}
 
 	var account map[string]any
 	if err := json.Unmarshal([]byte(view.ConsoleAccount), &account); err != nil {
 		t.Fatalf("decode frontend account: %v", err)
 	}
-	if account["id"] != "49722" || account["quota"] != 2600.0 || account["used_quota"] != 1.0 || account["today_reward"] != 1.0 || account["quota_unit"] != "USD" {
-		t.Fatalf("unexpected frontend account: %+v", account)
+	if account["id"] != "49722" || account["quota"] != 342.25 || account["used_quota"] != 150.5 || account["today_reward"] != 10.0 || account["quota_unit"] != " " {
+		t.Fatalf("frontend account values should be passed through unchanged: %+v", account)
 	}
 
 	var models []map[string]any
 	if err := json.Unmarshal([]byte(view.ConsoleModels), &models); err != nil {
 		t.Fatalf("decode frontend models: %v", err)
 	}
-	if len(models) != 3 || models[0]["in_price"] != 0.5 || models[0]["out_price"] != 4.0 || models[1]["price"] != 1.75 || models[2]["in_price"] != 5.0 || models[2]["out_price"] != 30.0 {
-		t.Fatalf("unexpected frontend models: %+v", models)
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
 	}
-	groups, ok := models[0]["cheapest_groups"].([]any)
-	if !ok || len(groups) != 2 || groups[0] != "default" || groups[1] != "partner" {
-		t.Fatalf("unexpected equally cheapest groups: %+v", models[0]["cheapest_groups"])
+	if models[0]["name"] != "usage-model" || models[0]["in_price"] != 0.5 || models[0]["out_price"] != 1.5 {
+		t.Fatalf("usage model prices should be passed through: %+v", models[0])
+	}
+	if models[1]["name"] != "fixed-model" || models[1]["price"] != 1.75 {
+		t.Fatalf("fixed model price should be passed through: %+v", models[1])
 	}
 
 	encoded, err := json.Marshal(view)
@@ -252,9 +254,9 @@ func TestBackendConsoleCookieSyncPersistsCookieHeader(t *testing.T) {
 }
 
 func TestFrontendConsoleModelsKeepsFinalPrices(t *testing.T) {
-	raw := `[{"name":"usage-model","cheapest_groups":["default"],"price_type":0,"in_price":2.5,"out_price":20},{"name":"fixed-model","cheapest_groups":["default"],"price_type":1,"price":1.75}]`
+	raw := `{"data":[{"model_name":"usage-model","enable_groups":["default"],"price_type":0,"input_price":2.5,"output_price":20},{"model_name":"fixed-model","enable_groups":["default"],"price_type":1,"price":1.75}]}`
 	var models []map[string]any
-	if err := json.Unmarshal([]byte(frontendConsoleModelsJSON(raw, `{"quota_per_unit":1,"custom_currency_exchange_rate":99}`)), &models); err != nil {
+	if err := json.Unmarshal([]byte(frontendConsoleModelsJSON(raw)), &models); err != nil {
 		t.Fatalf("decode frontend models: %v", err)
 	}
 	if len(models) != 2 || models[0]["in_price"] != 2.5 || models[0]["out_price"] != 20.0 || models[1]["price"] != 1.75 {
