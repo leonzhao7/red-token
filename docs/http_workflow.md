@@ -1,964 +1,481 @@
-# HTTP JSON 工作流配置规范
+# HTTP 工作流系统
 
-本文档定义 HTTP JSON 工作流配置的纯语义规则。它不约束具体编程语言、存储方式、HTTP 客户端或表达式执行器的实现。
+## 概述
 
-本文中的“必须”“不得”“应当”“可以”分别表示强制要求、禁止要求、推荐要求和可选能力。
+HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 请求从后端控制台获取数据并提取所需信息。工作流主要用于签到场景，自动化获取用户信息、配额、API 密钥和模型定价等数据。
 
-## 1. 设计目标
+## 工作流定义结构
 
-HTTP 工作流用于顺序执行一组 HTTP 请求，从 JSON 响应中提取值，将值保存为 alias，并在后续请求或最终输出中引用。`http-workflow/v2` 支持基于当前响应的条件跳转，`http-workflow/v3` 进一步支持对数组 alias 逐项发送请求，`http-workflow/v4` 增加应用于所有步骤的全局请求 Header，`http-workflow/v5` 增加每个步骤单独配置请求 Header 的能力。
-
-规范遵循以下原则：
-
-- 所有 step 使用同一组字段和同一套执行规则。
-- JSON 查询、投影、过滤、关联、聚合和重组统一使用 jq 表达式。
-- alias 是不可细分赋值的完整 JSON 值；不存在数组专用或对象专用的写入动作。
-- `{{...}}` 只负责引用已有 alias，不承担查询、计算、循环或关联语义。
-- 最终输出由固定模板生成，并由宿主定义的 JSON Schema 校验。
-- 工作流只描述有限、顺序的 HTTP JSON 请求；v2 可使用有限的条件跳转，v3 可使用有数量上限的串行 foreach，不支持并发或无界循环。
-
-分页可以由宿主生成多个静态 step，或由将来的工作流编排规范描述，不在本规范中增加分页专用字段。
-
-## 2. 配置结构
-
-工作流的最小结构如下：
+### 基本格式
 
 ```json
 {
-  "spec": "http-workflow/v4",
-  "id": "example-workflow",
-  "name": "示例工作流",
+  "spec": "http-workflow/v5",
+  "id": "workflow-id",
+  "name": "工作流名称",
   "headers": {},
-  "steps": [
+  "steps": [],
+  "output": {}
+}
+```
+
+### 字段说明
+
+- **spec**: 工作流规范版本，当前支持 v1-v5
+  - `v1`: 基础版本，支持字符串 expect
+  - `v2`: 添加结构化 expect 和 when 条件跳转
+  - `v3`: 添加 foreach 循环
+  - `v4`: 添加全局 headers
+  - `v5`: 添加步骤级 headers
+
+- **id**: 工作流唯一标识符，格式为 `[a-z][a-z0-9_-]{0,63}`
+
+- **name**: 工作流可读名称
+
+- **headers**: 全局请求头（v4+），应用于所有步骤，可被步骤级 headers 覆盖
+
+- **steps**: 工作流步骤数组
+
+- **output**: 输出模板，定义工作流最终返回的数据结构
+
+## 工作流步骤
+
+### 步骤结构
+
+```json
+{
+  "id": "step-id",
+  "foreach": {},
+  "request": {},
+  "expect": {},
+  "when": {},
+  "extract": []
+}
+```
+
+### 请求定义 (request)
+
+```json
+{
+  "method": "GET",
+  "path": "/api/user",
+  "headers": {},
+  "body": {}
+}
+```
+
+- **method**: HTTP 方法（GET、POST、PUT、DELETE 等）
+- **path**: 请求路径，必须以 `/` 开头，支持模板变量
+- **headers**: 步骤级请求头（v5+），覆盖全局 headers
+- **body**: 请求体（可选），支持任意 JSON 值
+
+### 响应验证 (expect)
+
+#### 字符串形式 (v1)
+
+```json
+"expect": "$response.status >= 200 and $response.status < 300"
+```
+
+使用 jq 表达式验证响应，必须返回 `true`。
+
+#### 结构化形式 (v2+)
+
+```json
+"expect": {
+  "routes": [
     {
-      "id": "get_profile",
-      "request": {
-        "method": "GET",
-        "path": "/api/profile",
-        "headers": {
-          "X-Profile-Version": "v1"
-        }
-      },
-      "extract": [
-        {
-          "alias": "user_id",
-          "expression": ".data.id | tostring"
-        }
-      ]
+      "statuses": [401, 403],
+      "goto": "login"
     }
   ],
-  "output": {
-    "user_id": "{{user_id}}"
-  }
+  "accepted_statuses": [200, 201]
 }
 ```
 
-`request.headers` 属于 `http-workflow/v5`；若在步骤中使用它，`spec` 必须为 `http-workflow/v5`。
+- **routes**: 状态码路由规则，匹配时跳转到指定步骤
+- **accepted_statuses**: 可接受的状态码列表（除 2xx 外）
 
-### 2.1 顶层字段
-
-| 字段 | 类型 | 必填 | 语义 |
-| --- | --- | --- | --- |
-| `spec` | string | 是 | 规范版本；支持 v1、条件跳转 v2、foreach v3、全局 Header v4，以及步骤 Header v5 |
-| `id` | string | 是 | 工作流稳定标识 |
-| `name` | string | 是 | 展示名称，不参与执行 |
-| `headers` | object | 否（v4） | 应用于所有步骤的请求 Header 模板；省略等价于 `{}` |
-| `steps` | array | 是 | 按数组顺序执行的 step；可以为空 |
-| `output` | JSON value | 是 | 递归 alias 模板；求值后必须符合宿主输出 Schema |
-
-未知字段必须被拒绝。配置读取方不得根据未知字段猜测行为。
-
-### 2.2 Step 字段
-
-| 字段 | 类型 | 必填 | 语义 |
-| --- | --- | --- | --- |
-| `id` | string | 是 | 当前工作流内唯一的稳定标识 |
-| `foreach` | object | 否（v3+） | 对指定数组 alias 串行执行当前 step；省略时只执行一次 |
-| `request` | object | 是 | HTTP 请求模板 |
-| `expect` | string（v1）/ object（v2+） | 否 | v1 为 jq 布尔表达式；v2 及更高版本为响应状态码跳转路由，未命中时接受 `200..299` 和额外成功状态码 |
-| `extract` | array | 否 | 有序的 alias 赋值列表；省略等价于空数组 |
-| `when` | object | 否（v2+） | 当前 step 的 alias 全部提取并提交后执行的 jq 条件及跳转目标 |
-
-所有 step 具有完全相同的字段语义。不得根据 `step.id` 启用隐式行为。
-
-### 2.3 Foreach 字段
-
-v3 的 foreach 配置由以下字段组成：
-
-| 字段 | 类型 | 必填 | 语义 |
-| --- | --- | --- | --- |
-| `alias` | string | 是 | 已存在的数组 alias 名称 |
-| `as` | string | 是 | 当前元素的临时 alias 名称 |
-| `index_as` | string | 否 | 当前元素从 0 开始的下标所使用的临时 alias 名称 |
-
-三个名称必须符合 Alias 标识符规则；`alias`、`as` 和非空的 `index_as` 必须互不相同。临时 alias 不得与当前 step 的 extract alias 同名。
-
-### 2.4 Request 字段
-
-| 字段 | 类型 | 必填 | 语义 |
-| --- | --- | --- | --- |
-| `method` | string | 是 | HTTP method，执行前转为大写 |
-| `path` | string | 是 | 相对 URL 模板，可直接包含 query，必须以 `/` 开头且不得包含 scheme、authority 或 fragment |
-| `headers` | object | 否（v5） | 仅当前 step 生效的请求 Header 模板；与全局同名时覆盖全局，省略等价于 `{}` |
-| `body` | JSON value | 否 | JSON body 模板；字段省略表示不发送 body，字段存在时序列化其值 |
-
-基础 URL、认证信息、代理、超时和受保护请求头由宿主执行环境提供，不属于工作流语义。
-
-## 3. 标识符
-
-工作流 ID 和 step ID 必须匹配：
-
-```text
-^[a-z][a-z0-9_-]{0,63}$
-```
-
-Alias 必须匹配：
-
-```text
-^[A-Za-z_][A-Za-z0-9_]{0,63}$
-```
-
-Alias 区分大小写。下列名称保留，不得作为 alias：
-
-```text
-response request runtime vars
-```
-
-## 4. 执行模型
-
-一次运行拥有一个 alias store，初始值为宿主显式提供的输入 alias；未提供时为空对象。
-
-执行过程如下：
-
-1. 从 `steps` 数组第一个 step 开始，按当前索引执行。
-2. 使用当前 alias store 渲染 `request`，发送 HTTP 请求并读取完整响应。
-3. 将非空响应体解析为 JSON；响应状态码自动放入 `$response.status`。
-4. v2 及更高版本按 `expect.routes` 查找响应状态码。命中时跳转到指定 step，当前响应的 `extract` 和 `when` 均不执行；未命中且状态码既不是 `2xx`、也不在 `expect.accepted_statuses` 中时流程失败。
-5. 状态码未命中路由且被接受时，按顺序求值 `extract`；所有赋值成功后一次性提交到 alias store。
-6. v2 及更高版本若配置 `when`，使用提交后的 alias store 求值；结果为 true 时跳转到 `when.goto`，为 false 时顺序执行下一步。
-7. 跳转到的 step 仍按相同规则执行；所有 step 成功后渲染并校验 `output`。
-
-`goto` 可以向前或向后跳转，因此可以表达受条件控制的重试或回退流程。为防止配置形成无限循环，同一个 step 在一次运行中最多进入 100 次；超过限制时本次工作流失败。
-
-Step 是 alias store 的事务边界。当前 step 中较早的赋值对后续赋值可见，但任一赋值失败时，当前 step 的所有赋值都必须回滚。为避免修改只读输入，每次表达式求值都会得到一个新的 `$vars` 快照；它包含此前已成功求值的临时赋值，但表达式对 `$vars` 产生的任何 jq 内部更新都不会反向修改 alias store。
-
-不同 step 可以对同一个 alias 再次赋值。再次赋值表示用新的完整 JSON 值替换旧值，不执行隐式合并、追加或按 ID 更新。需要合并时，应在 jq 表达式中构造合并后的完整值。
-
-请求发送后不得回滚其外部副作用。因此需要副作用的请求应设计为幂等请求，或由上游提供幂等键。
-
-### 4.1 Foreach 执行
-
-v3 可以让一个 step 对数组 alias 中的每个成员串行发送一次请求：
+### 条件跳转 (when)
 
 ```json
-{
-  "id": "get_usage",
-  "foreach": {
-    "alias": "items",
-    "as": "item",
-    "index_as": "item_index"
-  },
-  "request": {
-    "method": "GET",
-    "path": "/api/{{item#/key}}/usage"
-  },
-  "extract": [
-    {
-      "alias": "usage_rows",
-      "expression": "{key: $vars.item.key, index: $vars.item_index, usage: .data}"
-    }
-  ]
+"when": {
+  "expression": "$vars.need_login",
+  "goto": "login"
 }
 ```
 
-若 `items` 为：
+在提取别名后评估条件，如果表达式返回 `true` 则跳转到指定步骤。
 
-```json
-[
-  { "key": "123" },
-  { "key": "abc" }
-]
-```
-
-则请求按数组顺序执行为 `GET /api/123/usage`、`GET /api/abc/usage`。`item` 和 `item_index` 只在当前迭代的请求模板和 Extract jq 上下文中可见，不会写入最终 alias store。不同迭代看不到其他迭代尚未提交的 Extract 结果。
-
-Foreach 的每个 Extract alias 都按输入顺序聚合为数组。例如两次 `usage_rows` 表达式的结果会组成 `[result1, result2]`。只有全部迭代成功后才一次性提交所有聚合数组；任一迭代失败都不会提交部分结果。空输入数组不发送请求，并为每个 Extract alias 提交 `[]`。
-
-任意迭代命中 `expect.routes` 时，立即结束整个 foreach，丢弃尚未提交的聚合结果，并从目标 step 继续。`when` 不在每次迭代后执行，而是在整个 foreach 成功、聚合 alias 提交后执行一次；非空 foreach 的 `.`、`$response` 和 `$request` 对应最后一次迭代，空 foreach 中三者为 null。
-
-单个 foreach 的输入数组最多包含 1000 个元素。超过限制时在发送任何当前 step 的请求前失败。foreach 请求始终串行执行，不提供并发语义。
-
-## 5. Alias 模板
-
-顶层 `headers`、`request.path`、`request.body` 和顶层 `output` 都是递归模板。模板可以引用 alias，也可以通过保留根 `runtime` 引用宿主运行上下文；`runtime` 不属于 alias store。
-
-### 5.1 引用格式
-
-Alias 引用使用以下格式：
-
-```text
-{{alias}}
-{{alias#/json/pointer}}
-```
-
-第二种形式使用 RFC 6901 JSON Pointer 读取 alias 内部值：
-
-```text
-{{profile#/user/id}}
-{{keys#/0/id}}
-{{object#/a~1b/~0name}}
-```
-
-宿主运行上下文使用相同的 JSON Pointer 形式：
-
-```text
-{{runtime#/username}}
-{{runtime#/password}}
-{{runtime#/user_id}}
-{{runtime#/manual_checkin}}
-{{runtime#/headers/Authorization}}
-```
-
-jq 表达式中使用 `$runtime.username`、`$runtime.password`、`$runtime.user_id`、`$runtime.manual_checkin` 和 `$runtime.headers` 访问同一份数据。`runtime` 是只读模板根，不会出现在 `$vars` 或执行结果的 `aliases` 中。
-
-其中 `~1` 表示 `/`，`~0` 表示 `~`。
-
-模板引用不支持通配符、过滤器、数组投影或计算。需要这些能力时，先通过 jq 表达式生成新的 alias，再引用该 alias。
-
-### 5.2 整值引用
-
-当一个字符串的全部内容只有一个 alias 引用时，引用结果保留原始 JSON 类型：
-
-```json
-{
-  "ids": "{{key_ids}}",
-  "profile": "{{profile}}",
-  "enabled": "{{enabled}}"
-}
-```
-
-如果 `key_ids` 是数组、`profile` 是对象、`enabled` 是布尔值，则渲染结果仍分别为数组、对象和布尔值，不得先转成字符串再解析。
-
-引用值必须被深拷贝。模板求值不得修改 alias store 中的原值。
-
-### 5.3 字符串插值
-
-引用也可以嵌入普通字符串：
-
-```json
-{
-  "Authorization": "Bearer {{access_token}}",
-  "X-User": "user-{{user_id}}"
-}
-```
-
-嵌入字符串时只允许 string、number 和 boolean。number 使用合法 JSON 数字文本，boolean 使用 `true` 或 `false`。null、array、object 或不存在的值都会导致模板错误。
-
-模板替换本身不执行 URL 编码或 Header 编码。`path` 中的 query 在模板求值完成后按原样作为 URL query 使用，不会额外编码。
-
-Path 中的 alias 也不会被自动编码。需要把任意字符串安全地放入单个 path segment 或 query 值时，应先在 extract 表达式中使用 jq 的 `@uri` 生成已编码 alias，再将它用于 path。
-
-要在模板字符串中输出一个可被识别为引用的字面量，配置中使用 `\\{{alias}}`；模板求值结果为字面量 `{{alias}}`。
-
-### 5.4 对象键
-
-对象键也可以包含字符串插值，但结果必须是非空字符串。同一个对象中的两个键在渲染后发生冲突时，模板求值失败，不得采用“后者覆盖前者”。
-
-### 5.5 引用错误
-
-以下情况必须导致模板求值失败：
-
-- Alias 不存在。
-- JSON Pointer 不存在或格式非法。
-- 嵌入字符串的值不是允许的标量。
-- 渲染后的对象出现重复键。
-- 渲染结果包含非 JSON 值。
-
-JSON null 是存在的值，不等同于 alias 或 JSON Pointer 不存在。
-
-## 6. HTTP 请求语义
-
-### 6.1 Path
-
-`path` 描述相对 URL，可直接包含 query，例如 `"/api/v1/keys?page=1&page_size=100"`。query 不再使用独立的 `request.query` 配置。
-
-Path 渲染完成后必须仍以 `/` 开头。宿主必须拒绝绝对 URL、协议相对 URL和包含 fragment 的结果；path 中的 query 会原样保留到 HTTP 请求。
-
-### 6.2 Headers
-
-Header 名不区分大小写。渲染后按以下规则处理：
-
-| JSON 类型 | 编码规则 |
-| --- | --- |
-| string | 一个 Header 值 |
-| number | 一个合法 JSON 数字文本 |
-| boolean | `true` 或 `false` |
-| array | 按数组顺序生成多个同名 Header；元素只能是 string、number 或 boolean |
-| null | 省略该 Header |
-| object | 错误 |
-
-同一请求中大小写不同但语义相同的 Header 名视为冲突。宿主可以定义一组受保护 Header；工作流配置这些 Header 时必须在请求发送前失败。
-
-v4 及更高版本按“宿主提供 Header、顶层 `headers`、步骤 `request.headers`”三层合并，优先级从高到低为：
-
-1. 宿主提供 Header：不允许被任何工作流配置覆盖，冲突时必须在请求发送前失败。
-2. 步骤 `request.headers`：与全局 Header 同名时（大小写不敏感）覆盖全局；渲染为 `null` 时省略该 Header，等效于删除同名的全局 Header。
-3. 顶层 `headers`：应用于所有步骤的全局默认。
-
-当前项目把中转站 `console_headers` 作为宿主提供 Header，因此可直接在中转站配置中设置所有工作流请求共用的静态 Header。`Authorization` 和 `Cookie` 由宿主管理，不能写入顶层或步骤 Header；`request.headers` 仅 `http-workflow/v5` 支持。
-
-当前项目为每次工作流执行创建独立 Cookie jar。中转站已有的 `Cookie` 会作为初始 Cookie；任意响应的 `Set-Cookie` 会按照标准的 domain、path、expiry 和 secure 规则自动用于后续请求，无需 jq 提取或在请求中显式配置。本次响应产生的 Cookie 变更会按 Cookie 名新增或覆盖中转站 `console_headers.Cookie`，过期 Cookie 会从配置中删除；成功工作流将 Cookie 与业务输出放在同一事务中保存，失败工作流也会独立保存已经收到的 Cookie 变更。不同中转站和不同执行之间不共享 Cookie jar。
-
-当 `body` 字段存在且未显式配置 `Content-Type` 时，使用 `application/json`。未显式配置 `Accept` 时，使用 `application/json`。
-
-### 6.3 Body
-
-`body` 字段不存在时不发送请求 body。`body` 字段存在时，将渲染后的值序列化并发送，因此 `"body": null` 明确表示发送 JSON null。字段存在性与字段值不同，不得把存在且为 null 的 body 当成省略。
-
-JSON body 可以是 object、array、string、number、boolean 或 null。它必须直接进行一次 JSON 序列化。不得要求用户把整个 body 写成经过转义的 JSON 字符串，也不得对序列化结果进行第二次模板替换。
-
-## 7. HTTP 响应语义
-
-非空响应体必须符合 RFC 8259 JSON。响应根节点可以是任意 JSON 值，不要求必须为 object。
-
-解析器必须拒绝：
-
-- 非法 UTF-8。
-- 重复的对象键。
-- 非法数字，包括 NaN 和 Infinity。
-- 响应尾部除 JSON 空白外的其他数据。
-
-空响应体使用 JSON null 作为 jq 输入，同时通过 `$response.has_body` 与真正的 JSON null 区分。
-
-表达式环境中的 `$response` 具有固定结构：
-
-```json
-{
-  "status": 200,
-  "headers": {
-    "content-type": ["application/json"]
-  },
-  "has_body": true,
-  "body": {},
-  "text": "{}"
-}
-```
-
-- `status` 是 HTTP 状态码。
-- `headers` 的名称统一转为小写，每个值始终为字符串数组。
-- `has_body` 表示网络响应是否包含非空 body。
-- `body` 是解析后的 JSON；空响应体时为 null。
-- `text` 是解析前的 UTF-8 响应文本，用于审计，不应用于手工截取 JSON。
-
-## 8. jq 表达式
-
-v1 的 `expect`、v2 及更高版本的 `when.expression` 和所有 `extract[].expression` 遵循 jq 1.7 语义。v2 及更高版本的 `expect` 是结构化 HTTP 状态码路由，不是 jq 表达式。
-
-### 8.1 求值上下文
-
-每次 jq 求值具有以下输入和只读变量：
-
-| 名称 | 值 |
-| --- | --- |
-| `.` | 当前解析后的响应 body；空响应体时为 null |
-| `$response` | 第 7 节定义的响应对象 |
-| `$request` | 完成模板求值后实际发送的 request 对象 |
-| `$vars` | 当前可见 alias store 的快照 |
-| `$runtime` | 宿主提供的运行元数据 |
-
-v3 foreach 执行期间，`$vars` 还包含 `foreach.as` 指定的当前元素和可选的 `foreach.index_as` 下标。它们只在当前迭代内存在。
-
-`$runtime` 至少包含：
-
-```json
-{
-  "workflow_id": "example-workflow",
-  "started_at": "2026-08-10T00:00:00Z",
-  "started_at_ms": 1786320000000,
-  "username": "",
-  "password": "",
-  "user_id": "",
-  "manual_checkin": false,
-  "headers": {}
-}
-```
-
-宿主没有提供账户信息时，`username`、`password` 和 `user_id` 固定为空字符串，`manual_checkin` 固定为 `false`，`headers` 固定为空对象。本项目对中转站执行工作流时会使用中转站控制台配置填充这些字段；`manual_checkin` 使用该中转站的手工签到配置；`headers` 为宿主提供的基础控制台请求头字典，不包含工作流顶层 `headers`。
-
-表达式不得读取环境变量、文件、网络、进程状态或其他外部可变状态。当前时间必须从 `$runtime` 获取，不得在表达式中再次读取时钟。
-
-表达式必须是确定且无外部副作用的 jq 子集。必须禁用 `input`、`inputs`、`env`、`$ENV`、`now`、`debug`、`stderr`、`halt`、`halt_error`、模块导入以及其他依赖外部状态或改变进程行为的能力。`error` 可以用于显式终止当前表达式。
-
-### 8.2 结果物化
-
-jq filter 可能产生零个、一个或多个结果。Alias 赋值、v1 `expect` 和 v2/v3 `when.expression` 都要求表达式恰好产生一个结果：
-
-- 零个结果：错误。
-- 一个结果：使用该 JSON 值。
-- 多个结果：错误；如果需要数组，表达式必须显式使用 `[ ... ]` 收集结果。
-
-结果必须是合法 JSON 值。jq error、非有限数字或其他不可物化值都会导致当前 step 失败。
-
-JSON number 的计算必须避免实现相关的静默截断。实现至少应完整保留 IEEE 754 binary64 能精确表达的整数范围，即 `[-9007199254740991, 9007199254740991]`。超出实现精确范围且未以字符串表示的数字必须报错，不能舍入后继续执行。金额是否允许小数、保留多少位以及舍入方式属于最终输出 Schema 的业务约束。
-
-### 8.3 Expect
-
-v2/v3 的 `expect` 配置示例：
-
-```json
-{
-  "expect": {
-    "accepted_statuses": [409],
-    "routes": [
-      { "statuses": [401, 403], "goto": "refresh_token" },
-      { "statuses": [429], "goto": "wait_and_retry" }
-    ]
-  }
-}
-```
-
-路由按状态码精确匹配；同一 step 不得重复配置相同状态码。命中路由时不执行当前 step 的 `extract`。没有命中时，`2xx` 和 `accepted_statuses` 中列出的状态码继续执行 `extract`，其他状态码导致工作流失败。一个状态码不能同时出现在路由和 `accepted_statuses` 中。
-
-### 8.4 When
-
-v2/v3 的 `when` 在当前 step 所有 alias 成功提交后执行：
-
-```json
-{
-  "when": {
-    "expression": "$vars.a == true",
-    "goto": "request2"
-  }
-}
-```
-
-`when.expression` 必须恰好返回 boolean。true 跳转，false 顺序执行下一步。
-
-v1 的 `expect` 仍保持原有语义：
-
-省略 `expect` 等价于：
-
-```jq
-$response.status >= 200 and $response.status < 300
-```
-
-`expect` 必须恰好返回 JSON boolean `true` 才算成功。false、null、number、string、array 和 object 都算失败。`expect` 失败时不得执行 `extract`。
-
-带业务状态码的响应可以写为：
-
-```jq
-$response.status >= 200
-and $response.status < 300
-and ((.code? // 0) == 0)
-```
-
-## 9. Extract 与 Alias 赋值
-
-每个 extract 只有两个字段：
-
-| 字段 | 类型 | 必填 | 语义 |
-| --- | --- | --- | --- |
-| `alias` | string | 是 | 被赋值的 alias 名称 |
-| `expression` | string | 是 | 产生完整 alias 值的 jq 表达式 |
-
-未知字段必须被拒绝。
-
-Extract 按数组顺序执行。每次赋值完成后，后续表达式看到的 `$vars` 都包含这个新值：
+### 数据提取 (extract)
 
 ```json
 "extract": [
   {
-    "alias": "items",
-    "expression": ".data.items"
+    "alias": "user_id",
+    "expression": "$response.body.data.id"
   },
   {
-    "alias": "item_ids",
-    "expression": "$vars.items | map(.id)"
+    "alias": "username",
+    "expression": "$response.body.data.name"
   }
 ]
 ```
 
-Alias 只能整体赋值。以下需求都通过 jq 返回新的完整值实现：
+使用 jq 表达式从响应中提取数据并保存到别名变量。
 
-- 追加数组：`$vars.items + .data.items`
-- 浅层合并对象：`$vars.profile + .data.profile`
-- 递归合并对象：`$vars.profile * .data.profile`
-- 更新嵌套路径：`$vars.profile | setpath(["user", "name"]; .data.name)`
-- 删除字段：`$vars.profile | delpaths([["secret"]])`
+### 循环迭代 (foreach)
 
-规范没有 `type`、`required`、`default`、`fields`、`iterate`、`action`、`match` 或 `merge` 等 extract 专用关键字。这些行为由 jq 表达式和最终输出 Schema 表达。
-
-## 10. JSON 解析模式
-
-以下示例中，`.` 均表示当前响应 body。
-
-### 10.1 标量、缺失值与类型转换
-
-```jq
-.data.id
-.data.id | tostring
-.data.balance | tonumber
-.data.enabled | if type == "boolean" then . else error("enabled must be boolean") end
+```json
+"foreach": {
+  "alias": "items",
+  "as": "item",
+  "index_as": "index"
+}
 ```
 
-jq 的 `//` 会把 false 和 null 都视为需要回退。需要保留 false 时应显式检查对象是否包含字段：
+对别名变量中的数组进行迭代，每次迭代执行一次请求：
 
-```jq
-.data as $data
-| if $data | has("enabled") then $data.enabled else true end
-```
+- **alias**: 源数组别名
+- **as**: 当前元素的别名
+- **index_as**: 当前索引的别名（可选）
 
-JSON null 是普通值：
+在 foreach 步骤中：
+- 请求会对数组每个元素执行一次
+- extract 提取的值会聚合成数组
+- 限制：最多 1000 次迭代
 
-```jq
-if .data.value == null then "fallback" else .data.value end
-```
+## 模板系统
 
-### 10.2 特殊字段名与动态键
+### 变量引用
 
-字段名包含点、斜杠、空格或其他特殊字符时使用方括号：
-
-```jq
-.data["field.with.dot"]
-.data["a/b"]
-.data[$vars.dynamic_key]
-```
-
-不得通过拼接类似 `.data.{{key}}` 的表达式实现动态访问。
-
-### 10.3 数组选择、过滤和投影
-
-```jq
-[.data.items[] | .id]
-[.data.items[] | select(.enabled == true)]
-[.data.items[] | {id: (.id | tostring), name, key, group: (.group.name // "default")}]
-```
-
-数组下标和切片：
-
-```jq
-.data.items[0]
-.data.items[-1]
-.data.items[2:5]
-```
-
-数组去重、排序和分组：
-
-```jq
-.data.items | unique_by(.id)
-.data.items | sort_by(.created_at)
-.data.items | sort_by(.group) | group_by(.group)
-```
-
-### 10.4 嵌套数组与扁平化
-
-收集所有订单中的商品 ID：
-
-```jq
-[.data.orders[]?.items[]?.id]
-```
-
-只展开一层嵌套数组：
-
-```jq
-.data.matrix | flatten(1)
-```
-
-递归展开所有数组层级：
-
-```jq
-.data.matrix | flatten
-```
-
-保留父子关系时应显式构造对象：
-
-```jq
-[
-  .data.orders[] as $order
-  | $order.items[]
-  | {order_id: $order.id, item_id: .id}
-]
-```
-
-### 10.5 对象转数组与数组转对象
-
-将动态 key 的对象转换为数组：
-
-```jq
-.data.stats
-| to_entries
-| map({
-    id: .key,
-    used_quota: (.value.used_quota // .value.total_actual_cost // 0)
-  })
-```
-
-将数组按 ID 转成对象索引：
-
-```jq
-.data.items
-| map({key: (.id | tostring), value: .})
-| from_entries
-```
-
-重命名或过滤对象字段：
-
-```jq
-.data.user | {user_id: .id, username: (.email // .username)}
-.data.user | with_entries(select(.key != "secret"))
-```
-
-### 10.6 按 ID 关联数组和对象
-
-假设 `$vars.api_keys_base` 是 Key 数组，当前响应中的 `.data.stats` 是以 Key ID 为动态键的对象：
-
-```jq
-$vars.api_keys_base
-| map(
-    . as $key
-    | $key + {
-        used_quota: (
-          $response.body.data.stats[($key.id | tostring)].used_quota
-          // $response.body.data.stats[($key.id | tostring)].total_actual_cost
-          // 0
-        )
-      }
-  )
-```
-
-两个数组可以先建立索引再关联：
-
-```jq
-INDEX(.data.usage[]; (.id | tostring)) as $usage
-| $vars.api_keys_base
-| map(
-    . as $key
-    | $key + {
-        used_quota: ($usage[($key.id | tostring)].used_quota // 0)
-      }
-  )
-```
-
-这取代动态 path、`action: update`、`match` 和 step 专用 join 字段。
-
-### 10.7 聚合
-
-```jq
-[.data.items[].used_quota] | add // 0
-.data.items | map(.used_quota) | min
-.data.items | map(.used_quota) | max
-.data.items | length
-.data.items | any(.enabled)
-.data.items | all(.enabled)
-```
-
-按分组汇总：
-
-```jq
-.data.items
-| sort_by(.group)
-| group_by(.group)
-| map({group: .[0].group, used_quota: (map(.used_quota) | add // 0)})
-```
-
-### 10.8 最小值和并列结果
-
-为每个模型选择价格最低的所有 group：
-
-```jq
-$vars.model_rows
-| map(
-    . as $model
-    | [
-        $model.groups[]
-        | {
-            name: ., 
-            ratio: ($vars.group_ratios[.] // 1)
-          }
-      ] as $groups
-    | ($groups | map(.ratio) | min) as $min_ratio
-    | {
-        name: $model.name,
-        cheapest_groups: [$groups[] | select(.ratio == $min_ratio) | .name],
-        in_price: $model.in_price,
-        out_price: $model.out_price,
-        price_type: $model.price_type
-      }
-  )
-```
-
-`argmin`、`ties` 等不需要成为配置关键字；它们是普通 JSON 变换。
-
-### 10.9 递归搜索
-
-当 JSON 层级不固定时可以使用递归下降，但必须明确筛选类型：
-
-```jq
-[.. | objects | .id? | select(. != null)]
-```
-
-已知结构时应优先使用确定路径。递归下降可能意外读取同名但语义不同的字段。
-
-### 10.10 JSON 字符串字段
-
-上游字段本身是 JSON 编码字符串时使用 `fromjson`：
-
-```jq
-.data.payload | fromjson
-```
-
-将 JSON 值编码为字符串时使用 `tojson`：
-
-```jq
-.data.payload | tojson
-```
-
-不得通过字符串截取、正则表达式或表达式求值来解析 JSON。
-
-### 10.11 可选数据和错误
-
-可选访问使用 `?`：
-
-```jq
-.data.profile?.email?
-```
-
-由于可选访问可能产生零个结果，Alias 赋值时通常需要显式提供一个值：
-
-```jq
-.data.profile?.email? // null
-```
-
-必填字段可以显式报错：
-
-```jq
-.data.id
-| if . == null then error("data.id is required") else . end
-```
-
-谨慎使用 `try ... catch`。捕获错误后必须返回业务上明确的 JSON 值，不能静默丢弃数据。
-
-## 11. 最终输出
-
-所有 step 成功后，递归渲染顶层 `output`。输出不得直接读取最后一个 HTTP 响应，只能引用 alias，因此输出不依赖 step 排列之外的隐式状态。
-
-签到工作流的固定输出 Schema 为：
+使用 `{{alias}}` 或 `{{alias#/pointer}}` 引用变量：
 
 ```json
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["user_id", "username", "quota", "quota_unit", "used_quota", "today_reward", "api_keys", "models"],
-  "properties": {
-    "user_id": { "type": "string" },
-    "username": { "type": "string" },
-    "quota": { "type": "number" },
-    "quota_unit": { "type": "string" },
-    "used_quota": { "type": "number", "minimum": 0 },
-    "today_reward": { "type": "number", "minimum": 0 },
-    "api_keys": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "name", "key", "group", "used_quota"],
-        "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "key": { "type": "string" },
-          "group": { "type": "string" },
-          "used_quota": {
-            "type": "number",
-            "minimum": 0
-          }
-        }
-      }
-    },
-    "models": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "cheapest_groups", "price_type"],
-        "properties": {
-          "name": { "type": "string" },
-          "cheapest_groups": {
-            "type": "array",
-            "items": { "type": "string" },
-            "uniqueItems": true
-          },
-          "in_price": { "type": "number", "minimum": 0 },
-          "out_price": { "type": "number", "minimum": 0 },
-          "price": { "type": "number", "minimum": 0 },
-          "price_type": { "type": "integer", "enum": [0, 1] }
-        },
-        "anyOf": [
-          { "required": ["in_price"] },
-          { "required": ["out_price"] },
-          { "required": ["price"] }
-        ]
-      }
-    }
+  "path": "/api/users/{{user_id}}",
+  "body": {
+    "name": "{{username}}",
+    "email": "{{user_id#/contact/email}}"
   }
 }
 ```
 
-约束如下：
+### 特殊变量
 
-- 顶层以及数组元素都不得包含未声明字段。
-- `user_id`、`username`、`quota_unit`、Key 的 `id`、`name`、`key`、`group` 和模型 `name` 必须是字符串。
-- `quota`、`used_quota`、`today_reward`、Key 的 `used_quota`、`in_price`、`out_price` 和 `price` 必须是有限 JSON number；JSON Schema 验证前还必须执行第 8.2 节的有限数检查。
-- `api_keys` 和 `models` 必须始终是数组；无数据时使用空数组。
-- `cheapest_groups` 必须始终是字符串数组；不存在可用分组时使用空数组。
-- 同一个输出中，非空 Key ID 应当唯一，模型 name 应当唯一，单个模型中的 group 应当唯一。
-- `quota`、`used_quota`、`today_reward`、Key 的 `used_quota` 以及价格数值字段都允许有限小数；除 `quota` 外，其余配额和价格数值不得小于零。`quota` 允许为负数；只有 `price_type` 仍要求整数。
-- 模型始终允许 `in_price`、`out_price` 和 `price`，不按 `price_type` 限制字段组合，但至少要提供其中一个。`price_type` 必须是整数 `0`（按量）或 `1`（按次）。
-- `balance`、`used_balance` 和 `total_cost` 是旧输出字段，不再支持；出现这些字段会导致 Schema 校验失败。
-- 持久化时如果 `today_reward` 为 `0`，表示本次没有新的签到奖励，账户和最近成功结果会保留原来的 `today_reward`。
+- `{{runtime}}`: 运行时上下文
+  - `{{runtime#/username}}`: 后端用户名
+  - `{{runtime#/password}}`: 后端密码
+  - `{{runtime#/user_id}}`: 控制台账户 ID
+  - `{{runtime#/headers}}`: 运行时请求头
+  - `{{runtime#/refresh_token}}`: 刷新令牌
+  - `{{runtime#/backend_id}}`: 后端 ID
+  - `{{runtime#/backend_name}}`: 后端名称
+  - `{{runtime#/workflow_id}}`: 工作流 ID
+  - `{{runtime#/started_at}}`: 执行开始时间
+  - `{{runtime#/started_at_ms}}`: 执行开始时间戳
 
-输出配置通常只负责字段装配：
+### JSON Pointer
 
-```json
-"output": {
-  "user_id": "{{user_id}}",
-  "username": "{{username}}",
-  "quota": "{{quota}}",
-  "quota_unit": "{{quota_unit}}",
-  "used_quota": "{{used_quota}}",
-  "today_reward": "{{today_reward}}",
-  "api_keys": "{{api_keys}}",
-  "models": "{{models}}"
-}
-```
+使用 RFC 6901 JSON Pointer 语法访问嵌套值：
+- `/field` - 访问对象字段
+- `/0` - 访问数组第一个元素
+- `~0` - 转义 `~`
+- `~1` - 转义 `/`
 
-创建或更新工作流时会校验 `output` 的顶层字段集合，缺少固定字段或包含旧字段、其他未知字段时拒绝保存。数组成员的字段和具体值类型在工作流执行、模板渲染完成后校验。
+### 模板规则
 
-签到时间、运行状态、工作流版本、错误日志和 HTTP 审计记录属于运行元数据，不属于上述业务输出。
+1. **类型保持**: `{{alias}}` 单独使用时保持原始类型
+2. **字符串插值**: 与文本混合时转换为字符串
+3. **转义**: 使用 `\{{` 输出字面量 `{{`
+4. **null 处理**: header 值为 null 时从请求中删除该 header
 
-## 12. 完整示例
+## jq 表达式
 
-以下示例用于展示配置语义。具体 endpoint 和响应字段必须按目标平台调整。
+### 可用变量
+
+- `$response`: 响应信封
+  - `$response.status`: HTTP 状态码
+  - `$response.headers`: 响应头对象
+  - `$response.has_body`: 是否有响应体
+  - `$response.body`: 响应体（JSON）
+  - `$response.text`: 响应文本
+
+- `$request`: 请求信封
+  - `$request.method`: HTTP 方法
+  - `$request.path`: 请求路径
+  - `$request.headers`: 请求头对象
+  - `$request.has_body`: 是否有请求体
+  - `$request.body`: 请求体
+
+- `$vars`: 所有提取的别名变量
+
+- `$runtime`: 运行时上下文
+
+### 限制
+
+- 禁用函数：`$ENV`、`debug`、`env`、`halt`、`halt_error`、`input`、`inputs`、`now`、`stderr`
+- 禁用模块导入
+- 执行超时：5 秒
+
+## Output 约定
+
+### 签到工作流 Output 格式
+
+签到工作流必须输出以下格式的数据：
 
 ```json
 {
-  "spec": "http-workflow/v1",
-  "id": "relay-default-checkin",
-  "name": "中转站默认签到",
-  "steps": [
+  "user_id": "string",
+  "username": "string",
+  "quota": number,
+  "quota_unit": "string",
+  "used_quota": number,
+  "today_reward": number,
+  "api_keys": [
     {
-      "id": "get_me",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/auth/me"
-      },
-      "expect": "$response.status >= 200 and $response.status < 300 and ((.code? // 0) == 0)",
-      "extract": [
-        { "alias": "user_id", "expression": ".data.id | tostring" },
-        { "alias": "username", "expression": ".data.email // .data.username // \"\"" },
-        { "alias": "quota", "expression": "(.data.quota // .data.free_balance // .data.balance // 0) | tonumber" },
-        { "alias": "quota_unit", "expression": "(.data.quota_unit // .data.quota_display_type // \"$\") | tostring" },
-        { "alias": "today_reward", "expression": "(.data.today_reward // .data.checkin_reward // 0) | tonumber" }
-      ]
-    },
-    {
-      "id": "get_keys",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/keys?page=1&page_size=100&scope=personal"
-      },
-      "extract": [
-        {
-          "alias": "api_keys_base",
-          "expression": "[.data.items[] | {id: (.id | tostring), name: (.name // \"\"), key: (.key // \"\"), group: (.group.name // .group // \"default\"), used_quota: ((.used_quota // 0) | tonumber)}]"
-        },
-        {
-          "alias": "key_ids",
-          "expression": "$vars.api_keys_base | map(.id)"
-        }
-      ]
-    },
-    {
-      "id": "get_key_usage",
-      "request": {
-        "method": "POST",
-        "path": "/api/v1/usage/dashboard/api-keys-usage",
-        "body": {
-          "api_key_ids": "{{key_ids}}"
-        }
-      },
-      "extract": [
-        {
-          "alias": "api_keys",
-          "expression": "$vars.api_keys_base | map(. as $key | $key + {used_quota: (($response.body.data.stats[($key.id | tostring)].used_quota // $response.body.data.stats[($key.id | tostring)].total_actual_cost // 0) | tonumber)})"
-        },
-        {
-          "alias": "used_quota",
-          "expression": "$vars.api_keys | map(.used_quota) | add // 0"
-        }
-      ]
-    },
-    {
-      "id": "get_models",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/models"
-      },
-      "extract": [
-        {
-          "alias": "group_ratios",
-          "expression": ".group_ratio // {}"
-        },
-        {
-          "alias": "model_rows",
-          "expression": "[.data[] | ((.price_type // .quota_type // 0) | tonumber) as $price_type | {name: ((.model_name // .name) | tostring), groups: (.enable_groups // []), price_type: $price_type, fixed_price: ((.price // .model_price // 0) | tonumber), input_price: (if .input_price == null then null else (.input_price | tonumber) end), output_price: (if .output_price == null then null else (.output_price | tonumber) end), model_ratio: ((.model_ratio // 0) | tonumber), completion_ratio: ((.completion_ratio // 1) | tonumber), billing_expr: (.billing_expr // null)}]"
-        },
-        {
-          "alias": "models",
-          "expression": "$vars.model_rows | map(. as $model | [$model.groups[] | {name: ., ratio: (($vars.group_ratios[.] // 1) | tonumber)}] as $groups | (($groups | map(.ratio) | min) // 1) as $min_ratio | ([$groups[] | select(.ratio == $min_ratio) | .name] | unique) as $cheapest_groups | (try ($model.billing_expr | capture(\\\"tier[[:space:]]*[(][[:space:]]*[^,]+,[[:space:]]*(?<expr>[^)]*)[)]\\\")) catch {}) as $tier | (try (($tier.expr // null) | capture(\\\"p[[:space:]]*[*][[:space:]]*(?<value>[-+]?[0-9]+([.][0-9]+)?)\\\")) catch {}) as $p | (try (($tier.expr // null) | capture(\\\"c[[:space:]]*[*][[:space:]]*(?<value>[-+]?[0-9]+([.][0-9]+)?)\\\")) catch {}) as $c | if $model.price_type == 1 then {name: $model.name, cheapest_groups: $cheapest_groups, price_type: 1, price: ($model.fixed_price * $min_ratio)} elif ($p.value? != null) and ($c.value? != null) then {name: $model.name, cheapest_groups: $cheapest_groups, price_type: 0, in_price: (($p.value | tonumber) * $min_ratio), out_price: (($c.value | tonumber) * $min_ratio)} else {name: $model.name, cheapest_groups: $cheapest_groups, price_type: 0, in_price: (($model.input_price // $model.model_ratio) * $min_ratio), out_price: (($model.output_price // ($model.model_ratio * $model.completion_ratio)) * $min_ratio)} end)"
-        }
-      ]
+      "id": "string",
+      "name": "string",
+      "key": "string",
+      "group": "string",
+      "used_quota": number
     }
   ],
-  "output": {
-    "user_id": "{{user_id}}",
-    "username": "{{username}}",
-    "quota": "{{quota}}",
-    "quota_unit": "{{quota_unit}}",
-    "used_quota": "{{used_quota}}",
-    "today_reward": "{{today_reward}}",
-    "api_keys": "{{api_keys}}",
-    "models": "{{models}}"
+  "models": [
+    {
+      "name": "string",
+      "cheapest_groups": ["string"],
+      "in_price": number,
+      "out_price": number,
+      "price": number,
+      "price_type": 0 | 1
+    }
+  ],
+  "refresh_token": "string",
+  "console_headers": {
+    "header-name": "value"
   }
 }
 ```
 
-## 13. 失败与持久化
+#### 必填字段
 
-以下任一情况都会使本次工作流失败：
+- **user_id**: 用户 ID（字符串）
+- **username**: 用户名（字符串）
+- **quota**: 总配额（数值）
+- **quota_unit**: 配额单位（字符串）
+- **used_quota**: 已使用配额（非负数值）
+- **today_reward**: 今日奖励（非负数值）
+- **api_keys**: API 密钥数组
+- **models**: 模型定价数组
 
-- 配置不符合本规范。
-- Alias 模板求值失败。
-- HTTP 传输失败。
-- 非空响应体不是合法 JSON。
-- v1 `expect` 或 v2 及更高版本的 `when.expression` 未返回唯一的 boolean；v1 `expect` 未返回 true。
-- v2 及更高版本响应状态码未命中 `expect.routes`，且既不是 `2xx`、也不在 `accepted_statuses` 中。
-- v3 及更高版本 foreach 来源 alias 不存在、不是数组或超过 1000 个元素。
-- Extract 表达式失败、没有结果或产生多个未收集结果。
-- Alias 结果不是合法 JSON 值。
-- 最终 output 模板求值失败。
-- 最终结果不符合宿主输出 Schema。
+#### 可选字段
 
-失败时不得持久化部分业务输出。响应 Cookie 属于后续请求所需的认证状态，不属于业务输出；本项目会保存失败前已经收到的 `Set-Cookie` 变更。宿主可以持久化独立的运行日志和 HTTP 审计记录。本项目约定工作流定义和调试数据不做敏感信息处理，`output`、alias、Header、path（含 query）、请求 body 和响应 body 均按原值明文返回；单项调试预览仍受长度上限约束。
+- **refresh_token**: 刷新令牌，执行后更新到后端配置
+- **console_headers**: 控制台请求头，执行后合并到后端配置
 
-只有全部 step 和最终 Schema 校验都成功后，才能原子替换上一次业务输出。具体宿主可以将业务输出同步到后端运行数据；本项目会将 `user_id`、`username`、`quota`、`quota_unit`、`used_quota`、`today_reward`、`api_keys` 和 `models` 更新到所选 backend，并与业务快照放在同一个事务中。运行期辅助 alias，例如 `key_ids`、`model_rows` 和 `group_ratios`，默认不属于业务输出，不应作为业务快照持久化。
+#### API Key 字段
 
-## 14. 版本兼容
+- **id**: API 密钥 ID（可为空字符串）
+- **name**: 密钥名称
+- **key**: 密钥值（必填）
+- **group**: 密钥组（默认 "default"）
+- **used_quota**: 已使用配额（非负数值）
 
-`spec` 决定完整语义，不允许通过字段组合猜测版本。`http-workflow/v1` 使用字符串 `expect` 且不认识 `when`；结构化状态码路由和 alias 条件跳转必须使用 `http-workflow/v2` 或更高版本；`foreach` 必须使用 `http-workflow/v3` 或更高版本；顶层 `headers` 必须使用 `http-workflow/v4`；步骤 `request.headers` 必须使用 `http-workflow/v5`。
+约束：
+- 非空 ID 不能重复
+- key 字段必须非空
 
-v3 保留 v2 的结构化 Expect、When 和 Goto 语义，v4 保留 v3 的全部语义，v5 保留 v4 的全部语义。旧版本配置保持原有行为，不会隐式启用更高版本字段。
+#### Model 字段
 
-同一 major 版本内可以增加不改变现有配置含义的 jq 示例和说明，但不得增加会被旧读取方静默忽略的配置字段。新增字段、改变默认值、改变模板规则或改变 jq 求值上下文时，必须发布新的规范版本。
+- **name**: 模型名称（必填，不能重复）
+- **cheapest_groups**: 最便宜的密钥组列表（数组，不能重复）
+- **price_type**: 计费类型（0=按 token，1=固定价格）
+- **in_price**: 输入价格（price_type=0 时至少提供一个价格字段）
+- **out_price**: 输出价格
+- **price**: 固定价格（price_type=1 时使用）
 
-读取方必须拒绝不认识的 `spec` 和未知配置字段，以避免工作流看似执行成功但实际丢失语义。
+价格规则：
+- 所有价格必须为非负数值
+- `price_type=0`（按 token）：至少提供 in_price、out_price、price 之一
+- `price_type=1`（固定）：使用 price 字段
+
+### Output 验证
+
+系统会在工作流执行后验证 output 格式：
+1. 类型检查：确保字段类型正确
+2. 必填检查：确保必填字段存在
+3. 数值检查：确保数值有效且非负
+4. 唯一性检查：确保 ID、名称不重复
+
+验证失败会返回详细的错误路径和类型信息。
+
+### Output 特殊处理
+
+- **refresh_token** 和 **console_headers** 在验证前被提取并从 output 中移除
+- 执行成功后，这两个字段会更新到后端配置中
+- 其余 output 字段会被保存为快照，并用于更新后端的配额、模型、API 密钥信息
+
+## 执行流程
+
+1. **验证**: 编译工作流定义和所有 jq 表达式
+2. **初始化**: 设置 HTTP 客户端、Cookie Jar、运行时变量
+3. **步骤执行**:
+   - 渲染请求模板
+   - 发送 HTTP 请求
+   - 验证响应（expect）
+   - 提取数据（extract）
+   - 条件判断（when）
+4. **输出渲染**: 使用最终别名变量渲染 output 模板
+5. **持久化**: 验证并保存 output，更新后端配置
+
+### 控制流
+
+- 步骤按顺序执行，除非发生跳转
+- `expect.routes` 匹配时立即跳转，跳过 extract 和 when
+- `when` 在 extract 之后评估
+- 防止死循环：单个步骤访问次数限制为 100 次
+- foreach 限制：单个步骤最多迭代 1000 次
+
+## 安全限制
+
+### 请求限制
+
+- 响应体大小：默认 10 MB
+- HTTP 超时：默认 30 秒
+- 仅支持 http/https 协议
+- Base URL 不能包含用户信息、查询参数或片段
+
+### Header 保护
+
+默认保护的 header（不可覆盖）：
+- `Content-Length`
+- `Host`
+- `User-Agent`
+
+### 数值安全
+
+- 整数范围：`[-2^53+1, 2^53-1]`（JavaScript 安全整数）
+- 禁止 NaN 和 Infinity
+- JSON 解码严格模式（禁止重复键、多余值）
+
+## 调试日志
+
+工作流执行时会生成详细的调试日志：
+
+```typescript
+interface WorkflowDebugLog {
+  time: string           // ISO 8601 时间戳
+  level: string          // debug, info, warn, error
+  step_id?: string       // 步骤 ID
+  phase: string          // 执行阶段
+  message: string        // 日志消息
+  duration_ms?: number   // 持续时间（毫秒）
+  details?: object       // 详细信息
+}
+```
+
+### 主要阶段
+
+- `workflow_start`: 工作流开始
+- `validation`: 验证通过
+- `step_start`: 步骤开始
+- `request`: 请求已发送
+- `response`: 响应已接收
+- `expect`: 响应验证
+- `extract`: 数据提取
+- `foreach_iteration`: 循环迭代
+- `step_complete`: 步骤完成
+- `output_render`: 输出渲染
+- `workflow_complete`: 工作流完成
+
+## API 接口
+
+### 列表工作流
+```
+GET /admin/api/workflows
+```
+
+### 创建工作流
+```
+POST /admin/api/workflows
+Content-Type: application/json
+
+{工作流定义}
+```
+
+### 获取工作流
+```
+GET /admin/api/workflows/{id}
+```
+
+### 更新工作流
+```
+PUT /admin/api/workflows/{id}
+Content-Type: application/json
+
+{工作流定义}
+```
+
+### 删除工作流
+```
+DELETE /admin/api/workflows/{id}
+```
+
+### 执行工作流
+```
+POST /admin/api/workflows/{id}/execute
+Content-Type: application/json
+
+{
+  "backend_id": 123,
+  "aliases": {
+    "custom_var": "value"
+  }
+}
+```
+
+响应：
+```json
+{
+  "workflow_id": "workflow-id",
+  "backend": {
+    "id": 123,
+    "name": "后端名称"
+  },
+  "output": {},
+  "aliases": {},
+  "executed_at": "2024-01-01T00:00:00Z",
+  "requests": [],
+  "debug_logs": []
+}
+```
+
+### 获取工作流结果
+```
+GET /admin/api/workflows/{id}/results/{backend_id}
+```
+
+## 最佳实践
+
+1. **使用语义化的步骤 ID**: 便于调试和日志分析
+2. **合理使用 foreach**: 避免过大的数组导致超时
+3. **渐进式验证**: 在关键步骤添加 expect 检查
+4. **提取关键数据**: 只提取需要的字段，避免传递整个响应
+5. **使用 when 处理分支**: 根据响应内容决定后续流程
+6. **利用全局 headers**: 避免在每个步骤重复定义通用 header
+7. **保持 output 简洁**: 只包含必要的业务数据
+8. **合理设置超时**: 根据后端响应时间调整客户端配置
+9. **处理 refresh_token**: 在需要时更新认证令牌
+10. **记录 console_headers**: 保存需要持久化的请求头
+
+## 版本兼容性
+
+选择合适的 spec 版本：
+- 只使用基础功能 → `v1`
+- 需要条件跳转 → `v2`
+- 需要循环处理 → `v3`
+- 需要全局 headers → `v4`
+- 需要步骤级 headers → `v5`
+
+系统会根据使用的功能自动检查 spec 版本是否兼容。
