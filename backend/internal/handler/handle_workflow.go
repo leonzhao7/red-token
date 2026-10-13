@@ -337,7 +337,6 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		}
 		backend.ConsoleHeaders = currentHeaders
 	}
-	preserveWorkflowTodayReward(result.Output, backend.ConsoleAccountJSON)
 	outputJSON, err := json.Marshal(result.Output)
 	if err != nil {
 		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error()}
@@ -365,37 +364,6 @@ func workflowBackendWithResponseCookies(backend domain.Backend, cookies []*http.
 	backend.ConsoleHeaders = service.ConsoleHeadersWithResponseCookies(service.ConsoleHeaders(backend), cookies, time.Now())
 	backend.ConsoleCookie = ""
 	return backend
-}
-
-func preserveWorkflowTodayReward(value any, existingAccountJSON string) {
-	output, ok := value.(map[string]any)
-	if !ok {
-		return
-	}
-	todayReward, ok := workflowOutputNumber(output["today_reward"])
-	if !ok || todayReward != 0 {
-		return
-	}
-	account := decodeJSONMap(existingAccountJSON)
-	var previousZero float64
-	hasPreviousZero := false
-	for _, field := range []string{"today_reward", "last_checkin_reward"} {
-		previous, ok := workflowOutputNumber(account[field])
-		if !ok {
-			continue
-		}
-		if previous != 0 {
-			output["today_reward"] = previous
-			return
-		}
-		if !hasPreviousZero {
-			previousZero = previous
-			hasPreviousZero = true
-		}
-	}
-	if hasPreviousZero {
-		output["today_reward"] = previousZero
-	}
 }
 
 func applyWorkflowOutputToBackend(backend domain.Backend, value any, focusPatterns string) (domain.Backend, error) {

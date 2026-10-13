@@ -229,16 +229,16 @@ func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 
 	mode.Store(3)
 	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/execute-workflow/execute", executeBody)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"today_reward":123.25`) {
-		t.Fatalf("zero workflow reward did not preserve previous value: status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"today_reward":0`) {
+		t.Fatalf("zero workflow reward was not returned: status=%d body=%s", response.Code, response.Body.String())
 	}
 	updatedBackend, err = st.GetBackend(context.Background(), backend.ID)
 	if err != nil {
 		t.Fatalf("get backend after zero reward workflow: %v", err)
 	}
 	account = decodeJSONMap(updatedBackend.ConsoleAccountJSON)
-	if account["today_reward"] != 123.25 {
-		t.Fatalf("zero workflow reward overwrote account value: %s", updatedBackend.ConsoleAccountJSON)
+	if account["today_reward"] != 0.0 {
+		t.Fatalf("zero workflow reward was not persisted: %s", updatedBackend.ConsoleAccountJSON)
 	}
 
 	mode.Store(4)
