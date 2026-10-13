@@ -639,6 +639,25 @@ func (s *Store) MarkBackendSuccess(ctx context.Context, backendID int64) (domain
 	return s.GetBackend(ctx, backendID)
 }
 
+// SetBackendHealthStatus applies an automatic health-check result immediately.
+// Unlike request failure tracking, this is intentionally not thresholded.
+func (s *Store) SetBackendHealthStatus(ctx context.Context, backendID int64, healthy bool) (domain.Backend, error) {
+	status := domain.BackendStatusDisabled
+	if healthy {
+		status = domain.BackendStatusNormal
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE backends
+		SET status = ?, updated_at = ?
+		WHERE id = ?
+	`, status, formatTime(now), backendID)
+	if err != nil {
+		return domain.Backend{}, err
+	}
+	return s.GetBackend(ctx, backendID)
+}
+
 func (s *Store) MarkBackendFailure(ctx context.Context, backendID int64, threshold int, cooldown time.Duration, now time.Time) (domain.Backend, error) {
 	backend, err := s.GetBackend(ctx, backendID)
 	if err != nil {

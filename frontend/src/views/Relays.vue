@@ -47,6 +47,7 @@ import {
   type SocksProxyResponse
 } from '../api/backends'
 import { listWorkflows, type WorkflowRecord } from '../api/workflows'
+import { getConfig, updateConfig } from '../api/config'
 import type { Relay, RelayKey, RelayModel, PlatformType } from '../types'
 
 const search = ref('')
@@ -85,6 +86,7 @@ const saving = ref(false)
 const syncingAll = ref(false)
 const busyIds = ref<Set<string>>(new Set())
 const cookieBusyIds = ref<Set<string>>(new Set())
+const healthCheckBackendIDs = ref<number[]>([])
 
 function setBusy(id: string, busy: boolean) {
   const next = new Set(busyIds.value)
@@ -616,6 +618,7 @@ const form = ref<{
   consoleCheckinWorkflowId: string
   manualCheckin: boolean
   frozen: boolean
+  healthCheck: boolean
   tagsInput: string
   proxyId: string
   weight: number
@@ -633,6 +636,7 @@ const form = ref<{
   consoleCheckinWorkflowId: '',
   manualCheckin: false,
   frozen: false,
+  healthCheck: false,
   tagsInput: '',
   proxyId: '',
   weight: 10,
@@ -666,7 +670,7 @@ function resetForm() {
     name: '', url: '', protocol: 'openai', consoleUrl: '', username: '', password: '',
     userId: '', consoleRefreshToken: '',
     consoleHeaders: '',
-    consoleCheckinWorkflowId: '', manualCheckin: false, frozen: false, tagsInput: '',
+    consoleCheckinWorkflowId: '', manualCheckin: false, frozen: false, healthCheck: false, tagsInput: '',
     proxyId: '', weight: 10, keys: []
   }
 }
@@ -694,6 +698,7 @@ function openEditRelay(r: RelayView) {
     consoleCheckinWorkflowId: r.raw.console_checkin_workflow_id || '',
     manualCheckin: Boolean(r.raw.manual_checkin),
     frozen: Boolean(r.raw.frozen),
+    healthCheck: healthCheckBackendIDs.value.includes(Number(r.id)),
     tagsInput: (r.raw.tags || []).join(', '),
     proxyId: r.proxyId,
     weight: numberValue(r.raw.weight) || 10,
@@ -783,6 +788,11 @@ async function saveRelay() {
     if (backend.frozen !== payload.frozen) {
       throw new Error('服务端未正确保存冻结状态，请确认后端已更新并重启')
     }
+    const healthIDs = new Set(healthCheckBackendIDs.value)
+    if (form.value.healthCheck) healthIDs.add(backend.id)
+    else healthIDs.delete(backend.id)
+    const config = await updateConfig({ health_check_backends: [...healthIDs].sort((a, b) => a - b).join(',') })
+    healthCheckBackendIDs.value = config.health_check_backends.split(',').map(Number).filter(id => id > 0)
     upsertRelay(backend)
     toast(isEditing.value ? '中转站已更新' : '中转站已创建', backend.name, 'success')
     showForm.value = false
@@ -822,8 +832,9 @@ async function loadData() {
   loading.value = true
   loadError.value = ''
   try {
-    const [backendPage, proxyPage, workflowPage] = await Promise.all([listBackends(), listSocksProxies(), listWorkflows()])
+    const [backendPage, proxyPage, workflowPage, config] = await Promise.all([listBackends(), listSocksProxies(), listWorkflows(), getConfig()])
     relays.value = backendPage.items.map(mapBackend)
+    healthCheckBackendIDs.value = config.health_check_backends.split(',').map(Number).filter(id => id > 0)
     proxyOptions.value = proxyPage.items
     workflowOptions.value = workflowPage.items
   } catch (error) {
@@ -1095,34 +1106,51 @@ onMounted(loadData)
                 <option v-for="wf in workflowOptions" :key="wf.id" :value="wf.id">{{ wf.id }} · {{ wf.name }}</option>
               </select>
             </div>
-            <div class="field manual-checkin-field">
-              <label class="field-label">手工签到</label>
-              <div class="manual-checkin-control">
-                <button
-                  type="button"
-                  class="switch"
-                  :class="{ on: form.manualCheckin }"
-                  role="switch"
-                  :aria-checked="form.manualCheckin"
-                  title="手工签到"
-                  @click="form.manualCheckin = !form.manualCheckin"
-                ></button>
-                <span>{{ form.manualCheckin ? '启用' : '关闭' }}</span>
+            <div class="checkin-switch-group">
+              <div class="field manual-checkin-field">
+                <label class="field-label">手工签到</label>
+                <div class="manual-checkin-control">
+                  <button
+                    type="button"
+                    class="switch"
+                    :class="{ on: form.manualCheckin }"
+                    role="switch"
+                    :aria-checked="form.manualCheckin"
+                    title="手工签到"
+                    @click="form.manualCheckin = !form.manualCheckin"
+                  ></button>
+                  <span>{{ form.manualCheckin ? '启用' : '关闭' }}</span>
+                </div>
               </div>
-            </div>
-            <div class="field manual-checkin-field">
-              <label class="field-label">冻结</label>
-              <div class="manual-checkin-control">
-                <button
-                  type="button"
-                  class="switch"
-                  :class="{ on: form.frozen }"
-                  role="switch"
-                  :aria-checked="form.frozen"
-                  title="冻结中转站"
-                  @click="form.frozen = !form.frozen"
-                ></button>
-                <span>{{ form.frozen ? '冻结' : '正常' }}</span>
+              <div class="field manual-checkin-field">
+                <label class="field-label">冻结</label>
+                <div class="manual-checkin-control">
+                  <button
+                    type="button"
+                    class="switch"
+                    :class="{ on: form.frozen }"
+                    role="switch"
+                    :aria-checked="form.frozen"
+                    title="冻结中转站"
+                    @click="form.frozen = !form.frozen"
+                  ></button>
+                  <span>{{ form.frozen ? '冻结' : '正常' }}</span>
+                </div>
+              </div>
+              <div class="field manual-checkin-field">
+                <label class="field-label">测活</label>
+                <div class="manual-checkin-control">
+                  <button
+                    type="button"
+                    class="switch"
+                    :class="{ on: form.healthCheck }"
+                    role="switch"
+                    :aria-checked="form.healthCheck"
+                    title="自动测活此中转站"
+                    @click="form.healthCheck = !form.healthCheck"
+                  ></button>
+                  <span>{{ form.healthCheck ? '启用' : '关闭' }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -1617,8 +1645,9 @@ onMounted(loadData)
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .identity-config-row,
 .server-config-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.checkin-config-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(140px, 1fr) minmax(140px, 1fr); gap: 8px; }
+.checkin-config-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .checkin-config-row { align-items: end; }
+.checkin-switch-group { min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .manual-checkin-field { min-width: 0; }
 .manual-checkin-control { min-height: 34px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
 .manual-checkin-control .switch { padding: 0; }
@@ -1666,5 +1695,7 @@ onMounted(loadData)
   .form-grid-2,
   .identity-config-row,
   .server-config-row { grid-template-columns: 1fr; }
+  .checkin-config-row { grid-template-columns: 1fr; }
+  .checkin-switch-group { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 </style>

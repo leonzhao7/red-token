@@ -23,6 +23,8 @@ type Config struct {
 	ConnectTimeout          time.Duration
 	RequestTimeout          time.Duration
 	ShutdownTimeout         time.Duration
+	HealthCheckInterval     time.Duration
+	HealthCheckBackends     string
 }
 
 func Load() Config {
@@ -38,6 +40,8 @@ func Load() Config {
 		ConnectTimeout:          getDuration("RT_CONNECT_TIMEOUT", 10*time.Second),
 		RequestTimeout:          getDuration("RT_REQUEST_TIMEOUT", 120*time.Second),
 		ShutdownTimeout:         getDuration("RT_SHUTDOWN_TIMEOUT", 30*time.Second),
+		HealthCheckInterval:     getDuration("RT_HEALTH_CHECK_INTERVAL", 5*time.Minute),
+		HealthCheckBackends:     getenv("RT_HEALTH_CHECK_BACKENDS", ""),
 	}
 }
 
@@ -78,6 +82,14 @@ func LoadDatabase(ctx context.Context, st *store.Store) (Config, error) {
 	}
 	if cdpAddress, ok := settings["cdp_address"]; ok {
 		cfg.ChromeCDPEndpoint = cdpAddress
+	}
+	if interval, ok := settings["health_check_interval"]; ok {
+		if d, err := time.ParseDuration(interval); err == nil {
+			cfg.HealthCheckInterval = d
+		}
+	}
+	if backends, ok := settings["health_check_backends"]; ok {
+		cfg.HealthCheckBackends = backends
 	}
 	return cfg, nil
 }

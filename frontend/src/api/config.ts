@@ -12,6 +12,8 @@ export interface ConfigResponse {
   request_timeout: string
   shutdown_timeout: string
   cdp_address: string
+  health_check_interval: string
+  health_check_backends: string
 }
 
 class ApiError extends Error {

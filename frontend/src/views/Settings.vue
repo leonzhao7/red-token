@@ -13,6 +13,7 @@ import {
 } from 'lucide-vue-next'
 import { toast } from '../composables/toast'
 import { getConfig, updateConfig, reloadConfig } from '../api/config'
+import { listBackends } from '../api/backends'
 import type { ConfigResponse } from '../api/config'
 
 const activeSection = ref<'request' | 'relay' | 'log'>('request')
@@ -38,8 +39,14 @@ const form = reactive<EditableConfig>({
   focus_models: '',
   connect_timeout: '10s',
   request_timeout: '2m',
-  cdp_address: ''
+  cdp_address: '',
+  health_check_interval: '5m',
+  health_check_backends: ''
 })
+
+const backends = ref<Array<{ id: number; name: string }>>([])
+const healthBackendIDs = computed(() => form.health_check_backends.split(',').map(v => Number(v.trim())).filter(v => Number.isFinite(v) && v > 0))
+const healthBackends = computed(() => backends.value.filter(backend => healthBackendIDs.value.includes(backend.id)))
 
 const focusModelInput = ref('')
 const focusModelTags = computed(() =>
@@ -65,6 +72,8 @@ async function loadData() {
   loadError.value = ''
   try {
     const cfg = await getConfig()
+    const backendResp = await listBackends()
+    backends.value = backendResp.items.map(item => ({ id: item.id, name: item.name }))
     form.log_level = cfg.log_level
     form.backend_cooldown = cfg.backend_cooldown
     form.backend_fails = cfg.backend_fails
@@ -73,6 +82,8 @@ async function loadData() {
     form.connect_timeout = cfg.connect_timeout
     form.request_timeout = cfg.request_timeout
     form.cdp_address = cfg.cdp_address
+    form.health_check_interval = cfg.health_check_interval
+    form.health_check_backends = cfg.health_check_backends
   } catch (e: any) {
     loadError.value = e?.message || '加载配置失败'
   } finally {
@@ -92,6 +103,8 @@ async function save() {
     form.connect_timeout = cfg.connect_timeout
     form.request_timeout = cfg.request_timeout
     form.cdp_address = cfg.cdp_address
+    form.health_check_interval = cfg.health_check_interval
+    form.health_check_backends = cfg.health_check_backends
     toast('配置已保存', '日志级别立即生效，其他字段已更新', 'success')
   } catch (e: any) {
     toast('保存失败', e?.message || '', 'error')
@@ -197,6 +210,19 @@ onMounted(loadData)
               <label class="field-label">冷却时长</label>
               <input v-model="form.backend_cooldown" class="input mono" placeholder="20m" />
               <span class="field-hint">Go Duration 格式，例如 20m、1h；不可用中转站经过该时长后自动尝试恢复</span>
+            </div>
+            <div class="field">
+              <label class="field-label">自动测活间隔</label>
+              <input v-model="form.health_check_interval" class="input mono" placeholder="如 5m、1h" />
+              <span class="field-hint">按此间隔重发已保存的请求包；没有请求包的中转站会跳过</span>
+            </div>
+            <div class="field">
+              <label class="field-label">自动测活中转站</label>
+              <div class="watch-tags">
+                <span v-for="backend in healthBackends" :key="backend.id" class="tag">{{ backend.name }}</span>
+                <span v-if="!healthBackends.length" class="watch-empty">尚未配置测活中转站</span>
+              </div>
+              <span class="field-hint">请在“中转站”页面编辑中转站，在“冻结”后面的“测活”开关中配置</span>
             </div>
             <div class="field">
               <label class="field-label">CDP 地址</label>

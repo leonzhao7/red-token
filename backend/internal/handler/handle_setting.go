@@ -42,6 +42,8 @@ func (a *SettingHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request)
 		"request_timeout":            getSettingOrDefault(settings, "request_timeout", a.cfg.RequestTimeout.String()),
 		"shutdown_timeout":           getSettingOrDefault(settings, "shutdown_timeout", a.cfg.ShutdownTimeout.String()),
 		"cdp_address":                getSettingOrDefault(settings, "cdp_address", a.cfg.ChromeCDPEndpoint),
+		"health_check_interval":      getSettingOrDefault(settings, "health_check_interval", a.cfg.HealthCheckInterval.String()),
+		"health_check_backends":      getSettingOrDefault(settings, "health_check_backends", a.cfg.HealthCheckBackends),
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -111,6 +113,13 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	if interval, ok := payload["health_check_interval"]; ok {
+		if d, err := time.ParseDuration(interval); err != nil || d <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid health_check_interval duration")
+			return
+		}
+	}
+
 	// Save to database
 	if err := a.store.SetSettings(r.Context(), payload); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -157,6 +166,14 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 
 	if cdpAddress, ok := payload["cdp_address"]; ok {
 		a.cfg.ChromeCDPEndpoint = strings.TrimSpace(cdpAddress)
+	}
+	if interval, ok := payload["health_check_interval"]; ok {
+		if d, err := time.ParseDuration(interval); err == nil {
+			a.cfg.HealthCheckInterval = d
+		}
+	}
+	if backends, ok := payload["health_check_backends"]; ok {
+		a.cfg.HealthCheckBackends = strings.TrimSpace(backends)
 	}
 
 	if keys := sortedSettingKeys(payload); len(keys) > 0 {
@@ -218,6 +235,14 @@ func (a *SettingHandler) HandleReloadConfig(w http.ResponseWriter, r *http.Reque
 
 	if cdpAddress, ok := settings["cdp_address"]; ok && isValidCDPAddress(cdpAddress) {
 		a.cfg.ChromeCDPEndpoint = strings.TrimSpace(cdpAddress)
+	}
+	if interval, ok := settings["health_check_interval"]; ok {
+		if d, err := time.ParseDuration(interval); err == nil {
+			a.cfg.HealthCheckInterval = d
+		}
+	}
+	if backends, ok := settings["health_check_backends"]; ok {
+		a.cfg.HealthCheckBackends = strings.TrimSpace(backends)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})

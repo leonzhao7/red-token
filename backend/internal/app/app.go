@@ -160,8 +160,7 @@ func (a *App) Handler() http.Handler {
 }
 
 func (a *App) StartBackground(ctx context.Context) {
-	// Intentionally empty. Red Token does not automatically probe upstream
-	// backends; runtime state is derived from real proxied requests only.
+	go a.runHealthChecks(ctx)
 }
 
 func (a *App) routes() {
@@ -469,6 +468,17 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		// Save the already transformed exchange. requestBody may contain a mapped
+		// model, and exchange.RequestBody may additionally contain a cross-protocol
+		// conversion; this is the exact body that will be sent upstream.
+		a.saveHealthRequest(
+			r.Context(), backend.ID,
+			r.Method,
+			exchange.UpstreamPath,
+			r.URL.RawQuery,
+			r.Header,
+			exchange.RequestBody,
+		)
 		a.logEvent(r.Context(), slog.LevelInfo, "backend_request_started", append(append(clientAttrs(client),
 			backendAttemptAttrs(backend, attempt)...),
 			slog.String("endpoint", endpoint),
