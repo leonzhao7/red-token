@@ -89,6 +89,35 @@ func TestDefaultAdminLoginGrantsAccess(t *testing.T) {
 	}
 }
 
+func TestDefaultAdminCannotBeDeletedByAnotherUser(t *testing.T) {
+	application := newTestApp(t)
+	adminCookie := login(t, application, "admin", "admin")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/api/users", strings.NewReader(`{"username":"secondary","password":"pass","enabled":true}`))
+	createReq.AddCookie(adminCookie)
+	createRec := httptest.NewRecorder()
+	application.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create secondary user = %d, want 201 (body %s)", createRec.Code, createRec.Body.String())
+	}
+
+	secondaryCookie := login(t, application, "secondary", "pass")
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/admin/api/users/1", nil)
+	deleteReq.AddCookie(secondaryCookie)
+	deleteRec := httptest.NewRecorder()
+	application.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusBadRequest {
+		t.Fatalf("delete default admin = %d, want 400 (body %s)", deleteRec.Code, deleteRec.Body.String())
+	}
+	if !strings.Contains(deleteRec.Body.String(), "默认管理员账号不能删除") {
+		t.Errorf("delete error = %s, want default-admin protection message", deleteRec.Body.String())
+	}
+
+	if got := login(t, application, "admin", "admin"); got == nil {
+		t.Fatal("default admin should remain available after attempted deletion")
+	}
+}
+
 func TestLoginRejectsWrongPassword(t *testing.T) {
 	application := newTestApp(t)
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/auth/login", strings.NewReader(`{"username":"admin","password":"nope"}`))

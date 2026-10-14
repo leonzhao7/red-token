@@ -231,6 +231,10 @@ func (a *UserHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "用户不存在")
 		return
 	}
+	if user.Username == store.DefaultUsername {
+		writeError(w, http.StatusBadRequest, "默认管理员账号不能删除")
+		return
+	}
 	if err := a.store.DeleteUser(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -30,6 +30,7 @@ const userInitial = computed(() => auth.user.value?.username.charAt(0).toUpperCa
 async function handleLogout() {
   showUserMenu.value = false
   await auth.logout()
+  await router.replace({ name: 'login' })
 }
 </script>
 
