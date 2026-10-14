@@ -35,9 +35,11 @@ type App struct {
 	socksProxyHandler *handler.ProxyHandler
 	settingHandler    *handler.SettingHandler
 	dashboardHandler  *handler.DashboardHandler
+	userHandler       *handler.UserHandler
 	scheduler         *scheduler.Service
 	proxy             *proxy.Service
 	mux               *http.ServeMux
+	adminMux          *http.ServeMux
 	logger            *slog.Logger
 }
 
@@ -137,9 +139,11 @@ func New(ctx context.Context, dbPath string) (*App, error) {
 		eventHandler:      handler.NewEventHandler(st),
 		clientKeyHandler:  handler.NewClientKeyHandler(st),
 		socksProxyHandler: handler.NewProxyHandler(st),
+		userHandler:       handler.NewUserHandler(st),
 		scheduler:         scheduler.New(st, cfg.BackendCooldown, cfg.BackendFails),
 		proxy:             proxy.New(cfg.ConnectTimeout, cfg.RequestTimeout),
 		mux:               http.NewServeMux(),
+		adminMux:          http.NewServeMux(),
 		logger:            slog.Default().With("component", "app"),
 	}
 	app.backendHandler.SetConfig(&app.cfg)
@@ -179,52 +183,70 @@ func (a *App) routes() {
 	a.mux.Handle("GET /v1/models", a.clientAuth(http.HandlerFunc(a.handlePublicModels)))
 	a.mux.Handle("/v1/", a.clientAuth(http.HandlerFunc(a.handleProxy)))
 
-	a.mux.Handle("GET /admin/api/overview", http.HandlerFunc(a.dashboardHandler.HandleOverview))
-	a.mux.Handle("GET /admin/api/dashboard/summary", http.HandlerFunc(a.dashboardHandler.HandleDashboardSummary))
-	a.mux.Handle("GET /admin/api/dashboard/usage", http.HandlerFunc(a.usageLogHandler.HandleDashboardUsage))
-	a.mux.Handle("GET /admin/api/dashboard/activity", http.HandlerFunc(a.dashboardHandler.HandleDashboardActivity))
-	a.mux.Handle("GET /admin/api/search", http.HandlerFunc(a.handleSearch))
-	a.mux.Handle("GET /admin/api/socks-proxies", http.HandlerFunc(a.socksProxyHandler.HandleListSocksProxies))
-	a.mux.Handle("GET /admin/api/socks-proxies/{id}/detail", http.HandlerFunc(a.socksProxyHandler.HandleSocksProxyDetail))
-	a.mux.Handle("POST /admin/api/socks-proxies", http.HandlerFunc(a.socksProxyHandler.HandleCreateSocksProxy))
-	a.mux.Handle("PUT /admin/api/socks-proxies/{id}", http.HandlerFunc(a.socksProxyHandler.HandleUpdateSocksProxy))
-	a.mux.Handle("DELETE /admin/api/socks-proxies/{id}", http.HandlerFunc(a.socksProxyHandler.HandleDeleteSocksProxy))
-	a.mux.Handle("GET /admin/api/backends", http.HandlerFunc(a.backendHandler.HandleListBackends))
-	a.mux.Handle("GET /admin/api/backends/export", http.HandlerFunc(a.backendHandler.HandleExportBackends))
-	a.mux.Handle("GET /admin/api/backends/{id}/detail", http.HandlerFunc(a.backendHandler.HandleBackendDetail))
-	a.mux.Handle("POST /admin/api/backends", http.HandlerFunc(a.backendHandler.HandleCreateBackend))
-	a.mux.Handle("POST /admin/api/backends/console/sync-summary", http.HandlerFunc(a.backendHandler.HandleBackendConsoleSyncSummary))
-	a.mux.Handle("POST /admin/api/backends/{id}/console/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleSync))
-	a.mux.Handle("POST /admin/api/backends/{id}/console/cookie/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCookieSync))
-	a.mux.Handle("POST /admin/api/backends/{id}/console/checkin", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCheckin))
-	a.mux.Handle("POST /admin/api/backends/import", http.HandlerFunc(a.backendHandler.HandleImportBackends))
-	a.mux.Handle("PUT /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleUpdateBackend))
-	a.mux.Handle("DELETE /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleDeleteBackend))
-	a.mux.Handle("GET /admin/api/workflows", http.HandlerFunc(a.workflowHandler.HandleListWorkflows))
-	a.mux.Handle("POST /admin/api/workflows", http.HandlerFunc(a.workflowHandler.HandleCreateWorkflow))
-	a.mux.Handle("GET /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleGetWorkflow))
-	a.mux.Handle("PUT /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleUpdateWorkflow))
-	a.mux.Handle("DELETE /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleDeleteWorkflow))
-	a.mux.Handle("POST /admin/api/workflows/{id}/execute", http.HandlerFunc(a.workflowHandler.HandleExecuteWorkflow))
-	a.mux.Handle("GET /admin/api/workflows/{id}/results/{backend_id}", http.HandlerFunc(a.workflowHandler.HandleGetWorkflowResult))
-	a.mux.Handle("GET /admin/api/client-keys", http.HandlerFunc(a.clientKeyHandler.HandleListClientKeys))
-	a.mux.Handle("GET /admin/api/client-keys/{id}/detail", http.HandlerFunc(a.clientKeyHandler.HandleClientKeyDetail))
-	a.mux.Handle("POST /admin/api/client-keys", http.HandlerFunc(a.clientKeyHandler.HandleCreateClientKey))
-	a.mux.Handle("PUT /admin/api/client-keys/{id}", http.HandlerFunc(a.clientKeyHandler.HandleUpdateClientKey))
-	a.mux.Handle("DELETE /admin/api/client-keys/{id}", http.HandlerFunc(a.clientKeyHandler.HandleDeleteClientKey))
-	a.mux.Handle("GET /admin/api/events", http.HandlerFunc(a.eventHandler.HandleListEvents))
-	a.mux.Handle("GET /admin/api/events/summary", http.HandlerFunc(a.eventHandler.HandleEventSummary))
-	a.mux.Handle("GET /admin/api/events/{id}", http.HandlerFunc(a.eventHandler.HandleEventDetail))
-	a.mux.Handle("DELETE /admin/api/events", http.HandlerFunc(a.eventHandler.HandleClearEvents))
-	a.mux.Handle("GET /admin/api/usage-logs", http.HandlerFunc(a.usageLogHandler.HandleListUsageLogs))
-	a.mux.Handle("GET /admin/api/usage-logs/stats", http.HandlerFunc(a.usageLogHandler.HandleUsageLogStats))
-	a.mux.Handle("GET /admin/api/backend-hourly-model-stats", http.HandlerFunc(a.backendHandler.HandleBackendHourlyModelStats))
-	a.mux.Handle("GET /admin/api/usage-logs/{id}", http.HandlerFunc(a.usageLogHandler.HandleGetUsageLog))
-	a.mux.Handle("GET /admin/api/usage-log-options", http.HandlerFunc(a.usageLogHandler.HandleUsageLogOptions))
-	a.mux.Handle("DELETE /admin/api/usage-logs", http.HandlerFunc(a.usageLogHandler.HandleClearUsageLogs))
-	a.mux.Handle("GET /admin/api/config", http.HandlerFunc(a.settingHandler.HandleGetConfig))
-	a.mux.Handle("PUT /admin/api/config", http.HandlerFunc(a.settingHandler.HandleUpdateConfig))
-	a.mux.Handle("POST /admin/api/config/reload", http.HandlerFunc(a.settingHandler.HandleReloadConfig))
+	// Login and logout must stay reachable without a session. These literal
+	// patterns are more specific than "/admin/api/", so they win over the
+	// session-gated mux below.
+	a.mux.Handle("POST /admin/api/auth/login", http.HandlerFunc(a.userHandler.HandleLogin))
+	a.mux.Handle("POST /admin/api/auth/logout", http.HandlerFunc(a.userHandler.HandleLogout))
+
+	// Everything else under /admin/api/ requires a session. Routing the whole
+	// subtree through the guard means a newly added admin route is protected
+	// by default rather than by remembering to wrap it.
+	a.mux.Handle("/admin/api/", a.userHandler.RequireSession(a.adminMux))
+
+	a.adminMux.Handle("GET /admin/api/auth/me", http.HandlerFunc(a.userHandler.HandleCurrentUser))
+	a.adminMux.Handle("GET /admin/api/users", http.HandlerFunc(a.userHandler.HandleListUsers))
+	a.adminMux.Handle("POST /admin/api/users", http.HandlerFunc(a.userHandler.HandleCreateUser))
+	a.adminMux.Handle("PUT /admin/api/users/{id}", http.HandlerFunc(a.userHandler.HandleUpdateUser))
+	a.adminMux.Handle("PUT /admin/api/users/{id}/password", http.HandlerFunc(a.userHandler.HandleUpdateUserPassword))
+	a.adminMux.Handle("DELETE /admin/api/users/{id}", http.HandlerFunc(a.userHandler.HandleDeleteUser))
+
+	a.adminMux.Handle("GET /admin/api/overview", http.HandlerFunc(a.dashboardHandler.HandleOverview))
+	a.adminMux.Handle("GET /admin/api/dashboard/summary", http.HandlerFunc(a.dashboardHandler.HandleDashboardSummary))
+	a.adminMux.Handle("GET /admin/api/dashboard/usage", http.HandlerFunc(a.usageLogHandler.HandleDashboardUsage))
+	a.adminMux.Handle("GET /admin/api/dashboard/activity", http.HandlerFunc(a.dashboardHandler.HandleDashboardActivity))
+	a.adminMux.Handle("GET /admin/api/search", http.HandlerFunc(a.handleSearch))
+	a.adminMux.Handle("GET /admin/api/socks-proxies", http.HandlerFunc(a.socksProxyHandler.HandleListSocksProxies))
+	a.adminMux.Handle("GET /admin/api/socks-proxies/{id}/detail", http.HandlerFunc(a.socksProxyHandler.HandleSocksProxyDetail))
+	a.adminMux.Handle("POST /admin/api/socks-proxies", http.HandlerFunc(a.socksProxyHandler.HandleCreateSocksProxy))
+	a.adminMux.Handle("PUT /admin/api/socks-proxies/{id}", http.HandlerFunc(a.socksProxyHandler.HandleUpdateSocksProxy))
+	a.adminMux.Handle("DELETE /admin/api/socks-proxies/{id}", http.HandlerFunc(a.socksProxyHandler.HandleDeleteSocksProxy))
+	a.adminMux.Handle("GET /admin/api/backends", http.HandlerFunc(a.backendHandler.HandleListBackends))
+	a.adminMux.Handle("GET /admin/api/backends/export", http.HandlerFunc(a.backendHandler.HandleExportBackends))
+	a.adminMux.Handle("GET /admin/api/backends/{id}/detail", http.HandlerFunc(a.backendHandler.HandleBackendDetail))
+	a.adminMux.Handle("POST /admin/api/backends", http.HandlerFunc(a.backendHandler.HandleCreateBackend))
+	a.adminMux.Handle("POST /admin/api/backends/console/sync-summary", http.HandlerFunc(a.backendHandler.HandleBackendConsoleSyncSummary))
+	a.adminMux.Handle("POST /admin/api/backends/{id}/console/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleSync))
+	a.adminMux.Handle("POST /admin/api/backends/{id}/console/cookie/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCookieSync))
+	a.adminMux.Handle("POST /admin/api/backends/{id}/console/checkin", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCheckin))
+	a.adminMux.Handle("POST /admin/api/backends/import", http.HandlerFunc(a.backendHandler.HandleImportBackends))
+	a.adminMux.Handle("PUT /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleUpdateBackend))
+	a.adminMux.Handle("DELETE /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleDeleteBackend))
+	a.adminMux.Handle("GET /admin/api/workflows", http.HandlerFunc(a.workflowHandler.HandleListWorkflows))
+	a.adminMux.Handle("POST /admin/api/workflows", http.HandlerFunc(a.workflowHandler.HandleCreateWorkflow))
+	a.adminMux.Handle("GET /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleGetWorkflow))
+	a.adminMux.Handle("PUT /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleUpdateWorkflow))
+	a.adminMux.Handle("DELETE /admin/api/workflows/{id}", http.HandlerFunc(a.workflowHandler.HandleDeleteWorkflow))
+	a.adminMux.Handle("POST /admin/api/workflows/{id}/execute", http.HandlerFunc(a.workflowHandler.HandleExecuteWorkflow))
+	a.adminMux.Handle("GET /admin/api/workflows/{id}/results/{backend_id}", http.HandlerFunc(a.workflowHandler.HandleGetWorkflowResult))
+	a.adminMux.Handle("GET /admin/api/client-keys", http.HandlerFunc(a.clientKeyHandler.HandleListClientKeys))
+	a.adminMux.Handle("GET /admin/api/client-keys/{id}/detail", http.HandlerFunc(a.clientKeyHandler.HandleClientKeyDetail))
+	a.adminMux.Handle("POST /admin/api/client-keys", http.HandlerFunc(a.clientKeyHandler.HandleCreateClientKey))
+	a.adminMux.Handle("PUT /admin/api/client-keys/{id}", http.HandlerFunc(a.clientKeyHandler.HandleUpdateClientKey))
+	a.adminMux.Handle("DELETE /admin/api/client-keys/{id}", http.HandlerFunc(a.clientKeyHandler.HandleDeleteClientKey))
+	a.adminMux.Handle("GET /admin/api/events", http.HandlerFunc(a.eventHandler.HandleListEvents))
+	a.adminMux.Handle("GET /admin/api/events/summary", http.HandlerFunc(a.eventHandler.HandleEventSummary))
+	a.adminMux.Handle("GET /admin/api/events/{id}", http.HandlerFunc(a.eventHandler.HandleEventDetail))
+	a.adminMux.Handle("DELETE /admin/api/events", http.HandlerFunc(a.eventHandler.HandleClearEvents))
+	a.adminMux.Handle("GET /admin/api/usage-logs", http.HandlerFunc(a.usageLogHandler.HandleListUsageLogs))
+	a.adminMux.Handle("GET /admin/api/usage-logs/stats", http.HandlerFunc(a.usageLogHandler.HandleUsageLogStats))
+	a.adminMux.Handle("GET /admin/api/backend-hourly-model-stats", http.HandlerFunc(a.backendHandler.HandleBackendHourlyModelStats))
+	a.adminMux.Handle("GET /admin/api/usage-logs/{id}", http.HandlerFunc(a.usageLogHandler.HandleGetUsageLog))
+	a.adminMux.Handle("GET /admin/api/usage-log-options", http.HandlerFunc(a.usageLogHandler.HandleUsageLogOptions))
+	a.adminMux.Handle("DELETE /admin/api/usage-logs", http.HandlerFunc(a.usageLogHandler.HandleClearUsageLogs))
+	a.adminMux.Handle("GET /admin/api/config", http.HandlerFunc(a.settingHandler.HandleGetConfig))
+	a.adminMux.Handle("PUT /admin/api/config", http.HandlerFunc(a.settingHandler.HandleUpdateConfig))
+	a.adminMux.Handle("POST /admin/api/config/reload", http.HandlerFunc(a.settingHandler.HandleReloadConfig))
 }
 
 func (a *App) handlePublicModels(w http.ResponseWriter, r *http.Request) {

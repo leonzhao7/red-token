@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useRoute } from 'vue-router'
-import { Moon, Sun, ChevronDown, Menu, Terminal } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { Moon, Sun, ChevronDown, Menu, Terminal, LogOut } from 'lucide-vue-next'
 import { useTheme } from '../composables/useTheme'
 import { toggleConsoleLog, consoleLogRows } from '../composables/consoleLog'
+import { useAuth } from '../composables/useAuth'
 
 const { theme, toggle } = useTheme()
 const route = useRoute()
+const router = useRouter()
+const auth = useAuth()
 const emit = defineEmits<{ toggleSidebar: [] }>()
 
 const title = computed(() => route.meta.title as string)
@@ -20,6 +23,14 @@ const clock = computed(() =>
 const date = computed(() =>
   now.value.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })
 )
+
+const showUserMenu = ref(false)
+const userInitial = computed(() => auth.user.value?.username.charAt(0).toUpperCase() || 'U')
+
+async function handleLogout() {
+  showUserMenu.value = false
+  await auth.logout()
+}
 </script>
 
 <template>
@@ -49,9 +60,21 @@ const date = computed(() =>
         <Sun v-else :size="16" />
       </button>
 
-      <div class="avatar-row">
-        <div class="avatar">NX</div>
+      <div class="avatar-row" @click="showUserMenu = !showUserMenu">
+        <div class="avatar">{{ userInitial }}</div>
         <ChevronDown :size="13" class="avatar-caret" />
+
+        <div v-if="showUserMenu" class="user-menu" @click.stop>
+          <div class="user-menu-header">
+            <div class="user-menu-name">{{ auth.user.value?.username }}</div>
+            <div v-if="auth.user.value?.is_default_password" class="user-menu-badge">使用默认密码</div>
+          </div>
+          <div class="user-menu-divider"></div>
+          <button class="user-menu-item" @click="handleLogout">
+            <LogOut :size="16" />
+            退出登录
+          </button>
+        </div>
       </div>
     </div>
   </header>
@@ -84,7 +107,7 @@ const date = computed(() =>
 .clock-time { font-size: 15px; font-weight: 700; color: var(--text); }
 .clock-date { font-size: 10.5px; color: var(--text-faint); }
 
-.avatar-row { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.avatar-row { display: flex; align-items: center; gap: 4px; cursor: pointer; position: relative; }
 .avatar {
   width: 34px;
   height: 34px;
@@ -99,6 +122,62 @@ const date = computed(() =>
   box-shadow: var(--glow-violet);
 }
 .avatar-caret { color: var(--text-faint); }
+
+.user-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 200px;
+  background: var(--glass-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.user-menu-header {
+  padding: 16px;
+}
+
+.user-menu-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.user-menu-badge {
+  font-size: 12px;
+  color: var(--warning);
+  background: var(--warning-dim);
+  padding: 2px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.user-menu-divider {
+  height: 1px;
+  background: var(--border);
+}
+
+.user-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s var(--ease-out);
+}
+
+.user-menu-item:hover {
+  background: var(--surface);
+}
 
 .terminal-btn { position: relative; }
 .terminal-dot {

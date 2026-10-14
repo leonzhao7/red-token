@@ -200,6 +200,24 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			value TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			last_login_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS user_sessions (
+			token_hash TEXT PRIMARY KEY,
+			user_id INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`,
 		`CREATE TABLE IF NOT EXISTS workflow_definitions (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -419,7 +437,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if err := st.EnsureDefaultUser(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ensure default user: %w", err)
+	}
+	return st, nil
 }
 
 func sqliteDSN(path string) string {

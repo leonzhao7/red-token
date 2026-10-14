@@ -1,3 +1,6 @@
+import { ApiError, apiBase, parseErrorMessage, handleUnauthorized, request } from './http'
+export { ApiError } from './http'
+
 export type BackendProtocol = 'openai' | 'anthropic' | 'both'
 export type BackendStatus = 'normal' | 'abnormal' | 'disabled'
 
@@ -123,41 +126,6 @@ export type BackendConsoleStreamEvent =
   | { type: 'complete'; response: BackendSyncResponse }
   | { type: 'error'; status?: number; message?: string; requests?: BackendConsoleRequestLog[] }
 
-const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-
-export class ApiError extends Error {
-  status: number
-
-  constructor(message: string, status: number) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-  }
-}
-
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  headers.set('Accept', 'application/json')
-  if (init.body != null) headers.set('Content-Type', 'application/json')
-
-  const response = await fetch(apiBase + path, { ...init, headers })
-  const contentType = response.headers.get('Content-Type') || ''
-  const payload = contentType.includes('application/json')
-    ? await response.json().catch(() => null)
-    : await response.text().catch(() => '')
-
-  if (!response.ok) {
-    const message =
-      payload && typeof payload === 'object' && 'error' in payload
-        ? String((payload as { error?: { message?: unknown } }).error?.message || response.statusText)
-        : typeof payload === 'string' && payload.trim()
-          ? payload.trim()
-          : response.statusText || `请求失败（${response.status}）`
-    throw new ApiError(message, response.status)
-  }
-
-  return payload as T
-}
 
 export function listBackends() {
   return request<PagedResponse<BackendResponse>>('/admin/api/backends?page=1&limit=10000')
@@ -222,17 +190,14 @@ export async function syncBackendStream(
 
   const response = await fetch(`${apiBase}/admin/api/backends/${id}/console/sync?${params}`, {
     method: 'POST',
-    headers: { Accept: 'application/x-ndjson' }
+    headers: { Accept: 'application/x-ndjson' },
+    credentials: 'include'
   })
 
   if (!response.ok) {
+    if (response.status === 401) handleUnauthorized(`/admin/api/backends/${id}/console/sync`)
     const text = await response.text().catch(() => '')
-    let message = response.statusText || `请求失败（${response.status}）`
-    try {
-      const json = JSON.parse(text)
-      if (json?.error?.message) message = json.error.message
-      else if (json?.error) message = String(json.error)
-    } catch {}
+    const message = await parseErrorMessage(response, text)
     throw new ApiError(message, response.status)
   }
 

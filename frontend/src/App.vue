@@ -1,27 +1,45 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { RouterView } from 'vue-router'
+import { ref, onMounted } from 'vue'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import AppSidebar from './components/AppSidebar.vue'
 import AppHeader from './components/AppHeader.vue'
 import ToastStack from './components/ToastStack.vue'
 import ConsoleLogPanel from './components/ConsoleLogPanel.vue'
+import { useAuth, installUnauthorizedHandler } from './composables/useAuth'
 
 const collapsed = ref(false)
+const route = useRoute()
+const router = useRouter()
+const auth = useAuth()
+
+// Install global 401 handler
+installUnauthorizedHandler(() => {
+  router.push({ name: 'login', query: { redirect: route.fullPath } })
+})
+
+onMounted(() => {
+  auth.check()
+})
 </script>
 
 <template>
-  <div class="aurora-layer">
+  <div v-if="!route.meta.public" class="aurora-layer">
     <span class="blob b1"></span>
     <span class="grain"></span>
   </div>
 
-  <AppSidebar :collapsed="collapsed" @toggle="collapsed = !collapsed" />
+  <AppSidebar v-if="!route.meta.public" :collapsed="collapsed" @toggle="collapsed = !collapsed" />
 
-  <div class="shell" :class="{ rail: collapsed }">
+  <div v-if="!route.meta.public" class="shell" :class="{ rail: collapsed }">
     <AppHeader @toggle-sidebar="collapsed = !collapsed" />
     <main class="main">
       <RouterView />
     </main>
+  </div>
+
+  <!-- Login page without sidebar/header -->
+  <div v-else>
+    <RouterView />
   </div>
 
   <ToastStack />

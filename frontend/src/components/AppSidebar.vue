@@ -11,7 +11,8 @@ import {
   Workflow,
   PanelLeftClose,
   PanelLeftOpen,
-  Activity
+  Activity,
+  Users
 } from 'lucide-vue-next'
 import { store } from '../store'
 
@@ -38,7 +39,8 @@ const groups = [
     label: '系统',
     items: [
       { to: '/settings', label: '系统配置', icon: Settings },
-      { to: '/settings/workflows', label: '工作流', icon: Workflow }
+      { to: '/settings/workflows', label: '工作流', icon: Workflow },
+      { to: '/settings/users', label: '用户管理', icon: Users }
     ]
   }
 ]

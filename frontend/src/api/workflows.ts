@@ -1,4 +1,4 @@
-const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+import { request } from './http'
 
 export interface WorkflowRequest {
   method: string
@@ -105,49 +105,6 @@ interface PagedResponse<T> {
   total: number
   page: number
   limit: number
-}
-
-class ApiError extends Error {
-  status: number
-  requests?: WorkflowRequestLog[]
-  debugLogs?: WorkflowDebugLog[]
-
-  constructor(message: string, status: number, requests?: WorkflowRequestLog[], debugLogs?: WorkflowDebugLog[]) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.requests = requests
-    this.debugLogs = debugLogs
-  }
-}
-
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  headers.set('Accept', 'application/json')
-  if (init.body != null) headers.set('Content-Type', 'application/json')
-  const response = await fetch(apiBase + path, { ...init, headers })
-  const ct = response.headers.get('Content-Type') || ''
-  const payload = ct.includes('application/json')
-    ? await response.json().catch(() => null)
-    : await response.text().catch(() => '')
-  if (!response.ok) {
-    const requests =
-      payload && typeof payload === 'object' && Array.isArray((payload as WorkflowExecuteError).requests)
-        ? (payload as WorkflowExecuteError).requests
-        : undefined
-    const debugLogs =
-      payload && typeof payload === 'object' && Array.isArray((payload as WorkflowExecuteError).debug_logs)
-        ? (payload as WorkflowExecuteError).debug_logs
-        : undefined
-    const message =
-      payload && typeof payload === 'object' && (payload as WorkflowExecuteError).error?.message
-        ? (payload as WorkflowExecuteError).error!.message!
-        : typeof payload === 'string' && payload.trim()
-          ? payload.trim()
-          : response.statusText || `请求失败（${response.status}）`
-    throw new ApiError(message, response.status, requests, debugLogs)
-  }
-  return payload as T
 }
 
 export function listWorkflows() {
