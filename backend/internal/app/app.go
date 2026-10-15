@@ -17,6 +17,7 @@ import (
 	"red-token/internal/proxy"
 	"red-token/internal/scheduler"
 	"red-token/internal/store"
+	"red-token/internal/web"
 )
 
 type ctxKey string
@@ -172,13 +173,7 @@ func (a *App) routes() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 
-	a.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
-	})
+	a.mux.Handle("/", web.Handler())
 
 	a.mux.Handle("GET /v1/models", a.clientAuth(http.HandlerFunc(a.handlePublicModels)))
 	a.mux.Handle("/v1/", a.clientAuth(http.HandlerFunc(a.handleProxy)))

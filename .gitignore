@@ -27,6 +27,8 @@ backend/dist/
 backend/*.exe
 backend/*.out
 backend/coverage.out
+/backend/internal/web/dist/*
+!/backend/internal/web/dist/index.html
 
 # Go workspace
 go.work

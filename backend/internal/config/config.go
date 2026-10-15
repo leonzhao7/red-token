@@ -13,6 +13,7 @@ const DefaultBackendConsoleUserAgent = "Red-Token/1.0"
 
 type Config struct {
 	ListenAddr              string
+	FrontendListenAddr      string
 	DBPath                  string
 	LogLevel                string
 	BackendCooldown         time.Duration
@@ -30,6 +31,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		ListenAddr:              getenv("RT_LISTEN_ADDR", ":4000"),
+		FrontendListenAddr:      getenv("RT_FRONTEND_LISTEN_ADDR", ":6174"),
 		DBPath:                  getenv("RT_DB_PATH", "./red-token.db"),
 		LogLevel:                getenv("RT_LOG_LEVEL", "info"),
 		BackendCooldown:         getDuration("RT_BACKEND_COOLDOWN", 20*time.Minute),
