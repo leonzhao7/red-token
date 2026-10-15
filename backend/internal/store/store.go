@@ -149,6 +149,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			query TEXT NOT NULL DEFAULT '',
 			endpoint TEXT NOT NULL DEFAULT '',
 			model TEXT NOT NULL DEFAULT '',
+			requested_model TEXT NOT NULL DEFAULT '',
 			backend_id INTEGER NOT NULL DEFAULT 0,
 			backend_name TEXT NOT NULL DEFAULT '',
 			proxy_id INTEGER NOT NULL DEFAULT 0,
@@ -404,6 +405,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}{
 		{name: "proxy_id", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "proxy_name", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "requested_model", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "status_family", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "trace_id", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "request_bytes", definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -438,6 +440,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 
 	st := &Store{db: db}
+	if err := st.migrateLegacyUsageLogModels(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate legacy usage log models: %w", err)
+	}
 	if err := st.EnsureDefaultUser(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ensure default user: %w", err)

@@ -387,6 +387,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 		slog.Int("body_bytes", len(body)),
 	)...)
 	usageLog.Model = model
+	usageLog.RequestedModel = model
 	usageLog.RequestBytes = int64(len(body))
 	usageLog.RequestBodyPreview, usageLog.PreviewTruncated = handler.PreviewText(body, 16*1024)
 
@@ -442,6 +443,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		upstreamModel := handler.MappedBackendModel(backend, model)
+		usageLog.Model = upstreamModel
 		requestBody := body
 		if upstreamModel != model {
 			requestBody, err = proxy.RewriteModel(body, upstreamModel)
@@ -725,6 +727,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 func resetAttemptUsageLog(log *domain.UsageLog, requestPreviewTruncated bool) {
 	log.StatusCode = 0
 	log.StatusFamily = ""
+	log.Model = log.RequestedModel
 	log.DurationMS = 0
 	log.ErrorMessage = ""
 	log.BackendID = 0

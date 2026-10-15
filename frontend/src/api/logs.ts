@@ -7,6 +7,7 @@ export interface UsageLog {
   created_at: string
   client_name: string
   model: string
+  requested_model?: string
   backend_name: string
   proxy_name?: string
   status_code: number

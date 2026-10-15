@@ -288,6 +288,10 @@ onMounted(() => {
                 <td :colspan="totalCols + 1">
                   <div class="detail-panel">
                     <div class="detail-row">
+                      <span class="detail-label">模型</span>
+                      <span class="detail-value mono">{{ l.requested_model || l.model || '—' }} >> {{ l.model || '—' }}</span>
+                    </div>
+                    <div class="detail-row">
                       <span class="detail-label">请求 ID</span>
                       <span class="detail-value mono">{{ l.request_id || '—' }}</span>
                     </div>

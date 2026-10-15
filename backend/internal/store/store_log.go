@@ -30,6 +30,12 @@ type UsageLogOptions struct {
 	Proxies    []string
 }
 
+type legacyUsageLogModel struct {
+	id        int64
+	backendID int64
+	model     string
+}
+
 type UsageLogStats struct {
 	Requests       int
 	Successes      int
@@ -52,10 +58,116 @@ func (s *Store) AppendFinalUsageLog(ctx context.Context, log domain.UsageLog) er
 	return s.appendUsageLog(ctx, log, true)
 }
 
+// migrateLegacyUsageLogModels upgrades logs written before model mappings were
+// tracked separately. It also rebuilds the materialized hourly model table so
+// the dashboard uses the same upstream model as the log list.
+func (s *Store) migrateLegacyUsageLogModels(ctx context.Context) error {
+	backends, err := s.ListBackends(ctx)
+	if err != nil {
+		return err
+	}
+	mappings := make(map[int64]map[string]string, len(backends))
+	for _, backend := range backends {
+		mapping := make(map[string]string, len(backend.ModelMapping))
+		for clientModel, upstreamModel := range backend.ModelMapping {
+			clientModel = strings.TrimSpace(clientModel)
+			upstreamModel = strings.TrimSpace(upstreamModel)
+			if clientModel != "" && upstreamModel != "" {
+				mapping[clientModel] = upstreamModel
+			}
+		}
+		mappings[backend.ID] = mapping
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, backend_id, model
+		FROM usage_logs
+		WHERE TRIM(requested_model) = '' AND TRIM(model) <> ''
+	`)
+	if err != nil {
+		return err
+	}
+	legacy := make([]legacyUsageLogModel, 0)
+	for rows.Next() {
+		var item legacyUsageLogModel
+		if err := rows.Scan(&item.id, &item.backendID, &item.model); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		legacy = append(legacy, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(legacy) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, item := range legacy {
+		requestedModel := strings.TrimSpace(item.model)
+		actualModel := requestedModel
+		if mapping := mappings[item.backendID]; mapping != nil {
+			if mapped := strings.TrimSpace(mapping[requestedModel]); mapped != "" {
+				actualModel = mapped
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `
+			UPDATE usage_logs
+			SET model = ?, requested_model = ?
+			WHERE id = ?
+		`, actualModel, requestedModel, item.id); err != nil {
+			return err
+		}
+	}
+
+	allRows, err := tx.QueryContext(ctx, `
+		SELECT id, request_id, client_id, client_name, client_token_prefix,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
+			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
+			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
+			preview_truncated, is_stream, created_at
+		FROM usage_logs
+	`)
+	if err != nil {
+		return err
+	}
+	logs := make([]domain.UsageLog, 0)
+	for allRows.Next() {
+		entry, scanErr := scanUsageLog(allRows)
+		if scanErr != nil {
+			_ = allRows.Close()
+			return scanErr
+		}
+		logs = append(logs, entry)
+	}
+	if err = allRows.Close(); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM backend_hourly_model_stats`); err != nil {
+		return err
+	}
+	for _, entry := range logs {
+		if err = upsertBackendHourlyModelStats(ctx, tx, entry, entry.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordClientStats bool) error {
 	createdAt := log.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
+	}
+	requestedModel := strings.TrimSpace(log.RequestedModel)
+	if requestedModel == "" {
+		requestedModel = strings.TrimSpace(log.Model)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -71,13 +183,21 @@ func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordC
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO usage_logs(
 			request_id, client_id, client_name, client_token_prefix,
-			method, path, query, endpoint, model, backend_id, backend_name, proxy_id, proxy_name,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
 			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
 		)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES(
+			?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?
+		)
 	`,
 		strings.TrimSpace(log.RequestID),
 		log.ClientID,
@@ -88,6 +208,7 @@ func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordC
 		strings.TrimSpace(log.Query),
 		strings.TrimSpace(log.Endpoint),
 		strings.TrimSpace(log.Model),
+		requestedModel,
 		log.BackendID,
 		log.BackendName,
 		log.ProxyID,
@@ -136,7 +257,7 @@ func (s *Store) CountUsageLogs(ctx context.Context) (int, error) {
 func (s *Store) GetUsageLog(ctx context.Context, id int64) (domain.UsageLog, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
-			method, path, query, endpoint, model, backend_id, backend_name, proxy_id, proxy_name,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
 			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
@@ -151,7 +272,7 @@ func (s *Store) UsageLogStats(ctx context.Context, filter UsageLogFilter) (Usage
 	where, args := usageLogFilterClause(filter)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
-			method, path, query, endpoint, model, backend_id, backend_name, proxy_id, proxy_name,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
 			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
@@ -238,7 +359,7 @@ func (s *Store) ListUsageLogsPageFiltered(ctx context.Context, filter UsageLogFi
 	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
-			method, path, query, endpoint, model, backend_id, backend_name, proxy_id, proxy_name,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
 			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
@@ -309,16 +430,26 @@ func (s *Store) UsageLogOptions(ctx context.Context) (UsageLogOptions, error) {
 		if name := strings.TrimSpace(backend.Name); name != "" {
 			backendSet[name] = struct{}{}
 		}
+		mappedClientModels := make(map[string]struct{}, len(backend.ModelMapping))
+		for clientModel, upstreamModel := range backend.ModelMapping {
+			clientModel = strings.TrimSpace(clientModel)
+			upstreamModel = strings.TrimSpace(upstreamModel)
+			if clientModel == "" {
+				continue
+			}
+			if upstreamModel == "" {
+				continue
+			}
+			mappedClientModels[clientModel] = struct{}{}
+			modelSet[upstreamModel] = struct{}{}
+		}
 		for _, model := range backend.Models {
 			model = strings.TrimSpace(model)
 			if model != "" {
+				if _, mapped := mappedClientModels[model]; mapped {
+					continue
+				}
 				modelSet[model] = struct{}{}
-			}
-		}
-		for clientModel := range backend.ModelMapping {
-			clientModel = strings.TrimSpace(clientModel)
-			if clientModel != "" {
-				modelSet[clientModel] = struct{}{}
 			}
 		}
 	}
@@ -372,8 +503,8 @@ func usageLogFilterClause(filter UsageLogFilter) (string, []any) {
 	}
 	if value := strings.TrimSpace(filter.Query); value != "" {
 		like := "%" + strings.ToLower(value) + "%"
-		clauses = append(clauses, `(lower(request_id) LIKE ? OR lower(trace_id) LIKE ? OR lower(path) LIKE ? OR lower(client_name) LIKE ? OR lower(model) LIKE ? OR lower(backend_name) LIKE ? OR lower(error_message) LIKE ?)`)
-		args = append(args, like, like, like, like, like, like, like)
+		clauses = append(clauses, `(lower(request_id) LIKE ? OR lower(trace_id) LIKE ? OR lower(path) LIKE ? OR lower(client_name) LIKE ? OR lower(model) LIKE ? OR lower(requested_model) LIKE ? OR lower(backend_name) LIKE ? OR lower(error_message) LIKE ?)`)
+		args = append(args, like, like, like, like, like, like, like, like)
 	}
 	if !filter.DateFrom.IsZero() {
 		clauses = append(clauses, `created_at >= ?`)
@@ -419,6 +550,7 @@ func scanUsageLog(s scanner) (domain.UsageLog, error) {
 		&entry.Query,
 		&entry.Endpoint,
 		&entry.Model,
+		&entry.RequestedModel,
 		&entry.BackendID,
 		&entry.BackendName,
 		&entry.ProxyID,
@@ -450,13 +582,16 @@ func scanUsageLog(s scanner) (domain.UsageLog, error) {
 	entry.PreviewTruncated = previewTruncated == 1
 	entry.IsStream = isStream == 1
 	entry.CreatedAt = parseTime(createdAt)
+	if entry.RequestedModel == "" {
+		entry.RequestedModel = entry.Model
+	}
 	return entry, nil
 }
 
 func (s *Store) listUsageLogsSince(ctx context.Context, since time.Time) ([]domain.UsageLog, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
-			method, path, query, endpoint, model, backend_id, backend_name, proxy_id, proxy_name,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
 			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
@@ -503,7 +638,7 @@ func (s *Store) listUsageLogsByColumn(ctx context.Context, column string, id int
 	limit = normalizeLimit(limit, 10, 100)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
-			method, path, query, endpoint, model, backend_id, backend_name, proxy_id, proxy_name,
+			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
 			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,

@@ -158,7 +158,8 @@ type UsageLog struct {
 	Path                string    `json:"path"`
 	Query               string    `json:"query"`
 	Endpoint            string    `json:"endpoint"`
-	Model               string    `json:"model"`
+	Model               string    `json:"model"`           // model sent to the selected backend
+	RequestedModel      string    `json:"requested_model"` // model supplied by the client
 	BackendID           int64     `json:"backend_id"`
 	BackendName         string    `json:"backend_name"`
 	ProxyID             int64     `json:"proxy_id"`

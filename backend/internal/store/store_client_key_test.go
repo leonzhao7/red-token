@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"red-token/internal/domain"
 )
@@ -98,5 +99,128 @@ func assertClientKeyUsageSummary(t *testing.T, st *Store, clientID int64, want C
 		got.InputTokensTotal != want.InputTokensTotal ||
 		got.OutputTokensTotal != want.OutputTokensTotal {
 		t.Fatalf("unexpected client key usage summary: got %+v, want %+v", got, want)
+	}
+}
+
+func TestUsageLogStoresActualAndRequestedModels(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "usage-models.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	entry := domain.UsageLog{
+		RequestID:      "request-models",
+		Model:          "provider-model",
+		RequestedModel: "client-model",
+		StatusCode:     200,
+	}
+	if err := st.AppendFinalUsageLog(ctx, entry); err != nil {
+		t.Fatalf("append usage log: %v", err)
+	}
+
+	logs, err := st.ListUsageLogsPage(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("list usage logs: %v", err)
+	}
+	if len(logs) != 1 || logs[0].Model != "provider-model" || logs[0].RequestedModel != "client-model" {
+		t.Fatalf("unexpected usage models: %+v", logs)
+	}
+
+	count, err := st.CountUsageLogsFiltered(ctx, UsageLogFilter{Model: "provider-model"})
+	if err != nil {
+		t.Fatalf("filter usage logs by actual model: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("actual model filter count = %d, want 1", count)
+	}
+}
+
+func TestBackendHourlyModelStatsUseActualModel(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "hourly-models.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	if err := st.AppendFinalUsageLog(ctx, domain.UsageLog{
+		Model:          "provider-model",
+		RequestedModel: "client-model",
+		BackendID:      42,
+		BackendName:    "relay",
+		StatusCode:     200,
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("append usage log: %v", err)
+	}
+
+	stats, err := st.ListBackendHourlyModelStats(ctx, BackendHourlyModelStatsFilter{Model: "provider-model"})
+	if err != nil {
+		t.Fatalf("list hourly model stats: %v", err)
+	}
+	if len(stats.Rows) != 1 || stats.Rows[0].Model != "provider-model" {
+		t.Fatalf("unexpected hourly model stats: %+v", stats.Rows)
+	}
+}
+
+func TestOpenMigratesLegacyUsageModelsForDashboardStats(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy-usage-models.db")
+	st, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	backend, err := st.CreateBackend(ctx, domain.Backend{
+		Name: "relay",
+		APIKeys: []domain.BackendAPIKey{{
+			APIKey:       "backend-key",
+			Models:       []string{"client-model"},
+			ModelMapping: map[string]string{"client-model": "provider-model"},
+		}},
+	})
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("create backend: %v", err)
+	}
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	_, err = st.db.ExecContext(ctx, `
+		INSERT INTO usage_logs(request_id, model, backend_id, backend_name, status_code, created_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+	`, "legacy-request", "client-model", backend.ID, backend.Name, 200, formatTime(createdAt))
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("insert legacy usage log: %v", err)
+	}
+	if _, err = st.db.ExecContext(ctx, `
+		INSERT INTO backend_hourly_model_stats(backend_id, backend_name, model, hour_start_utc, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+	`, backend.ID, backend.Name, "client-model", formatTime(createdAt.Truncate(time.Hour)), formatTime(createdAt), formatTime(createdAt)); err != nil {
+		_ = st.Close()
+		t.Fatalf("insert legacy hourly stats: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	st, err = Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	log, err := st.GetUsageLog(ctx, 1)
+	if err != nil {
+		t.Fatalf("load migrated usage log: %v", err)
+	}
+	if log.Model != "provider-model" || log.RequestedModel != "client-model" {
+		t.Fatalf("unexpected migrated usage models: %+v", log)
+	}
+	stats, err := st.ListBackendHourlyModelStats(ctx, BackendHourlyModelStatsFilter{Model: "provider-model"})
+	if err != nil {
+		t.Fatalf("load migrated hourly stats: %v", err)
+	}
+	if len(stats.Rows) != 1 || stats.Rows[0].Model != "provider-model" {
+		t.Fatalf("unexpected migrated hourly stats: %+v", stats.Rows)
 	}
 }

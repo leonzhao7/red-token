@@ -161,6 +161,7 @@ func (h *UsageLogHandler) HandleGetUsageLog(w http.ResponseWriter, r *http.Reque
 			"status_code":        entry.StatusCode,
 			"backend":            entry.BackendName,
 			"model":              entry.Model,
+			"requested_model":    entry.RequestedModel,
 			"input_tokens":       entry.InputTokens,
 			"output_tokens":      entry.OutputTokens,
 			"input_cache_tokens": entry.InputCacheTokens,
