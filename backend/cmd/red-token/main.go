@@ -45,7 +45,15 @@ func run() error {
 		server *http.Server
 	}{
 		{"backend", &http.Server{Addr: cfg.ListenAddr, Handler: application.Handler()}},
-		{"frontend", &http.Server{Addr: cfg.FrontendListenAddr, Handler: application.Handler()}},
+	}
+	// The frontend listener serves the embedded assets on a second port. During
+	// frontend development a Vite dev server owns that port instead, so it can
+	// be turned off rather than fighting over the address.
+	if frontendListenerEnabled(cfg.FrontendListenAddr) {
+		servers = append(servers, struct {
+			name   string
+			server *http.Server
+		}{"frontend", &http.Server{Addr: cfg.FrontendListenAddr, Handler: application.Handler()}})
 	}
 	serverErrors := make(chan error, len(servers))
 	for _, listener := range servers {
@@ -67,7 +75,11 @@ func run() error {
 	}()
 
 	slog.Info("backend_listening", "listen_addr", cfg.ListenAddr)
-	slog.Info("frontend_listening", "listen_addr", cfg.FrontendListenAddr)
+	if frontendListenerEnabled(cfg.FrontendListenAddr) {
+		slog.Info("frontend_listening", "listen_addr", cfg.FrontendListenAddr)
+	} else {
+		slog.Info("frontend_listener_disabled")
+	}
 	slog.Info("application_started",
 		"db_path", cfg.DBPath,
 		"log_level", cfg.LogLevel,
@@ -92,6 +104,17 @@ func run() error {
 		return serveErr
 	}
 	return shutdownErr
+}
+
+// frontendListenerEnabled reports whether the embedded frontend should be
+// served. An empty value, "off", "disabled" or "none" turns the listener off.
+func frontendListenerEnabled(addr string) bool {
+	switch strings.ToLower(strings.TrimSpace(addr)) {
+	case "", "off", "disabled", "none":
+		return false
+	default:
+		return true
+	}
 }
 
 func parseLogLevel(value string) slog.Level {

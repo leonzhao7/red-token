@@ -35,9 +35,10 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
-# Start Go backend
+# Start Go backend (only serving API on 4000, not frontend)
 echo "🔧 Starting Go backend on :4000..."
 export RT_LISTEN_ADDR="${RT_LISTEN_ADDR:-:4000}"
+export RT_FRONTEND_LISTEN_ADDR="${RT_FRONTEND_LISTEN_ADDR:-disabled}"
 export RT_DB_PATH="${RT_DB_PATH:-$ROOT_DIR/red-token.db}"
 export RT_LOG_LEVEL="${RT_LOG_LEVEL:-info}"
 export GOCACHE="${GOCACHE:-$ROOT_DIR/.gocache}"
@@ -50,8 +51,8 @@ BACKEND_PID=$!
 echo "⏳ Waiting for backend to start..."
 sleep 3
 
-# Start frontend dev server
-echo "🎨 Starting frontend dev server on :6174..."
+# Start frontend dev server (with proxy to backend)
+echo "🎨 Starting frontend dev server on :6174 (proxying API to localhost:4000)..."
 cd "$FRONTEND_DIR"
 npm run dev -- --port 6174 &
 FRONTEND_PID=$!

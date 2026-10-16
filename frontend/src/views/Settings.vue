@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import {
   Send,
   Server,
+  Shuffle,
   ScrollText,
   Save,
   RefreshCw,
@@ -16,11 +17,12 @@ import { getConfig, updateConfig, reloadConfig } from '../api/config'
 import { listBackends } from '../api/backends'
 import type { ConfigResponse } from '../api/config'
 
-const activeSection = ref<'request' | 'relay' | 'log'>('request')
+const activeSection = ref<'request' | 'relay' | 'scheduler' | 'log'>('request')
 
 const sections = [
   { id: 'request', label: '请求设置', icon: Send },
   { id: 'relay', label: '中转站', icon: Server },
+  { id: 'scheduler', label: '调度策略', icon: Shuffle },
   { id: 'log', label: '日志', icon: ScrollText }
 ] as const
 
@@ -41,7 +43,16 @@ const form = reactive<EditableConfig>({
   request_timeout: '2m',
   cdp_address: '',
   health_check_interval: '5m',
-  health_check_backends: ''
+  health_check_backends: '',
+  scheduler_user_isolation: 'true',
+  scheduler_user_affinity_ttl: '10m'
+})
+
+const userIsolation = computed({
+  get: () => form.scheduler_user_isolation === 'true',
+  set: (value: boolean) => {
+    form.scheduler_user_isolation = value ? 'true' : 'false'
+  }
 })
 
 const backends = ref<Array<{ id: number; name: string }>>([])
@@ -84,6 +95,8 @@ async function loadData() {
     form.cdp_address = cfg.cdp_address
     form.health_check_interval = cfg.health_check_interval
     form.health_check_backends = cfg.health_check_backends
+    form.scheduler_user_isolation = cfg.scheduler_user_isolation
+    form.scheduler_user_affinity_ttl = cfg.scheduler_user_affinity_ttl
   } catch (e: any) {
     loadError.value = e?.message || '加载配置失败'
   } finally {
@@ -105,6 +118,8 @@ async function save() {
     form.cdp_address = cfg.cdp_address
     form.health_check_interval = cfg.health_check_interval
     form.health_check_backends = cfg.health_check_backends
+    form.scheduler_user_isolation = cfg.scheduler_user_isolation
+    form.scheduler_user_affinity_ttl = cfg.scheduler_user_affinity_ttl
     toast('配置已保存', '日志级别立即生效，其他字段已更新', 'success')
   } catch (e: any) {
     toast('保存失败', e?.message || '', 'error')
@@ -252,6 +267,34 @@ onMounted(loadData)
           </div>
         </section>
 
+        <!-- 调度策略 -->
+        <section v-else-if="activeSection === 'scheduler'" class="panel content-panel">
+          <div class="panel-header">
+            <div class="panel-title"><Shuffle :size="16" /> 调度策略</div>
+            <div class="panel-sub">按用户分流到不同中转站</div>
+          </div>
+          <div class="panel-body">
+            <div class="field">
+              <label class="field-label toggle-row" @click="userIsolation = !userIsolation">
+                <span class="switch" :class="{ on: userIsolation }"></span>
+                用户分流
+              </label>
+              <span class="field-hint">
+                开启后按「客户端 IP + User-Agent」区分用户：不同用户请求同一模型时会被调度到不同的中转站；
+                只有在没有空闲中转站时，才会与其他用户共用同一个
+              </span>
+            </div>
+            <div class="field">
+              <label class="field-label">用户保持时长</label>
+              <input v-model="form.scheduler_user_affinity_ttl" class="input mono" placeholder="如 10m、1h" />
+              <span class="field-hint">
+                Go Duration 格式。用户最后一次请求后，其占用的中转站保留这么久；
+                超时后释放给其他用户。时长越长分流越稳定，可用中转站也被占用得越久
+              </span>
+            </div>
+          </div>
+        </section>
+
         <!-- 日志 -->
         <section v-else class="panel content-panel">
           <div class="panel-header">
@@ -317,6 +360,8 @@ onMounted(loadData)
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 12.5px; font-weight: 600; color: var(--text-soft); }
 .field-hint { font-size: 11.5px; color: var(--text-faint); }
+/* Lays the switch beside its label instead of letting the two overlap. */
+.toggle-row { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 
 .watch-input-row { display: flex; gap: 8px; }
 .watch-input-row .input { flex: 1; }

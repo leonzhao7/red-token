@@ -14,6 +14,8 @@ export interface ConfigResponse {
   cdp_address: string
   health_check_interval: string
   health_check_backends: string
+  scheduler_user_isolation: string
+  scheduler_user_affinity_ttl: string
 }
 
 export const getConfig = () => request<ConfigResponse>('/admin/api/config')

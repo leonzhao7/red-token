@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"red-token/internal/config"
 	"red-token/internal/domain"
 	"red-token/internal/store"
 )
@@ -19,23 +20,25 @@ type Selection struct {
 }
 
 type Service struct {
-	store           *store.Store
-	backendCooldown time.Duration
-	backendFails    int
+	store *store.Store
+	// cfg is the live configuration, so settings changed from the admin UI
+	// apply to the next selection instead of waiting for a restart.
+	cfg      *config.Config
+	affinity *userAffinity
 }
 
-func New(store *store.Store, backendCooldown time.Duration, backendFails int) *Service {
-	if backendFails < 1 {
-		backendFails = 1
-	}
+func New(store *store.Store, cfg *config.Config) *Service {
 	return &Service{
-		store:           store,
-		backendCooldown: backendCooldown,
-		backendFails:    backendFails,
+		store:    store,
+		cfg:      cfg,
+		affinity: newUserAffinity(),
 	}
 }
 
-func (s *Service) SelectBackend(ctx context.Context, endpoint, model string) (Selection, error) {
+// SelectBackend returns the failover-ordered candidates for a request. user is
+// the caller identity from UserKey; when user isolation is enabled, candidates
+// held by other users are pushed to the back of the chain.
+func (s *Service) SelectBackend(ctx context.Context, endpoint, model, user string) (Selection, error) {
 	_ = endpoint
 	if err := s.store.RecoverExpiredBackends(ctx, time.Now().UTC()); err != nil {
 		return Selection{}, err
@@ -73,7 +76,26 @@ func (s *Service) SelectBackend(ctx context.Context, endpoint, model string) (Se
 	if len(candidates) == 0 {
 		return Selection{}, ErrNoBackendAvailable
 	}
+	if s.cfg.SchedulerUserIsolation {
+		candidates = s.affinity.prioritize(strings.TrimSpace(model), user, candidates, s.affinityTTL(), time.Now())
+	}
 	return Selection{Candidates: candidates}, nil
+}
+
+// NoteBackendUsed records the backend that actually served the request so the
+// user stays on it next time instead of the candidate that failed.
+func (s *Service) NoteBackendUsed(model, user string, backendID int64) {
+	if !s.cfg.SchedulerUserIsolation || backendID <= 0 {
+		return
+	}
+	s.affinity.note(strings.TrimSpace(model), user, backendID, s.affinityTTL(), time.Now())
+}
+
+func (s *Service) affinityTTL() time.Duration {
+	if s.cfg.SchedulerUserAffinityTTL > 0 {
+		return s.cfg.SchedulerUserAffinityTTL
+	}
+	return config.DefaultSchedulerUserAffinityTTL
 }
 
 func (s *Service) MarkSuccess(ctx context.Context, backendID int64) error {
@@ -82,8 +104,15 @@ func (s *Service) MarkSuccess(ctx context.Context, backendID int64) error {
 }
 
 func (s *Service) MarkFailure(ctx context.Context, backendID int64, _ error) error {
-	_, err := s.store.MarkBackendFailure(ctx, backendID, s.backendFails, s.backendCooldown, time.Now().UTC())
+	_, err := s.store.MarkBackendFailure(ctx, backendID, s.backendFails(), s.cfg.BackendCooldown, time.Now().UTC())
 	return err
+}
+
+func (s *Service) backendFails() int {
+	if s.cfg.BackendFails < 1 {
+		return 1
+	}
+	return s.cfg.BackendFails
 }
 
 func supportsModel(patterns []string, model string) bool {

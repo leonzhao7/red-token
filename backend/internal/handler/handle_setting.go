@@ -31,19 +31,21 @@ func (a *SettingHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request)
 	}
 
 	response := map[string]any{
-		"listen_addr":                getSettingOrDefault(settings, "listen_addr", a.cfg.ListenAddr),
-		"db_path":                    getSettingOrDefault(settings, "db_path", a.cfg.DBPath),
-		"log_level":                  getSettingOrDefault(settings, "log_level", a.cfg.LogLevel),
-		"backend_cooldown":           getSettingOrDefault(settings, "backend_cooldown", a.cfg.BackendCooldown.String()),
-		"backend_fails":              getSettingOrDefault(settings, "backend_fails", fmt.Sprintf("%d", a.cfg.BackendFails)),
-		"backend_console_user_agent": getSettingOrDefault(settings, "backend_console_user_agent", a.cfg.BackendConsoleUserAgent),
-		"focus_models":               getSettingOrDefault(settings, "focus_models", a.cfg.FocusModels),
-		"connect_timeout":            getSettingOrDefault(settings, "connect_timeout", a.cfg.ConnectTimeout.String()),
-		"request_timeout":            getSettingOrDefault(settings, "request_timeout", a.cfg.RequestTimeout.String()),
-		"shutdown_timeout":           getSettingOrDefault(settings, "shutdown_timeout", a.cfg.ShutdownTimeout.String()),
-		"cdp_address":                getSettingOrDefault(settings, "cdp_address", a.cfg.ChromeCDPEndpoint),
-		"health_check_interval":      getSettingOrDefault(settings, "health_check_interval", a.cfg.HealthCheckInterval.String()),
-		"health_check_backends":      getSettingOrDefault(settings, "health_check_backends", a.cfg.HealthCheckBackends),
+		"listen_addr":                 getSettingOrDefault(settings, "listen_addr", a.cfg.ListenAddr),
+		"db_path":                     getSettingOrDefault(settings, "db_path", a.cfg.DBPath),
+		"log_level":                   getSettingOrDefault(settings, "log_level", a.cfg.LogLevel),
+		"backend_cooldown":            getSettingOrDefault(settings, "backend_cooldown", a.cfg.BackendCooldown.String()),
+		"backend_fails":               getSettingOrDefault(settings, "backend_fails", fmt.Sprintf("%d", a.cfg.BackendFails)),
+		"backend_console_user_agent":  getSettingOrDefault(settings, "backend_console_user_agent", a.cfg.BackendConsoleUserAgent),
+		"focus_models":                getSettingOrDefault(settings, "focus_models", a.cfg.FocusModels),
+		"connect_timeout":             getSettingOrDefault(settings, "connect_timeout", a.cfg.ConnectTimeout.String()),
+		"request_timeout":             getSettingOrDefault(settings, "request_timeout", a.cfg.RequestTimeout.String()),
+		"shutdown_timeout":            getSettingOrDefault(settings, "shutdown_timeout", a.cfg.ShutdownTimeout.String()),
+		"cdp_address":                 getSettingOrDefault(settings, "cdp_address", a.cfg.ChromeCDPEndpoint),
+		"health_check_interval":       getSettingOrDefault(settings, "health_check_interval", a.cfg.HealthCheckInterval.String()),
+		"health_check_backends":       getSettingOrDefault(settings, "health_check_backends", a.cfg.HealthCheckBackends),
+		"scheduler_user_isolation":    getSettingOrDefault(settings, "scheduler_user_isolation", strconv.FormatBool(a.cfg.SchedulerUserIsolation)),
+		"scheduler_user_affinity_ttl": getSettingOrDefault(settings, "scheduler_user_affinity_ttl", a.cfg.SchedulerUserAffinityTTL.String()),
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -120,6 +122,20 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	if isolation, ok := payload["scheduler_user_isolation"]; ok {
+		if _, err := strconv.ParseBool(strings.TrimSpace(isolation)); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid scheduler_user_isolation boolean")
+			return
+		}
+	}
+
+	if ttl, ok := payload["scheduler_user_affinity_ttl"]; ok {
+		if d, err := time.ParseDuration(ttl); err != nil || d <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid scheduler_user_affinity_ttl duration")
+			return
+		}
+	}
+
 	// Save to database
 	if err := a.store.SetSettings(r.Context(), payload); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -174,6 +190,16 @@ func (a *SettingHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reque
 	}
 	if backends, ok := payload["health_check_backends"]; ok {
 		a.cfg.HealthCheckBackends = strings.TrimSpace(backends)
+	}
+	if isolation, ok := payload["scheduler_user_isolation"]; ok {
+		if enabled, err := strconv.ParseBool(strings.TrimSpace(isolation)); err == nil {
+			a.cfg.SchedulerUserIsolation = enabled
+		}
+	}
+	if ttl, ok := payload["scheduler_user_affinity_ttl"]; ok {
+		if d, err := time.ParseDuration(ttl); err == nil && d > 0 {
+			a.cfg.SchedulerUserAffinityTTL = d
+		}
 	}
 
 	if keys := sortedSettingKeys(payload); len(keys) > 0 {
@@ -243,6 +269,16 @@ func (a *SettingHandler) HandleReloadConfig(w http.ResponseWriter, r *http.Reque
 	}
 	if backends, ok := settings["health_check_backends"]; ok {
 		a.cfg.HealthCheckBackends = strings.TrimSpace(backends)
+	}
+	if isolation, ok := settings["scheduler_user_isolation"]; ok {
+		if enabled, err := strconv.ParseBool(strings.TrimSpace(isolation)); err == nil {
+			a.cfg.SchedulerUserIsolation = enabled
+		}
+	}
+	if ttl, ok := settings["scheduler_user_affinity_ttl"]; ok {
+		if d, err := time.ParseDuration(ttl); err == nil && d > 0 {
+			a.cfg.SchedulerUserAffinityTTL = d
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})

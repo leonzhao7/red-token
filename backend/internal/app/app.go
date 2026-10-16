@@ -141,12 +141,12 @@ func New(ctx context.Context, dbPath string) (*App, error) {
 		clientKeyHandler:  handler.NewClientKeyHandler(st),
 		socksProxyHandler: handler.NewProxyHandler(st),
 		userHandler:       handler.NewUserHandler(st),
-		scheduler:         scheduler.New(st, cfg.BackendCooldown, cfg.BackendFails),
 		proxy:             proxy.New(cfg.ConnectTimeout, cfg.RequestTimeout),
 		mux:               http.NewServeMux(),
 		adminMux:          http.NewServeMux(),
 		logger:            slog.Default().With("component", "app"),
 	}
+	app.scheduler = scheduler.New(st, &app.cfg)
 	app.backendHandler.SetConfig(&app.cfg)
 	app.backendHandler.SetWorkflowHandler(app.workflowHandler)
 	app.workflowHandler.SetConfig(&app.cfg)
@@ -309,6 +309,10 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
+	requestClientIP := clientIP(r)
+	// Users are told apart by client IP and User-Agent so that two different
+	// callers of the same model are scheduled onto different backends.
+	schedulerUser := scheduler.UserKey(requestClientIP, r.UserAgent())
 	usageLog := domain.UsageLog{
 		RequestID:          requestIDFromContext(r.Context()),
 		TraceID:            requestIDFromContext(r.Context()),
@@ -318,7 +322,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Method:             r.Method,
 		Path:               r.URL.Path,
 		Query:              r.URL.RawQuery,
-		ClientIP:           clientIP(r),
+		ClientIP:           requestClientIP,
 		UserAgent:          r.UserAgent(),
 		RequestHeadersJSON: handler.MarshalHeaders(handler.RedactedHeaders(r.Header)),
 		CreatedAt:          startedAt.UTC(),
@@ -386,7 +390,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 	usageLog.RequestBytes = int64(len(body))
 	usageLog.RequestBodyPreview, usageLog.PreviewTruncated = handler.PreviewText(body, 16*1024)
 
-	selection, err := a.scheduler.SelectBackend(r.Context(), endpoint, model)
+	selection, err := a.scheduler.SelectBackend(r.Context(), endpoint, model, schedulerUser)
 	if err != nil {
 		if requestContextCanceled(r.Context(), err) {
 			a.finishCanceledProxyRequest(w, r, &usageLog, client, endpoint, model, nil, 0, err)
@@ -409,6 +413,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 	a.logEvent(r.Context(), slog.LevelInfo, "backend_selection_completed", append(clientAttrs(client),
 		slog.String("endpoint", endpoint),
 		slog.String("model", model),
+		slog.String("scheduler_user", schedulerUser),
 		slog.Int("candidate_count", len(selection.Candidates)),
 		slog.Any("candidate_backends", candidateNames(selection.Candidates)),
 	)...)
@@ -655,6 +660,7 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 		// Mark success or failure based on status code
 		if resp.StatusCode/100 == 2 {
 			_ = a.scheduler.MarkSuccess(r.Context(), backend.ID)
+			a.scheduler.NoteBackendUsed(model, schedulerUser, backend.ID)
 			usageLog.ErrorMessage = ""
 		} else {
 			_ = a.scheduler.MarkFailure(r.Context(), backend.ID, errors.New(resp.Status))

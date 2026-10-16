@@ -1681,7 +1681,9 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
   "backend_console_user_agent": "Red-Token/1.0",
   "focus_models": "",
   "request_timeout": "2m0s",
-  "shutdown_timeout": "30s"
+  "shutdown_timeout": "30s",
+  "scheduler_user_isolation": "true",
+  "scheduler_user_affinity_ttl": "10m0s"
 }
 ```
 
@@ -1715,12 +1717,14 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 | `backend_console_user_agent` | 去除首尾空格后非空、最多 512 字符且不能含 CR/LF |
 | `request_timeout` | Go Duration 格式 |
 | `shutdown_timeout` | Go Duration 格式 |
+| `scheduler_user_isolation` | 可被 Go `strconv.ParseBool` 解析，例如 `true`、`false` |
+| `scheduler_user_affinity_ttl` | Go Duration 格式且必须为正数，例如 `10m` |
 
 请求体使用字符串映射，因此未知键不会被 JSON 解码器拒绝，并会写入数据库，但获取配置接口不会返回未列出的键。
 
 响应 `200`：与获取配置接口格式相同，返回更新后的配置视图。
 
-运行时说明：`log_level` 会立即更新日志级别；其他字段会更新数据库和部分内存配置。监听地址、数据库路径和关闭超时需要重启才能实际改变进程行为；调度器和已创建的代理客户端也可能继续使用启动时参数，建议修改关键运行参数后重启服务。
+运行时说明：`log_level` 会立即更新日志级别；其他字段会更新数据库和部分内存配置。监听地址、数据库路径和关闭超时需要重启才能实际改变进程行为；已创建的代理客户端会继续使用启动时的连接与请求超时，建议修改这些参数后重启服务。调度器读取的是实时内存配置，`backend_fails`、`backend_cooldown` 与用户分流字段保存后对下一次调度立即生效。
 
 ### 11.3 重新加载配置
 
@@ -1736,6 +1740,8 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 - `backend_console_user_agent`
 - `focus_models`
 - `request_timeout`
+- `scheduler_user_isolation`
+- `scheduler_user_affinity_ttl`
 
 响应 `200`：
 
@@ -1745,7 +1751,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 }
 ```
 
-与更新接口相同，重新载入不重建调度器、HTTP 代理服务或监听中的 HTTP Server；需要完整生效时应重启进程。
+与更新接口相同，重新载入不重建 HTTP 代理服务或监听中的 HTTP Server；需要完整生效时应重启进程。调度相关字段（熔断次数、冷却时长、用户分流）读取的是同一份内存配置，保存或重新载入后对下一次调度立即生效。
 
 ## 12. 接口清单
 
