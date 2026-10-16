@@ -61,3 +61,4 @@ frontend/.env.local
 # ======================
 tmp/
 .gocache/
+health-check-requests/
