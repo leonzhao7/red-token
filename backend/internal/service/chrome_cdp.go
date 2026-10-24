@@ -25,7 +25,16 @@ import (
 
 const DefaultChromeCDPEndpoint = "http://127.0.0.1:9222"
 
-const chromeCDPOperationTimeout = 15 * time.Second
+// chromeCDPOperationTimeout bounds the whole credential read. It must stay
+// above chromeCDPReloadCapTimeout, or the reload window can never bind.
+const chromeCDPOperationTimeout = 30 * time.Second
+
+// chromeCDPReloadCapTimeout bounds the reload-and-sniff fallback in absolute
+// terms; chromeCDPReloadIdleTimeout exits early once the reloaded page goes
+// quiet, so most runs end long before the cap.
+const chromeCDPReloadCapTimeout = 25 * time.Second
+
+const chromeCDPReloadIdleTimeout = 8 * time.Second
 
 var defaultChromeCDPHTTPClient = newChromeCDPHTTPClient()
 
@@ -355,7 +364,7 @@ func (s *ChromeCDPCookieService) readCredentialsFromPageWebSocket(ctx context.Co
 }
 
 func (s *ChromeCDPCookieService) captureAuthorizationAfterReload(ctx context.Context, connection *cdpWebSocket, targetHost string) (string, error) {
-	reloadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	reloadCtx, cancel := context.WithTimeout(ctx, chromeCDPReloadCapTimeout)
 	defer cancel()
 	stopContext := closeWebSocketOnContext(reloadCtx, connection)
 	defer close(stopContext)
@@ -365,14 +374,28 @@ func (s *ChromeCDPCookieService) captureAuthorizationAfterReload(ctx context.Con
 	if err := writeCDPCommand(connection, 4, "Page.reload", map[string]any{"ignoreCache": false}); err != nil {
 		return "", fmt.Errorf("send Page.reload: %w", err)
 	}
+	idleDeadline := chromeCDPReloadIdleTimeout
+	lastActivity := time.Now()
 	for {
+		remaining := time.Until(lastActivity.Add(idleDeadline))
+		if remaining <= 0 {
+			return "", fmt.Errorf("no Authorization after %s idle", idleDeadline)
+		}
+		if err := connection.conn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
+			return "", fmt.Errorf("set read deadline: %w", err)
+		}
 		opcode, payload, err := connection.readFrame()
 		if err != nil {
 			if reloadCtx.Err() != nil {
 				return "", reloadCtx.Err()
 			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return "", fmt.Errorf("no Authorization after %s idle", idleDeadline)
+			}
 			return "", fmt.Errorf("read Chrome network event: %w", err)
 		}
+		lastActivity = time.Now()
 		switch opcode {
 		case 0x8:
 			return "", errors.New("Chrome closed the CDP WebSocket during reload")
