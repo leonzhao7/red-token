@@ -51,7 +51,7 @@ import { getConfig, updateConfig } from '../api/config'
 import type { Relay, RelayKey, RelayModel, PlatformType } from '../types'
 
 const search = ref('')
-type ModelFamily = 'gpt' | 'claude' | 'grok' | 'deepseek' | 'kimi'
+type ModelFamily = 'gpt' | 'claude' | 'grok' | 'deepseek' | 'glm' | 'kimi'
 const modelFilter = ref<'all' | ModelFamily>('all')
 const manualCheckinFilter = ref(false)
 const frozenFilter = ref(false)
@@ -62,6 +62,7 @@ const modelFamilies: Array<{ value: ModelFamily; keywords: string[] }> = [
   { value: 'claude', keywords: ['claude'] },
   { value: 'grok', keywords: ['grok'] },
   { value: 'deepseek', keywords: ['deepseek'] },
+  { value: 'glm', keywords: ['glm'] },
   { value: 'kimi', keywords: ['kimi', 'moonshot'] }
 ]
 
