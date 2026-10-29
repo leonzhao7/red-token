@@ -72,7 +72,7 @@ const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 const WORKFLOW_OUTPUT_REQUIRED_FIELDS = ['api_keys', 'models', 'quota', 'quota_unit', 'today_reward', 'used_quota', 'user_id', 'username']
-const WORKFLOW_OUTPUT_OPTIONAL_FIELDS = ['refresh_token', 'console_headers']
+const WORKFLOW_OUTPUT_OPTIONAL_FIELDS = ['console_headers']
 const WORKFLOW_OUTPUT_FIELDS = [...WORKFLOW_OUTPUT_REQUIRED_FIELDS, ...WORKFLOW_OUTPUT_OPTIONAL_FIELDS]
 
 const showForm = ref(false)

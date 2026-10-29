@@ -306,7 +306,6 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 			"password":       backend.ConsolePassword,
 			"user_id":        consoleStoredAccountID(backend),
 			"headers":        workflowRuntimeHeaders(headers),
-			"refresh_token":  backend.ConsoleRefreshToken,
 		},
 		Recorder:       recorder,
 		DebugLog:       debugLogs.Record,
@@ -326,9 +325,6 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 	}
 	if len(result.ResponseCookies) > 0 {
 		backend = workflowBackendWithResponseCookies(backend, result.ResponseCookies)
-	}
-	if result.OutputRefreshToken != nil {
-		backend.ConsoleRefreshToken = *result.OutputRefreshToken
 	}
 	if len(result.OutputConsoleHeaders) > 0 {
 		currentHeaders := service.ConsoleHeaders(backend)

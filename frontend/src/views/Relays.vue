@@ -1104,7 +1104,7 @@ onMounted(loadData)
               <label class="field-label">签到工作流</label>
               <select v-model="form.consoleCheckinWorkflowId" class="select">
                 <option value="">不启用签到</option>
-                <option v-for="wf in workflowOptions" :key="wf.id" :value="wf.id">{{ wf.id }} · {{ wf.name }}</option>
+                <option v-for="wf in workflowOptions" :key="wf.id" :value="wf.id">{{ wf.name }}</option>
               </select>
             </div>
             <div class="checkin-switch-group">
@@ -1157,8 +1157,8 @@ onMounted(loadData)
           </div>
 
           <div class="field">
-            <label class="field-label">标签 <em class="ke-hint">多个标签使用英文逗号分隔</em></label>
-            <input v-model="form.tagsInput" class="input" placeholder="生产, 主线路, 高优先级" />
+            <label class="field-label">Access Token</label>
+            <input v-model="form.consoleRefreshToken" class="input mono" placeholder="access_token_value" />
           </div>
 
           <div class="form-grid-2">
@@ -1187,8 +1187,8 @@ onMounted(loadData)
               <input v-model="form.userId" class="input mono" placeholder="user_123456" />
             </div>
             <div class="field">
-              <label class="field-label">Refresh Token</label>
-              <input v-model="form.consoleRefreshToken" class="input mono" placeholder="refresh_token_value" />
+              <label class="field-label">标签 <em class="ke-hint">多个标签使用英文逗号分隔</em></label>
+              <input v-model="form.tagsInput" class="input" placeholder="生产, 主线路, 高优先级" />
             </div>
           </div>
 

@@ -18,7 +18,6 @@ var checkinWorkflowOutputRequiredFields = map[string]struct{}{
 }
 
 var checkinWorkflowOutputOptionalFields = map[string]struct{}{
-	"refresh_token":   {},
 	"console_headers": {},
 }
 

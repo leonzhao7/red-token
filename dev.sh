@@ -42,7 +42,7 @@ export RT_FRONTEND_LISTEN_ADDR="${RT_FRONTEND_LISTEN_ADDR:-disabled}"
 export RT_DB_PATH="${RT_DB_PATH:-$ROOT_DIR/red-token.db}"
 export RT_LOG_LEVEL="${RT_LOG_LEVEL:-info}"
 export GOCACHE="${GOCACHE:-$ROOT_DIR/.gocache}"
-export GOMODCACHE="${GOMODCACHE:-/root/go/pkg/mod}"
+# export GOMODCACHE="${GOMODCACHE:-/root/go/pkg/mod}"
 mkdir -p "$GOCACHE"
 go -C backend run ./cmd/red-token &
 BACKEND_PID=$!

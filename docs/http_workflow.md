@@ -168,7 +168,6 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
   - `{{runtime#/password}}`: 后端密码
   - `{{runtime#/user_id}}`: 控制台账户 ID
   - `{{runtime#/headers}}`: 运行时请求头
-  - `{{runtime#/refresh_token}}`: 刷新令牌
   - `{{runtime#/backend_id}}`: 后端 ID
   - `{{runtime#/backend_name}}`: 后端名称
   - `{{runtime#/workflow_id}}`: 工作流 ID
@@ -251,7 +250,6 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
       "price_type": 0 | 1
     }
   ],
-  "refresh_token": "string",
   "console_headers": {
     "header-name": "value"
   }
@@ -271,7 +269,6 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 
 #### 可选字段
 
-- **refresh_token**: 刷新令牌，执行后更新到后端配置
 - **console_headers**: 控制台请求头，执行后合并到后端配置
 
 #### API Key 字段
@@ -312,8 +309,8 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 
 ### Output 特殊处理
 
-- **refresh_token** 和 **console_headers** 在验证前被提取并从 output 中移除
-- 执行成功后，这两个字段会更新到后端配置中
+- **console_headers** 在验证前被提取并从 output 中移除
+- 执行成功后，**console_headers** 会合并到后端配置中
 - 其余 output 字段会被保存为快照，并用于更新后端的配额、模型、API 密钥信息
 
 ## 执行流程
@@ -466,8 +463,7 @@ GET /admin/api/workflows/{id}/results/{backend_id}
 6. **利用全局 headers**: 避免在每个步骤重复定义通用 header
 7. **保持 output 简洁**: 只包含必要的业务数据
 8. **合理设置超时**: 根据后端响应时间调整客户端配置
-9. **处理 refresh_token**: 在需要时更新认证令牌
-10. **记录 console_headers**: 保存需要持久化的请求头
+9. **记录 console_headers**: 保存需要持久化的请求头
 
 ## 版本兼容性
 

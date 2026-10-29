@@ -187,7 +187,6 @@ type GeneralWorkflowResult struct {
 	Output               any               `json:"output"`
 	Aliases              map[string]any    `json:"aliases"`
 	ResponseCookies      []*http.Cookie    `json:"-"`
-	OutputRefreshToken   *string           `json:"-"`
 	OutputConsoleHeaders map[string]string `json:"-"`
 }
 
@@ -1170,20 +1169,9 @@ stepLoop:
 		Details: map[string]any{"output": generalWorkflowDebugValue("output", output)},
 	})
 
-	// Extract refresh_token and console_headers before validation
-	var outputRefreshToken *string
+	// Extract console_headers before validation
 	var outputConsoleHeaders map[string]string
 	if outputMap, ok := output.(map[string]any); ok {
-		if refreshToken, exists := outputMap["refresh_token"]; exists {
-			if refreshToken != nil {
-				if str, ok := refreshToken.(string); ok {
-					outputRefreshToken = &str
-				} else {
-					return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "extract output refresh_token", Err: fmt.Errorf("refresh_token must be a string, got %s", generalWorkflowJSONType(refreshToken))}
-				}
-			}
-			delete(outputMap, "refresh_token")
-		}
 		if consoleHeaders, exists := outputMap["console_headers"]; exists {
 			if consoleHeaders != nil {
 				if headersMap, ok := consoleHeaders.(map[string]any); ok {
@@ -1236,7 +1224,6 @@ stepLoop:
 	return GeneralWorkflowResult{
 		Output:               output,
 		Aliases:              resultAliases,
-		OutputRefreshToken:   outputRefreshToken,
 		OutputConsoleHeaders: outputConsoleHeaders,
 	}, nil
 }
@@ -1286,11 +1273,10 @@ func generalWorkflowDebugValue(name string, value any) any {
 
 func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[string]any) (map[string]any, error) {
 	runtime := map[string]any{
-		"username":      "",
-		"password":      "",
-		"user_id":       "",
-		"headers":       map[string]any{},
-		"refresh_token": "",
+		"username": "",
+		"password": "",
+		"user_id":  "",
+		"headers":  map[string]any{},
 	}
 	if values != nil {
 		normalized, err := canonicalGeneralWorkflowJSON(values, "runtime")
