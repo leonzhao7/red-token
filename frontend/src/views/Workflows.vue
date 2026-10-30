@@ -845,18 +845,6 @@ onMounted(loadData)
                 <input v-model="st.id" class="input mono" placeholder="get_me" spellcheck="false" />
               </div>
               <div class="field">
-                <label class="field-label">Turnstile 验证</label>
-                <select v-model="st.turnstile" class="select">
-                  <option :value="false">关闭</option>
-                  <option :value="true">enable</option>
-                </select>
-                <span class="wf-hint">仅响应 body 包含 Turnstile 时触发</span>
-              </div>
-              <div v-if="st.turnstile" class="field">
-                <label class="field-label">Turnstile Key</label>
-                <input v-model="st.turnstilekey" class="input mono" placeholder="站点提供的 Turnstile sitekey" spellcheck="false" />
-              </div>
-              <div class="field">
                 <label class="field-label">请求 <em class="wf-hint">相对路径，支持引用</em></label>
                 <div class="wf-req-line">
                   <select v-model="st.method" class="select wf-method-select">
@@ -890,6 +878,26 @@ onMounted(loadData)
             <details class="wf-adv">
               <summary class="wf-adv-summary"><ChevronRight :size="14" class="wf-adv-arrow" /> 高级设置</summary>
               <div class="wf-adv-body">
+                <div class="wf-turnstile-line">
+                  <div class="field">
+                    <label class="field-label">Turnstile 验证</label>
+                    <select v-model="st.turnstile" class="select">
+                      <option :value="false">关闭</option>
+                      <option :value="true">enable</option>
+                    </select>
+                    <span class="wf-hint">仅响应 body 包含 Turnstile 时触发</span>
+                  </div>
+                  <div class="field">
+                    <label class="field-label">Turnstile Key</label>
+                    <input
+                      v-model="st.turnstilekey"
+                      class="input mono"
+                      placeholder="站点提供的 Turnstile sitekey"
+                      spellcheck="false"
+                      :disabled="!st.turnstile"
+                    />
+                  </div>
+                </div>
                 <div class="field">
                   <label class="field-label">Foreach <em class="wf-hint">对数组 alias 逐项执行</em></label>
                   <div class="wf-foreach-line">
@@ -1203,6 +1211,8 @@ onMounted(loadData)
 .wf-adv-body { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; }
 .wf-adv-body .field { margin-bottom: 0; }
 .wf-adv-body .wf-sec-head.sub { margin: 2px 0 7px; }
+.wf-turnstile-line { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wf-turnstile-line > .field { min-width: 0; }
 
 .wf-body, .wf-output { min-height: 90px; font-size: 12px; line-height: 1.55; background: var(--bg-soft); tab-size: 2; }
 .wf-output { min-height: 180px; }
@@ -1228,6 +1238,7 @@ onMounted(loadData)
   .wf-sec-title { white-space: nowrap; }
   .wf-foreach-line { grid-template-columns: 1fr; }
   .wf-foreach-line .wf-goto-arrow { display: none; }
+  .wf-turnstile-line { grid-template-columns: 1fr; }
   .wf-row { flex-wrap: wrap; }
 }
 </style>
