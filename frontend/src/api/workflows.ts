@@ -35,6 +35,7 @@ export interface WorkflowForeach {
 
 export interface WorkflowStep {
   id: string
+  turnstile?: 'enable'
   foreach?: WorkflowForeach
   request: WorkflowRequest
   expect?: string | WorkflowExpect

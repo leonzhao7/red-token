@@ -45,6 +45,7 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 ```json
 {
   "id": "step-id",
+  "turnstile": "enable",
   "foreach": {},
   "request": {},
   "expect": {},
@@ -52,6 +53,8 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
   "extract": []
 }
 ```
+
+- **turnstile**: 可选，填写 `"enable"` 后启用该步骤的 Turnstile 回退；缺省时关闭。
 
 ### 请求定义 (request)
 
@@ -325,6 +328,7 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
   "steps": [
     {
       "id": "checkin",
+      "turnstile": "enable",
       "request": {
         "method": "POST",
         "path": "/api/user/checkin"
@@ -354,7 +358,7 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 4. **输出渲染**: 使用最终别名变量渲染 output 模板
 5. **持久化**: 验证并保存 output，更新后端配置
 
-如果签到请求的响应文本包含 `turnstile`，服务端会使用系统设置中的 `cdp_address` 连接 Chrome，通过 CDP 在控制台页面中完成 Turnstile 验证，再将 token 同时加入原请求的 URL 参数和 JSON body 重试。CDP 地址不可用、页面验证失败或无法获取 token 时，签到直接失败。
+只有步骤配置了 `"turnstile": "enable"` 且该步骤响应文本包含 `turnstile` 时，服务端才会使用系统设置中的 `cdp_address` 连接 Chrome，通过 CDP 在控制台页面中完成 Turnstile 验证，再将 token 同时加入原请求的 URL 参数和 JSON body 重试。CDP 地址不可用、页面验证失败或无法获取 token 时，签到直接失败。
 
 ### 控制流
 

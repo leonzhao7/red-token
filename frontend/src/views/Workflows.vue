@@ -53,6 +53,7 @@ interface ExpectRouteRow {
 }
 interface StepForm {
   id: string
+  turnstile: boolean
   foreachAlias: string
   foreachAs: string
   foreachIndexAs: string
@@ -90,6 +91,7 @@ function freshForm() {
 function emptyStep(): StepForm {
   return {
     id: '',
+    turnstile: false,
     foreachAlias: '',
     foreachAs: '',
     foreachIndexAs: '',
@@ -241,6 +243,7 @@ function defToForm(def: WorkflowDefinition) {
   form.headers = objToKv(def.headers)
   form.steps = def.steps.map((step) => ({
     id: step.id,
+    turnstile: step.turnstile === 'enable',
     foreachAlias: step.foreach?.alias || '',
     foreachAs: step.foreach?.as || '',
     foreachIndexAs: step.foreach?.index_as || '',
@@ -583,6 +586,7 @@ function formToDef(): WorkflowDefinition {
       id: st.id.trim(),
       request: request as WorkflowStep['request']
     }
+    if (st.turnstile) step.turnstile = 'enable'
     const foreachAlias = st.foreachAlias.trim()
     const foreachAs = st.foreachAs.trim()
     const foreachIndexAs = st.foreachIndexAs.trim()
@@ -832,6 +836,14 @@ onMounted(loadData)
               <div class="field">
                 <label class="field-label">步骤 ID</label>
                 <input v-model="st.id" class="input mono" placeholder="get_me" spellcheck="false" />
+              </div>
+              <div class="field">
+                <label class="field-label">Turnstile 验证</label>
+                <select v-model="st.turnstile" class="select">
+                  <option :value="false">关闭</option>
+                  <option :value="true">enable</option>
+                </select>
+                <span class="wf-hint">仅响应 body 包含 Turnstile 时触发</span>
               </div>
               <div class="field">
                 <label class="field-label">请求 <em class="wf-hint">相对路径，支持引用</em></label>

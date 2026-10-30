@@ -158,6 +158,7 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
   "name":"Turnstile trigger",
   "steps":[{
     "id":"checkin",
+    "turnstile":"enable",
     "request":{"method":"POST","path":"/api/checkin","body":{"action":"checkin"}},
     "expect":"$response.status == 200",
     "extract":[{"alias":"message","expression":".message"}]

@@ -80,12 +80,13 @@ type GeneralWorkflowDefinition struct {
 }
 
 type GeneralWorkflowStep struct {
-	ID      string                      `json:"id"`
-	Foreach *GeneralWorkflowForeach     `json:"foreach,omitempty"`
-	Request GeneralWorkflowRequest      `json:"request"`
-	Expect  *GeneralWorkflowExpect      `json:"expect,omitempty"`
-	Extract []GeneralWorkflowExtraction `json:"extract,omitempty"`
-	When    *GeneralWorkflowWhen        `json:"when,omitempty"`
+	ID        string                      `json:"id"`
+	Turnstile string                      `json:"turnstile,omitempty"`
+	Foreach   *GeneralWorkflowForeach     `json:"foreach,omitempty"`
+	Request   GeneralWorkflowRequest      `json:"request"`
+	Expect    *GeneralWorkflowExpect      `json:"expect,omitempty"`
+	Extract   []GeneralWorkflowExtraction `json:"extract,omitempty"`
+	When      *GeneralWorkflowWhen        `json:"when,omitempty"`
 }
 
 type GeneralWorkflowForeach struct {
@@ -434,6 +435,15 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 				return err
 			}
 		}
+		if turnstile, exists := step["turnstile"]; exists {
+			value, ok := turnstile.(string)
+			if !ok {
+				return fmt.Errorf("%s/turnstile must be a string", path)
+			}
+			if value != "enable" {
+				return fmt.Errorf("%s/turnstile must be \"enable\" when configured", path)
+			}
+		}
 		if foreachValue, exists := step["foreach"]; exists {
 			foreach, ok := foreachValue.(map[string]any)
 			if !ok {
@@ -629,6 +639,9 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: duplicate step id %q", index, step.ID)
 		}
 		stepIDs[step.ID] = index
+		if step.Turnstile != "" && step.Turnstile != "enable" {
+			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstile must be \"enable\" when configured", index)
+		}
 		if step.Foreach != nil {
 			if definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: foreach requires spec %q or later", index, GeneralWorkflowSpecV3)
@@ -1046,7 +1059,7 @@ stepLoop:
 			if err != nil {
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "request", Err: iterationError(err)}
 			}
-			if options.TurnstileSolver != nil && generalWorkflowTurnstileRequired(response) {
+			if options.TurnstileSolver != nil && step.definition.Turnstile == "enable" && generalWorkflowTurnstileRequired(response) {
 				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "warn", "turnstile", "upstream requested Turnstile verification", withIteration(map[string]any{
 					"response_status": generalWorkflowResponseStatus(response),
 				}), time.Since(requestStartedAt).Milliseconds()))
