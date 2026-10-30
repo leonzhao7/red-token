@@ -86,6 +86,76 @@ func TestWorkflowHandlerCRUDAndValidation(t *testing.T) {
 	}
 }
 
+func TestWorkflowHandlerPersistsAndExecutesGlobalVariables(t *testing.T) {
+	st := openWorkflowHandlerStore(t)
+	backend, err := st.CreateBackend(context.Background(), domain.Backend{
+		Name: "variable-backend", BaseURL: "https://api.example.com", ConsoleURL: "https://console.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWorkflowHandler(st)
+	var requestDate string
+	handler.SetHTTPClient(&http.Client{Transport: workflowRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestDate = request.URL.Query().Get("date")
+		if request.URL.Path != "/snapshot" || request.URL.Query().Get("month") != "2026-04" || requestDate == "" || request.Header.Get("X-Date") != requestDate {
+			t.Fatalf("unexpected templated request: %s headers=%v", request.URL, request.Header)
+		}
+		if request.Header.Get("X-Bonus") != "4" {
+			t.Fatalf("initial alias did not override the global variable: %v", request.Header)
+		}
+		body := `{"user_id":"u1","username":"alice","quota":10,"quota_unit":"USD","used_quota":0,"today_reward":2,"api_keys":[],"models":[]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})})
+	mux := workflowTestMux(handler)
+	definition, err := service.ParseGeneralWorkflow([]byte(workflowTestDefinition("workflow-variables")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.Spec = service.GeneralWorkflowSpecV5
+	definition.Variables = map[string]any{
+		"month": "{{runtime#/year_month}}", "date": "{{runtime#/date}}", "bonus": 1,
+		"request_path": "/snapshot?month={{month}}&date={{date}}",
+	}
+	definition.Headers = map[string]any{"X-Date": "{{date}}"}
+	definition.Steps[0].Request.Path = "{{request_path}}"
+	definition.Steps[0].Request.Headers = map[string]any{"X-Bonus": "{{bonus}}"}
+	for index := range definition.Steps[0].Extract {
+		if definition.Steps[0].Extract[index].Alias == "today_reward" {
+			definition.Steps[0].Extract[index].Expression = ".today_reward + {{bonus}}"
+		}
+	}
+	encoded, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows", string(encoded))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create variable workflow: %d %s", response.Code, response.Body.String())
+	}
+	response = workflowRequest(t, mux, http.MethodGet, "/admin/api/workflows/workflow-variables", "")
+	var stored struct {
+		Definition service.GeneralWorkflowDefinition `json:"definition"`
+	}
+	decodeWorkflowResponse(t, response, &stored)
+	if response.Code != http.StatusOK || stored.Definition.Variables["date"] != "{{runtime#/date}}" || stored.Definition.Steps[0].Request.Path != "{{request_path}}" {
+		t.Fatalf("variables did not survive persistence: %s", response.Body.String())
+	}
+	response = workflowRequest(t, mux, http.MethodPost, "/admin/api/workflows/workflow-variables/execute",
+		`{"backend_id":`+jsonInt64(backend.ID)+`,"aliases":{"month":"2026-04","bonus":4}}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("execute variable workflow: %d %s", response.Code, response.Body.String())
+	}
+	var execution struct {
+		Output  map[string]any `json:"output"`
+		Aliases map[string]any `json:"aliases"`
+	}
+	decodeWorkflowResponse(t, response, &execution)
+	if execution.Output["today_reward"] != float64(6) || execution.Aliases["month"] != "2026-04" || execution.Aliases["date"] != requestDate {
+		t.Fatalf("unexpected variable output: %+v", execution)
+	}
+}
+
 func TestWorkflowHandlerExecutePersistsOnlySuccessfulOutput(t *testing.T) {
 	var mode atomic.Int32
 	var received atomic.Bool

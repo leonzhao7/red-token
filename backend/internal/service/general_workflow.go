@@ -71,12 +71,13 @@ var (
 // docs/http_workflow.md. Output and request bodies remain raw so JSON null can
 // be distinguished from an omitted field.
 type GeneralWorkflowDefinition struct {
-	Spec    string                `json:"spec"`
-	ID      string                `json:"id"`
-	Name    string                `json:"name"`
-	Headers map[string]any        `json:"headers,omitempty"`
-	Steps   []GeneralWorkflowStep `json:"steps"`
-	Output  json.RawMessage       `json:"output"`
+	Spec      string                `json:"spec"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Variables map[string]any        `json:"variables,omitempty"`
+	Headers   map[string]any        `json:"headers,omitempty"`
+	Steps     []GeneralWorkflowStep `json:"steps"`
+	Output    json.RawMessage       `json:"output"`
 }
 
 type GeneralWorkflowStep struct {
@@ -248,16 +249,17 @@ func (e *GeneralWorkflowError) Unwrap() error { return e.Err }
 
 type compiledGeneralWorkflow struct {
 	definition GeneralWorkflowDefinition
+	variables  map[string]any
 	steps      []compiledGeneralWorkflowStep
 	output     any
 }
 
 type compiledGeneralWorkflowStep struct {
 	definition       GeneralWorkflowStep
-	expect           *gojq.Code
+	expect           *compiledGeneralWorkflowJQ
 	expectRoutes     map[int]compiledGeneralWorkflowStatusRoute
 	acceptedStatuses map[int]struct{}
-	when             *gojq.Code
+	when             *compiledGeneralWorkflowJQ
 	whenGotoIndex    int
 	extract          []compiledGeneralWorkflowExtraction
 }
@@ -269,7 +271,12 @@ type compiledGeneralWorkflowStatusRoute struct {
 
 type compiledGeneralWorkflowExtraction struct {
 	definition GeneralWorkflowExtraction
+	code       *compiledGeneralWorkflowJQ
+}
+
+type compiledGeneralWorkflowJQ struct {
 	code       *gojq.Code
+	references []generalWorkflowTemplateReference
 }
 
 type renderedGeneralWorkflowRequest struct {
@@ -420,6 +427,11 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 	}
 	if _, exists := root["output"]; !exists {
 		return errors.New("$/output is required")
+	}
+	if variables, exists := root["variables"]; exists {
+		if _, ok := variables.(map[string]any); !ok {
+			return errors.New("$/variables must be an object")
+		}
 	}
 	if headers, exists := root["headers"]; exists {
 		if _, ok := headers.(map[string]any); !ok {
@@ -626,6 +638,15 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 	if len(definition.Output) == 0 {
 		return compiledGeneralWorkflow{}, errors.New("workflow output is required")
 	}
+	variables, err := normalizeGeneralWorkflowAliases(definition.Variables)
+	if err != nil {
+		return compiledGeneralWorkflow{}, fmt.Errorf("validate workflow variables: %w", err)
+	}
+	for _, name := range sortedGeneralWorkflowKeys(variables) {
+		if err := validateGeneralWorkflowTemplate(variables[name]); err != nil {
+			return compiledGeneralWorkflow{}, fmt.Errorf("validate workflow variable %q template: %w", name, err)
+		}
+	}
 	if definition.Headers != nil {
 		if definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
 			return compiledGeneralWorkflow{}, fmt.Errorf("workflow headers require spec %q or higher", GeneralWorkflowSpecV4)
@@ -648,6 +669,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 
 	compiled := compiledGeneralWorkflow{
 		definition: definition,
+		variables:  variables,
 		steps:      make([]compiledGeneralWorkflowStep, 0, len(definition.Steps)),
 		output:     output,
 	}
@@ -665,6 +687,14 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		}
 		if step.Turnstile == "enable" && strings.TrimSpace(step.TurnstileKey) == "" {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstilekey is required when turnstile is enabled", index)
+		}
+		if step.Turnstile == "enable" {
+			if strings.HasPrefix(strings.TrimSpace(step.TurnstileKey), "$vars.") {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstilekey uses template references such as {{alias}}; $vars.name is only valid in jq expressions", index)
+			}
+			if err := validateGeneralWorkflowTemplate(step.TurnstileKey); err != nil {
+				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstilekey template: %w", index, err)
+			}
 		}
 		if step.Turnstile != "enable" && step.TurnstileKey != "" {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstilekey requires turnstile to be \"enable\"", index)
@@ -706,7 +736,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] request headers template: %w", index, err)
 			}
 		}
-		var expect *gojq.Code
+		var expect *compiledGeneralWorkflowJQ
 		expectRoutes := make(map[int]compiledGeneralWorkflowStatusRoute)
 		if definition.Spec == GeneralWorkflowSpecV1 && step.Expect != nil && (len(step.Expect.Routes) > 0 || len(step.Expect.AcceptedStatuses) > 0) {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: structured expect requires spec %q", index, GeneralWorkflowSpecV2)
@@ -727,7 +757,7 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		} else if step.Expect != nil && len(step.Expect.Routes) == 0 && len(step.Expect.AcceptedStatuses) == 0 {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: expect requires routes or accepted_statuses", index)
 		}
-		var when *gojq.Code
+		var when *compiledGeneralWorkflowJQ
 		if step.When != nil {
 			if definition.Spec != GeneralWorkflowSpecV2 && definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
 				return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d]: when requires spec %q or later", index, GeneralWorkflowSpecV2)
@@ -852,19 +882,117 @@ func validateGeneralWorkflowAlias(alias string) error {
 	return nil
 }
 
-func compileGeneralWorkflowJQ(source string) (*gojq.Code, error) {
-	query, err := gojq.Parse(source)
+func compileGeneralWorkflowJQ(source string) (*compiledGeneralWorkflowJQ, error) {
+	// Bind template values as jq variables rather than interpolating executable
+	// source. This preserves JSON types and keeps every expression compilable
+	// (and subject to the forbidden-function checks) before HTTP requests start.
+	binding := "$__workflow_template_values"
+	for strings.Contains(source, binding) {
+		binding += "_"
+	}
+	rendered, references, err := rewriteGeneralWorkflowJQTemplate(source, binding)
+	if err != nil {
+		return nil, fmt.Errorf("jq template: %w", err)
+	}
+	query, err := gojq.Parse(rendered)
 	if err != nil {
 		return nil, fmt.Errorf("parse jq expression: %w", err)
 	}
 	if err := validateGeneralWorkflowJQ(query); err != nil {
 		return nil, err
 	}
-	code, err := gojq.Compile(query, gojq.WithVariables(generalWorkflowJQVariables))
+	variables := append([]string{}, generalWorkflowJQVariables...)
+	if len(references) > 0 {
+		variables = append(variables, binding)
+	}
+	code, err := gojq.Compile(query, gojq.WithVariables(variables))
 	if err != nil {
 		return nil, fmt.Errorf("compile jq expression: %w", err)
 	}
-	return code, nil
+	return &compiledGeneralWorkflowJQ{code: code, references: references}, nil
+}
+
+// rewriteGeneralWorkflowJQTemplate supports both typed references in jq code
+// and string interpolation inside jq strings, including existing \(...) code.
+func rewriteGeneralWorkflowJQTemplate(source, binding string) (string, []generalWorkflowTemplateReference, error) {
+	type scope struct {
+		inString bool
+		parens   int
+	}
+	scopes := []scope{{}}
+	var rendered strings.Builder
+	var references []generalWorkflowTemplateReference
+	inComment := false
+	for index := 0; index < len(source); {
+		current := &scopes[len(scopes)-1]
+		char := source[index]
+		if inComment {
+			rendered.WriteByte(char)
+			inComment = char != '\n'
+			index++
+			continue
+		}
+		escaped := char == '\\' && strings.HasPrefix(source[index+1:], "{{")
+		if escaped || strings.HasPrefix(source[index:], "{{") {
+			start := index
+			if escaped {
+				start++
+			}
+			endOffset := strings.Index(source[start+2:], "}}")
+			if endOffset < 0 {
+				return "", nil, errors.New("template reference is missing closing braces")
+			}
+			end := start + 2 + endOffset
+			reference, err := parseGeneralWorkflowReference(source[start+2 : end])
+			if err != nil {
+				return "", nil, err
+			}
+			if escaped {
+				rendered.WriteString(source[start : end+2])
+			} else {
+				if current.inString {
+					rendered.WriteByte('\\')
+				}
+				fmt.Fprintf(&rendered, "(%s[%d])", binding, len(references))
+				references = append(references, reference)
+			}
+			index = end + 2
+			continue
+		}
+		rendered.WriteByte(char)
+		index++
+		if current.inString {
+			switch char {
+			case '\\':
+				if index < len(source) {
+					next := source[index]
+					rendered.WriteByte(next)
+					index++
+					if next == '(' {
+						scopes = append(scopes, scope{})
+					}
+				}
+			case '"':
+				scopes = scopes[:len(scopes)-1]
+			}
+		} else {
+			switch char {
+			case '#':
+				inComment = true
+			case '"':
+				scopes = append(scopes, scope{inString: true})
+			case '(':
+				current.parens++
+			case ')':
+				if current.parens > 0 {
+					current.parens--
+				} else if len(scopes) > 1 {
+					scopes = scopes[:len(scopes)-1]
+				}
+			}
+		}
+	}
+	return rendered.String(), references, nil
 }
 
 func validateGeneralWorkflowJQ(query *gojq.Query) error {
@@ -971,6 +1099,9 @@ func (workflow *GeneralWorkflow) Execute(ctx context.Context, definition General
 	runtime, err := workflow.buildRuntime(compiled.definition.ID, options.Runtime)
 	if err != nil {
 		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "validate runtime", Err: err}
+	}
+	if err := initializeGeneralWorkflowVariables(compiled.variables, aliases, runtime); err != nil {
+		return GeneralWorkflowResult{}, &GeneralWorkflowError{Phase: "initialize variables", Err: err}
 	}
 	baseHeaders, err := normalizeGeneralWorkflowBaseHeaders(options.Headers)
 	if err != nil {
@@ -1094,10 +1225,20 @@ stepLoop:
 				if urlErr != nil {
 					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(urlErr)}
 				}
+				// Resolve the sitekey at execution time so a key extracted by an
+				// earlier step can be referenced as {{turnstile_key}}.
+				renderedSiteKey, keyErr := renderGeneralWorkflowTemplate(step.definition.TurnstileKey, generalWorkflowTemplateValues(iterationAliases, runtime))
+				if keyErr != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(fmt.Errorf("turnstilekey: %w", keyErr))}
+				}
+				siteKey, keyOK := renderedSiteKey.(string)
+				if !keyOK || strings.TrimSpace(siteKey) == "" {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(errors.New("turnstilekey rendered as an empty or non-string value"))}
+				}
 				turnstileResult, solveErr := options.TurnstileSolver(ctx, GeneralWorkflowTurnstileRequest{
 					Method:         request.method,
 					URL:            turnstileRequestURL.String(),
-					SiteKey:        step.definition.TurnstileKey,
+					SiteKey:        siteKey,
 					Headers:        request.headers.Clone(),
 					Body:           append([]byte(nil), request.bodyBytes...),
 					ResponseStatus: generalWorkflowResponseStatus(response),
@@ -1409,11 +1550,85 @@ func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[stri
 			runtime[name] = value
 		}
 	}
-	startedAt := workflow.now().UTC()
+	startedAt := workflow.now()
 	runtime["workflow_id"] = workflowID
-	runtime["started_at"] = startedAt.Format(time.RFC3339Nano)
+	runtime["started_at"] = startedAt.UTC().Format(time.RFC3339Nano)
 	runtime["started_at_ms"] = startedAt.UnixMilli()
+	runtime["year"] = startedAt.Format("2006")
+	runtime["month"] = startedAt.Format("01")
+	runtime["day"] = startedAt.Format("02")
+	runtime["year_month"] = startedAt.Format("2006-01")
+	runtime["date"] = startedAt.Format("2006-01-02")
+	runtime["datetime"] = startedAt.Format(time.RFC3339Nano)
 	return runtime, nil
+}
+
+// Variables initialize the shared alias namespace once. Initial aliases take
+// precedence over definition defaults; variable dependencies are resolved
+// recursively so JSON object ordering never affects the result.
+func initializeGeneralWorkflowVariables(variables, aliases, runtime map[string]any) error {
+	visiting := make(map[string]bool, len(variables))
+	var resolve func(string) error
+	var resolveReferences func(any) error
+	resolveReferences = func(value any) error {
+		switch value := value.(type) {
+		case string:
+			parts, err := parseGeneralWorkflowTemplate(value)
+			if err != nil {
+				return err
+			}
+			for _, part := range parts {
+				if part.reference != nil {
+					if _, defined := variables[part.reference.alias]; defined {
+						if err := resolve(part.reference.alias); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		case []any:
+			for _, item := range value {
+				if err := resolveReferences(item); err != nil {
+					return err
+				}
+			}
+		case map[string]any:
+			for _, key := range sortedGeneralWorkflowKeys(value) {
+				if err := resolveReferences(key); err != nil {
+					return err
+				}
+				if err := resolveReferences(value[key]); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	resolve = func(name string) error {
+		if _, exists := aliases[name]; exists {
+			return nil
+		}
+		if visiting[name] {
+			return fmt.Errorf("variable %q has a circular dependency", name)
+		}
+		visiting[name] = true
+		if err := resolveReferences(variables[name]); err != nil {
+			return fmt.Errorf("variable %q: %w", name, err)
+		}
+		value, err := renderGeneralWorkflowTemplate(variables[name], generalWorkflowTemplateValues(aliases, runtime))
+		if err != nil {
+			return fmt.Errorf("variable %q: %w", name, err)
+		}
+		aliases[name] = value
+		delete(visiting, name)
+		return nil
+	}
+	for _, name := range sortedGeneralWorkflowKeys(variables) {
+		if err := resolve(name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeGeneralWorkflowAliases(values map[string]any) (map[string]any, error) {
@@ -1973,7 +2188,7 @@ func generalWorkflowHeaderObject(headers http.Header) map[string]any {
 	return result
 }
 
-func (workflow *GeneralWorkflow) runJQ(ctx context.Context, code *gojq.Code, input, response, request any, aliases, runtime map[string]any) (any, error) {
+func (workflow *GeneralWorkflow) runJQ(ctx context.Context, expression *compiledGeneralWorkflowJQ, input, response, request any, aliases, runtime map[string]any) (any, error) {
 	jqContext, cancel := context.WithTimeout(ctx, workflow.jqTimeout)
 	defer cancel()
 	varsSnapshot, err := cloneGeneralWorkflowObject(aliases)
@@ -1996,7 +2211,20 @@ func (workflow *GeneralWorkflow) runJQ(ctx context.Context, code *gojq.Code, inp
 	if err != nil {
 		return nil, err
 	}
-	iterator := code.RunWithContext(jqContext, inputSnapshot, responseSnapshot, requestSnapshot, varsSnapshot, runtimeSnapshot)
+	arguments := []any{responseSnapshot, requestSnapshot, varsSnapshot, runtimeSnapshot}
+	if len(expression.references) > 0 {
+		templateValues := generalWorkflowTemplateValues(varsSnapshot, runtimeSnapshot)
+		values := make([]any, len(expression.references))
+		for index, reference := range expression.references {
+			value, err := resolveGeneralWorkflowReference(reference, templateValues)
+			if err != nil {
+				return nil, fmt.Errorf("jq template: %w", err)
+			}
+			values[index] = value
+		}
+		arguments = append(arguments, values)
+	}
+	iterator := expression.code.RunWithContext(jqContext, inputSnapshot, arguments...)
 	first, ok := iterator.Next()
 	if !ok {
 		return nil, errors.New("jq expression produced no result")

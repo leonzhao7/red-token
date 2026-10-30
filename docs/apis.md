@@ -792,7 +792,7 @@ X-Api-Key: tg-xxxxxxxx
 - `console_headers` 保存工作流和 Chrome CDP 使用的控制台请求头。
 - `console_headers` 的名称和值不能为空，名称必须是合法 HTTP Header 名，值不能含非法控制字符。
 - `console_checkin_workflow_id` 非空时启用签到；工作流输出负责更新账户、API Key 和模型价格。
-- 只有签到步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且响应 body 包含 `Turnstile` 时，服务端才会使用系统配置中的 `cdp_address` 连接 Chrome，完成验证后把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试；CDP 不可用或验证失败时签到失败。
+- 只有签到步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且响应 body 包含 `Turnstile` 时，服务端才会使用系统配置中的 `cdp_address` 连接 Chrome，完成验证后把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试。`turnstilekey` 支持 `{{alias}}` 模板引用，`$vars.name` 仅适用于 jq 表达式；CDP 不可用或验证失败时签到失败。
 - `manual_checkin` 为布尔值，默认 `false`；每次签到工作流执行都会将其作为 `$runtime.manual_checkin` 和 `{{runtime#/manual_checkin}}` 提供。
 - 请求中的 `status` 和 `endpoints` 当前会被解析但不会用于创建；新后端状态固定归一化为 `normal`。
 
@@ -948,7 +948,7 @@ Content-Type: application/json
 
 - 后端存在且 `console_url` 为合法 HTTP(S) URL。
 - 必须配置存在的 `console_checkin_workflow_id`。
-- 工作流使用控制台请求头、用户名密码、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。只有步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且服务端返回 body 包含 `turnstile` 的错误消息时，签到才会使用系统配置中的 `cdp_address` 连接 Chrome 完成人机验证，再把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试；CDP 不可用或验证失败会返回签到失败。
+- 工作流使用控制台请求头、用户名密码、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。只有步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且服务端返回 body 包含 `turnstile` 的错误消息时，签到才会使用系统配置中的 `cdp_address` 连接 Chrome 完成人机验证，再把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试。`turnstilekey` 支持 `{{alias}}` 模板引用，`$vars.name` 仅适用于 jq 表达式；CDP 不可用或验证失败会返回签到失败。
 
 普通 JSON 响应 `200`：
 
@@ -1118,6 +1118,8 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 ## 7. HTTP 工作流管理
 
 工作流配置使用 [`http-workflow/v1`](http_workflow.md) 至 `http-workflow/v5` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或更高版本；需要对数组 alias 逐项串行发送请求时使用 v3 或更高版本；需要工作流全局请求 Header 时使用 v4；需要为单个步骤单独配置请求 Header（覆盖同名全局 Header）时使用 v5。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。
+
+所有版本均支持可选的顶层 `variables` 对象：在第一个请求前解析静态 JSON 值或模板，例如 `{"month":"{{runtime#/year_month}}","date":"{{runtime#/date}}"}`。全局变量和步骤提取的 alias 均可用于 path/query、body、headers、output 和 jq 表达式（`$vars.name` 或 `{{name}}`）。执行接口传入的同名 `aliases` 覆盖默认变量，提取结果也可更新变量，最终值包含在响应的 `aliases` 中。运行时 `year`、`month`、`day`、`year_month`、`date`、`datetime` 在执行开始时按服务端时区固定；全局变量中的未定义引用或循环依赖在发送请求前报错。完整类型和转义规则见工作流规范。
 
 工作流执行时使用指定后端的 `console_url` 作为基础 URL，并自动应用该后端保存的控制台请求头、Cookie、SOCKS5 代理和全局控制台 User-Agent。工作流不得覆盖宿主提供的 `Authorization` 与 `Cookie`。每次执行使用独立 Cookie jar，响应 `Set-Cookie` 自动用于后续步骤；成功后 Cookie 变更会新增或覆盖所选中转站的 `console_headers.Cookie`。
 

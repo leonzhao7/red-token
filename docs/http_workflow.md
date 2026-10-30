@@ -13,6 +13,7 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
   "spec": "http-workflow/v5",
   "id": "workflow-id",
   "name": "工作流名称",
+  "variables": {},
   "headers": {},
   "steps": [],
   "output": {}
@@ -31,6 +32,8 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 - **id**: 工作流唯一标识符，格式为 `[a-z][a-z0-9_-]{0,63}`
 
 - **name**: 工作流可读名称
+
+- **variables**: 执行前初始化的全局变量对象，兼容 v1-v5；变量名遵循 alias 规则，值可以是任意 JSON 值或模板
 
 - **headers**: 全局请求头（v4+），应用于所有步骤，可被步骤级 headers 覆盖
 
@@ -56,7 +59,16 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 ```
 
 - **turnstile**: 可选，填写 `"enable"` 后启用该步骤的 Turnstile 回退；缺省时关闭。
-- **turnstilekey**: 启用 Turnstile 时必填，填写目标站点提供的 sitekey；不会从固定接口猜测或读取。
+- **turnstilekey**: 启用 Turnstile 时必填，填写目标站点提供的 sitekey，也可以使用模板引用（例如 `{{turnstile_key}}`）读取前一步提取的 alias；`$vars.turnstile_key` 仅适用于 jq 表达式。
+
+若前一步通过 `extract` 提取了 `turnstile_key`，后续签到步骤应配置为：
+
+```json
+{
+  "turnstile": "enable",
+  "turnstilekey": "{{turnstile_key}}"
+}
+```
 
 ### 请求定义 (request)
 
@@ -152,6 +164,26 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 
 ## 模板系统
 
+### 全局变量
+
+在工作流顶层通过 `variables` 定义默认变量。所有变量在第一个 HTTP 请求前初始化一次，可引用 `runtime`、执行接口传入的初始 aliases，以及其他全局变量；变量之间不依赖 JSON 字段顺序。不存在的引用、无效的 JSON Pointer 或循环依赖会在发送请求前报错。
+
+```json
+{
+  "variables": {
+    "month": "{{runtime#/year_month}}",
+    "date": "{{runtime#/date}}",
+    "checkin_path": "/api/checkin?month={{month}}",
+    "enabled": true,
+    "options": { "date": "{{date}}" }
+  }
+}
+```
+
+全局变量与提取 alias 共用名称空间，均可使用 `{{month}}`、`{{options#/date}}` 或 jq 中的 `$vars.month` 访问，并包含在执行结果的 `aliases` 中。执行接口 `aliases` 中的同名值优先于定义默认值（包括显式 `null`），后续 `extract` 可以更新该名称。全局变量不能引用尚未执行的步骤所提取的 alias。
+
+变量名必须匹配 `[A-Za-z_][A-Za-z0-9_]{0,63}`，不能使用 `response`、`request`、`runtime`、`vars`。编辑器的“添加月份 / 日期”按钮生成 `month`（`YYYY-MM`）和 `date`（`YYYY-MM-DD`）两个变量。值支持直接输入文本，也支持 JSON 数字、布尔值、数组、对象和 `null`；若要将 `123` 或 `null` 保存为字符串，请输入 `"123"` 或 `"null"`。
+
 ### 变量引用
 
 使用 `{{alias}}` 或 `{{alias#/pointer}}` 引用变量：
@@ -166,6 +198,8 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 }
 ```
 
+引用适用于请求 `path`（包括 query）、JSON body 的键和值、全局和步骤级 headers 的名称和值、`output`，以及 jq 表达式。请求路径渲染后仍必须是以 `/` 开头的相对路径，不能通过变量指定其他站点。
+
 ### 特殊变量
 
 - `{{runtime}}`: 运行时上下文
@@ -178,6 +212,14 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
   - `{{runtime#/workflow_id}}`: 工作流 ID
   - `{{runtime#/started_at}}`: 执行开始时间
   - `{{runtime#/started_at_ms}}`: 执行开始时间戳
+  - `{{runtime#/year}}`: 四位年份字符串，例如 `"2026"`
+  - `{{runtime#/month}}`: 两位月份字符串，例如 `"03"`
+  - `{{runtime#/day}}`: 两位日期字符串，例如 `"01"`
+  - `{{runtime#/year_month}}`: 当前月份，例如 `"2026-03"`
+  - `{{runtime#/date}}`: 当前日期，例如 `"2026-03-01"`
+  - `{{runtime#/datetime}}`: 包含时区偏移的 RFC 3339 日期时间
+
+日期字段使用服务端当前时区，并与执行开始时刻保持一致；跨午夜执行不会改变这些值。`started_at` 继续使用 UTC，`started_at_ms` 是同一时刻的 Unix 毫秒时间戳。
 
 ### JSON Pointer
 
@@ -212,9 +254,25 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
   - `$request.has_body`: 是否有请求体
   - `$request.body`: 请求体
 
-- `$vars`: 所有提取的别名变量
+- `$vars`: 已初始化的全局变量、初始 aliases 和已提取的 alias
 
 - `$runtime`: 运行时上下文
+
+### 模板引用
+
+`extract.expression` 可以直接引用全局变量和已提取的 alias，后面的提取也可引用同一步中前面的提取结果：
+
+```json
+{
+  "extract": [
+    { "alias": "reward", "expression": ".data[{{date}}].reward" },
+    { "alias": "total", "expression": "{{reward}} + $vars.bonus" },
+    { "alias": "label", "expression": "\"{{month}}:{{reward}}\"" }
+  ]
+}
+```
+
+在 jq 代码中，`{{date}}` 作为 JSON 值绑定，**不需要额外加引号**，数字、布尔值、数组、对象和 `null` 保持原有类型；在 jq 字符串内使用时执行字符串插值。JSON Pointer 规则与请求模板相同。引用的内容作为数据绑定，不会被当作 jq 源代码执行。`when.expression` 和 v1 字符串 `expect` 同样支持这些引用。需要字面量模板时，用 `\{{name}}` 转义；写在 JSON 字符串中应为 `\\{{name}}`。jq 注释中的模板文本不作引用解析。
 
 ### 限制
 
@@ -351,7 +409,7 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 ## 执行流程
 
 1. **验证**: 编译工作流定义和所有 jq 表达式
-2. **初始化**: 设置 HTTP 客户端、Cookie Jar、运行时变量
+2. **初始化**: 固定运行时日期，解析全局变量和初始 aliases，再设置 HTTP 客户端、Cookie Jar
 3. **步骤执行**:
    - 渲染请求模板
    - 发送 HTTP 请求
@@ -501,6 +559,7 @@ GET /admin/api/workflows/{id}/results/{backend_id}
 7. **保持 output 简洁**: 只包含必要的业务数据
 8. **合理设置超时**: 根据后端响应时间调整客户端配置
 9. **记录 console_headers**: 保存需要持久化的请求头
+10. **复用全局变量**: 将当前月份、日期或公共参数集中放在 `variables`，避免在各步骤重复配置
 
 ## 版本兼容性
 
@@ -512,3 +571,4 @@ GET /admin/api/workflows/{id}/results/{backend_id}
 - 需要步骤级 headers → `v5`
 
 系统会根据使用的功能自动检查 spec 版本是否兼容。
+全局 `variables`、运行时日期字段和 jq 模板引用作为兼容扩展适用于 v1-v5，无需升级已有工作流的 spec。

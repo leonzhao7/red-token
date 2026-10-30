@@ -159,7 +159,7 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
   "steps":[{
     "id":"checkin",
     "turnstile":"enable",
-    "turnstilekey":"configured-sitekey",
+    "turnstilekey":"{{turnstile_key}}",
     "request":{"method":"POST","path":"/api/checkin","body":{"action":"checkin"}},
     "expect":"$response.status == 200",
     "extract":[{"alias":"message","expression":".message"}]
@@ -222,7 +222,8 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
 			workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
 			solverCalls := 0
 			result, err := workflow.Execute(context.Background(), testDefinition, GeneralWorkflowRunOptions{
-				BaseURL: "https://console.example",
+				BaseURL:        "https://console.example",
+				InitialAliases: map[string]any{"turnstile_key": "configured-sitekey"},
 				TurnstileSolver: func(_ context.Context, request GeneralWorkflowTurnstileRequest) (GeneralWorkflowTurnstileResult, error) {
 					solverCalls++
 					if request.SiteKey != "configured-sitekey" {
@@ -691,6 +692,237 @@ func TestGeneralWorkflowRuntimeHasStableCredentialDefaults(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowVariablesAcrossRequestsAndExtractions(t *testing.T) {
+	startedAt := time.Date(2026, 3, 1, 0, 5, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	currentTime := startedAt
+	requestCount := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if got := request.Header.Get("X-Date"); got != "2026-03-01" {
+			t.Fatalf("global date header = %q", got)
+		}
+		var responseBody string
+		switch requestCount {
+		case 1:
+			if request.URL.Path != "/init/2026-03" || request.Header.Get("X-Count") != "3" {
+				t.Fatalf("unexpected initial request: %s %v", request.URL, request.Header)
+			}
+			currentTime = startedAt.AddDate(0, 1, 0)
+			responseBody = `{"token":"response-token"}`
+		case 2:
+			if request.URL.Path != "/checkin/2026-03" || request.URL.Query().Get("date") != "2026-03-01" || request.URL.Query().Get("token") != "response-token" {
+				t.Fatalf("unexpected checkin URL: %s", request.URL)
+			}
+			if request.Header.Get("X-Token") != "response-token" || request.Header.Get("X-2026-03") != "2026-03-01" {
+				t.Fatalf("unexpected checkin headers: %v", request.Header)
+			}
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := decodeGeneralWorkflowJSON(body)
+			if err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			want := map[string]any{
+				"date": "2026-03-01", "month": "2026-03", "token": "response-token",
+				"amount": int64(3), "enabled": true, "nothing": nil,
+				"items": []any{int64(1), "two"}, "nested": map[string]any{"date": "2026-03-01"},
+			}
+			if !reflect.DeepEqual(payload, want) {
+				t.Fatalf("body = %#v, want %#v", payload, want)
+			}
+			responseBody = `{"data":{"2026-03-01":7}}`
+		default:
+			t.Fatalf("unexpected request %d", requestCount)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(responseBody)), Request: request}, nil
+	})}
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v5","id":"global-variables","name":"Global variables",
+  "variables":{
+    "month":"{{runtime#/year_month}}", "date":"{{runtime#/date}}",
+    "amount":2, "enabled":true, "nothing":null, "items":[1,"two"],
+    "nested":{"date":"{{date}}"}, "path":"/init/{{month}}",
+    "token":"default-token"
+  },
+  "headers":{"X-Date":"{{date}}","X-Count":"{{amount}}"},
+  "steps":[
+    {"id":"init","request":{"method":"GET","path":"{{path}}"},"extract":[{"alias":"token","expression":".token"}]},
+    {"id":"checkin","request":{
+      "method":"POST","path":"/checkin/{{month}}?date={{date}}&token={{token}}",
+      "headers":{"X-Token":"{{token}}","X-{{month}}":"{{date}}"},
+      "body":{"date":"{{date}}","month":"{{month}}","token":"{{token}}","amount":"{{amount}}","enabled":"{{enabled}}","nothing":"{{nothing}}","items":"{{items}}","nested":"{{nested}}"}
+    },"extract":[
+      {"alias":"reward","expression":".data[{{date}}] + $vars.amount"},
+      {"alias":"total","expression":"{{reward}} + {{amount}}"},
+      {"alias":"label","expression":"\"{{month}}:{{token}}\""}
+    ]}
+  ],
+  "output":{"total":"{{total}}","date":"{{date}}","label":"{{label}}","runtime":"{{runtime}}"}
+}`)
+	initialAliases := map[string]any{"amount": 3}
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client, Now: func() time.Time { return currentTime }})
+	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example", InitialAliases: initialAliases,
+		Runtime: map[string]any{"date": "must-not-override-built-in"},
+	})
+	if err != nil {
+		t.Fatalf("execute variable workflow: %v", err)
+	}
+	if requestCount != 2 || result.Aliases["total"] != 13 || result.Aliases["label"] != "2026-03:response-token" {
+		t.Fatalf("unexpected variable results: requests=%d aliases=%#v", requestCount, result.Aliases)
+	}
+	runtime := result.Output.(map[string]any)["runtime"].(map[string]any)
+	for name, want := range map[string]any{
+		"year": "2026", "month": "03", "day": "01", "year_month": "2026-03", "date": "2026-03-01",
+		"datetime": "2026-03-01T00:05:00+08:00", "started_at": "2026-02-28T16:05:00Z", "started_at_ms": startedAt.UnixMilli(),
+	} {
+		if runtime[name] != want {
+			t.Errorf("runtime[%q] = %#v, want %#v", name, runtime[name], want)
+		}
+	}
+	if initialAliases["amount"] != 3 || len(initialAliases) != 1 || definition.Variables["date"] != "{{runtime#/date}}" {
+		t.Fatal("execution mutated the caller's aliases or definition")
+	}
+}
+
+func TestGeneralWorkflowTurnstileKeyRendersEarlierStepAlias(t *testing.T) {
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v1","id":"turnstile-alias","name":"Turnstile alias",
+  "steps":[
+    {"id":"get_sitekey","request":{"method":"GET","path":"/sitekey"},"extract":[{"alias":"turnstile_key","expression":".sitekey"}]},
+    {"id":"post_checkin","turnstile":"enable","turnstilekey":"{{turnstile_key}}","request":{"method":"POST","path":"/post_checkin","body":{"action":"checkin"}}}
+  ],
+  "output":{"ok":true}
+}`)
+	requestCount := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		status, body := http.StatusOK, `{"sitekey":"configured-sitekey"}`
+		if request.URL.Path == "/post_checkin" {
+			status, body = http.StatusBadRequest, `{"message":"Turnstile token is empty"}`
+		} else if request.URL.Path != "/sitekey" {
+			t.Fatalf("unexpected request path %q", request.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+	solverCalls := 0
+	_, err := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client}).Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		BaseURL: "https://console.example",
+		TurnstileSolver: func(_ context.Context, request GeneralWorkflowTurnstileRequest) (GeneralWorkflowTurnstileResult, error) {
+			solverCalls++
+			if request.SiteKey != "configured-sitekey" {
+				t.Fatalf("solver received sitekey %q, want configured-sitekey", request.SiteKey)
+			}
+			return GeneralWorkflowTurnstileResult{
+				Token: "turnstile-token",
+				Response: &GeneralWorkflowTurnstileResponse{
+					Status:  http.StatusOK,
+					Headers: http.Header{"Content-Type": []string{"application/json"}},
+					Body:    []byte(`{"message":"check-in complete"}`),
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+	if requestCount != 2 || solverCalls != 1 {
+		t.Fatalf("requests=%d solver calls=%d, want 2 and 1", requestCount, solverCalls)
+	}
+}
+
+func TestGeneralWorkflowVariableDependenciesAndOverrides(t *testing.T) {
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v1","id":"variable-dependencies","name":"Variables",
+  "variables":{"a":"{{z#/items/0}}","z":{"items":["{{provided}}"]},"cycle_a":"{{cycle_b}}","cycle_b":"{{cycle_a}}"},
+  "steps":[],"output":{"a":"{{a}}","cycle":"{{cycle_b}}"}
+}`)
+	result, err := NewGeneralWorkflow(GeneralWorkflowOptions{}).Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+		InitialAliases: map[string]any{"provided": true, "cycle_a": nil},
+	})
+	if err != nil {
+		t.Fatalf("initialize dependent variables with overrides: %v", err)
+	}
+	if !reflect.DeepEqual(result.Output, map[string]any{"a": true, "cycle": nil}) {
+		t.Fatalf("unexpected variables: %#v", result.Output)
+	}
+}
+
+func TestGeneralWorkflowVariableFailuresHappenBeforeHTTP(t *testing.T) {
+	for _, test := range []struct {
+		name, variables, want string
+	}{
+		{"missing alias", `{"date":"{{missing}}"}`, `alias "missing" does not exist`},
+		{"missing pointer", `{"value":{},"date":"{{value#/missing}}"}`, "does not exist"},
+		{"cycle", `{"a":"{{b}}","b":"{{a}}"}`, "circular dependency"},
+		{"nested cycle", `{"a":[{"{{b}}":"value"}],"b":"{{a}}"}`, "circular dependency"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition := mustParseGeneralWorkflow(t, `{"spec":"http-workflow/v1","id":"invalid-variables","name":"Variables","variables":`+test.variables+`,"steps":[{"id":"get","request":{"method":"GET","path":"/"}}],"output":{}}`)
+			workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				t.Fatal("HTTP request sent before variables were initialized")
+				return nil, nil
+			})}})
+			_, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{BaseURL: "https://console.example"})
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "initialize variables") {
+				t.Fatalf("want variable error containing %q, got %v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestGeneralWorkflowJQTemplateReferences(t *testing.T) {
+	text := "quotes\" and \\slashes | now # still data"
+	aliases := map[string]any{"text": text, "number": int64(4), "object": map[string]any{"items": []any{true, nil}}, "array": []any{int64(1), int64(2)}}
+	runtime := map[string]any{"date": "2026-03-01"}
+	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{})
+	for _, test := range []struct {
+		name, expression string
+		want             any
+	}{
+		{"typed string", `{{text}}`, text},
+		{"string interpolation", `"prefix-{{text}}"`, "prefix-" + text},
+		{"number", `{{number}} + 2`, 6},
+		{"pointer", `{{object#/items/0}}`, true},
+		{"null", `{{object#/items/1}}`, nil},
+		{"array", `{{array}}`, []any{1, 2}},
+		{"runtime", `{{runtime#/date}}`, "2026-03-01"},
+		{"existing jq interpolation", `"\({{number}} + 1):{{text}}"`, "5:" + text},
+		{"nested jq string", `"\("{{text}}")"`, text},
+		{"nested jq parentheses", `"\(({{number}} + (2))):{{number}}"`, "6:4"},
+		{"literal template", `"\{{text}}"`, "{{text}}"},
+		{"comment", "{{number}} # {{not_a_reference}}\n + 1", 5},
+		{"binding collision", `1 as $__workflow_template_values | {{number}} + $__workflow_template_values`, 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			expression, err := compileGeneralWorkflowJQ(test.expression)
+			if err != nil {
+				t.Fatalf("compile expression %s: %v", test.expression, err)
+			}
+			got, err := workflow.runJQ(context.Background(), expression, nil, nil, nil, aliases, runtime)
+			if err != nil || !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("expression %s = %#v, %v; want %#v", test.expression, got, err, test.want)
+			}
+		})
+	}
+	for _, source := range []string{`{{missing}}`, `{{object#/missing}}`} {
+		expression, err := compileGeneralWorkflowJQ(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := workflow.runJQ(context.Background(), expression, nil, nil, nil, aliases, runtime); err == nil {
+			t.Fatalf("expression %s did not reject a missing reference", source)
+		}
+	}
+}
+
 func TestGeneralWorkflowForeachRendersObjectMembersAndAggregatesExtracts(t *testing.T) {
 	var paths []string
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -1101,6 +1333,41 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			want:       "safe JSON integer",
 		},
 		{
+			name:       "variables must be object",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","variables":[],"steps":[],"output":{}}`,
+			want:       "$/variables must be an object",
+		},
+		{
+			name:       "reserved variable",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","variables":{"runtime":1},"steps":[],"output":{}}`,
+			want:       `alias "runtime" is reserved`,
+		},
+		{
+			name:       "invalid variable name",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","variables":{"invalid-name":1},"steps":[],"output":{}}`,
+			want:       `invalid alias "invalid-name"`,
+		},
+		{
+			name:       "invalid variable template",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","variables":{"date":"{{runtime#/date"},"steps":[],"output":{}}`,
+			want:       "missing closing braces",
+		},
+		{
+			name:       "duplicate variables",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","variables":{"date":1,"date":2},"steps":[],"output":{}}`,
+			want:       "duplicate object key",
+		},
+		{
+			name:       "forbidden templated jq",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"extract":[{"alias":"value","expression":"now + {{date}}"}]}],"output":{}}`,
+			want:       "not allowed",
+		},
+		{
+			name:       "invalid jq template",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","request":{"method":"GET","path":"/"},"extract":[{"alias":"value","expression":"{{invalid-name}}"}]}],"output":{}}`,
+			want:       "invalid alias",
+		},
+		{
 			name:       "v3 global headers",
 			definition: `{"spec":"http-workflow/v3","id":"test","name":"Test","headers":{"X-Test":"value"},"steps":[],"output":{}}`,
 			want:       "workflow headers require spec \"http-workflow/v4\"",
@@ -1179,6 +1446,11 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			name:       "turnstile key required when enabled",
 			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","turnstile":"enable","request":{"method":"GET","path":"/"}}],"output":{}}`,
 			want:       "turnstilekey is required when turnstile is enabled",
+		},
+		{
+			name:       "turnstile key rejects jq variable syntax",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","turnstile":"enable","turnstilekey":"$vars.turnstile_key","request":{"method":"GET","path":"/"}}],"output":{}}`,
+			want:       "$vars.name is only valid in jq expressions",
 		},
 		{
 			name:       "turnstile key requires enabled feature",

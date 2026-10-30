@@ -34,6 +34,7 @@ import {
   type WorkflowStep
 } from '../api/workflows'
 import { selectWorkflowSpec } from '../utils/workflowSpec'
+import { parseWorkflowValue, workflowVariablesFromRows, workflowVariablesToRows } from '../utils/workflowVariables'
 
 const loading = ref(true)
 const loadError = ref('')
@@ -72,6 +73,7 @@ interface StepForm {
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+const RESERVED_VARIABLES = new Set(['response', 'request', 'runtime', 'vars'])
 const HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 const WORKFLOW_OUTPUT_REQUIRED_FIELDS = ['api_keys', 'models', 'quota', 'quota_unit', 'today_reward', 'used_quota', 'user_id', 'username']
 const WORKFLOW_OUTPUT_OPTIONAL_FIELDS = ['console_headers']
@@ -83,10 +85,10 @@ const saving = ref(false)
 const formError = ref('')
 const stepOpen = ref<boolean[]>([])
 
-const form = reactive<{ name: string; id: string; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
+const form = reactive<{ name: string; id: string; variables: KvRow[]; headers: KvRow[]; steps: StepForm[]; output: string }>(freshForm())
 
 function freshForm() {
-  return { name: '', id: '', headers: [], steps: [emptyStep()], output: '{}' }
+  return { name: '', id: '', variables: [], headers: [], steps: [emptyStep()], output: '{}' }
 }
 
 function emptyStep(): StepForm {
@@ -213,8 +215,18 @@ const availableAliases = computed(() => {
     'runtime#/password',
     'runtime#/user_id',
     'runtime#/manual_checkin',
-    'runtime#/headers'
+    'runtime#/headers',
+    'runtime#/year',
+    'runtime#/month',
+    'runtime#/day',
+    'runtime#/year_month',
+    'runtime#/date',
+    'runtime#/datetime'
   ]
+  for (const variable of form.variables) {
+    const name = variable.key.trim()
+    if (name && !seen.includes(name)) seen.push(name)
+  }
   for (const st of form.steps) {
     for (const ex of st.extract) {
       const alias = ex.alias.trim()
@@ -242,6 +254,7 @@ function insertAlias(alias: string) {
 function defToForm(def: WorkflowDefinition) {
   form.name = def.name
   form.id = def.id
+  form.variables = workflowVariablesToRows(def.variables)
   form.headers = objToKv(def.headers)
   form.steps = def.steps.map((step) => ({
     id: step.id,
@@ -427,6 +440,13 @@ function addKv(rows: KvRow[]) {
   rows.push(emptyKv())
 }
 
+function addDateVariables() {
+  const names = new Set(form.variables.map((row) => row.key.trim()))
+  for (const [key, reference] of [['month', 'year_month'], ['date', 'date']]) {
+    if (!names.has(key)) form.variables.push({ key, value: JSON.stringify(`{{runtime#/${reference}}}`) })
+  }
+}
+
 function removeKv(rows: KvRow[], index: number) {
   rows.splice(index, 1)
 }
@@ -457,23 +477,7 @@ function methodOptions() {
 }
 
 function kvToObj(rows: KvRow[]): Record<string, unknown> {
-  const obj: Record<string, unknown> = {}
-  for (const row of rows) {
-    const key = row.key.trim()
-    if (!key) continue
-    obj[key] = parseKvValue(row.value)
-  }
-  return obj
-}
-
-function parseKvValue(text: string): unknown {
-  const trimmed = text.trim()
-  if (trimmed === '') return ''
-  try {
-    return JSON.parse(trimmed)
-  } catch {
-    return text
-  }
+  return Object.fromEntries(rows.filter((row) => row.key.trim()).map((row) => [row.key.trim(), parseWorkflowValue(row.value)]))
 }
 
 function validateHeaderRows(rows: KvRow[], label: string, errors: string[]) {
@@ -493,6 +497,19 @@ function validateForm(): string[] {
   if (!form.id.trim()) errors.push('工作流 ID 不能为空')
   else if (!WORKFLOW_ID_RE.test(form.id.trim())) errors.push('ID 必须匹配 ^[a-z][a-z0-9_-]{0,63}$')
   if (!form.name.trim()) errors.push('名称不能为空')
+
+  const variableNames = new Set<string>()
+  for (const variable of form.variables) {
+    const name = variable.key.trim()
+    if (!name) {
+      if (variable.value.trim()) errors.push('全局变量：变量名不能为空')
+      continue
+    }
+    if (!ALIAS_RE.test(name)) errors.push(`全局变量「${name}」格式非法，需匹配 ^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+    if (RESERVED_VARIABLES.has(name)) errors.push(`全局变量「${name}」是保留名称`)
+    if (variableNames.has(name)) errors.push(`全局变量「${name}」重复`)
+    variableNames.add(name)
+  }
 
   validateHeaderRows(form.headers, '全局 Headers', errors)
 
@@ -516,7 +533,7 @@ function validateForm(): string[] {
       if (foreachIndexAs && foreachAs === foreachIndexAs) errors.push(`${label}：Foreach 元素 Alias 和下标 Alias 不能相同`)
     }
     if (!st.path.trim()) errors.push(`${label}：path 不能为空`)
-    else if (!st.path.trim().startsWith('/')) errors.push(`${label}：path 必须以 / 开头`)
+    else if (!st.path.trim().startsWith('/') && !st.path.trim().startsWith('{{')) errors.push(`${label}：path 必须以 / 开头或引用路径变量`)
     validateHeaderRows(st.headers, `${label} Headers`, errors)
     if (st.body.trim()) {
       try {
@@ -628,6 +645,8 @@ function formToDef(): WorkflowDefinition {
   }
   const globalHeaders = kvToObj(form.headers)
   if (Object.keys(globalHeaders).length) definition.headers = globalHeaders
+  const variables = workflowVariablesFromRows(form.variables)
+  if (Object.keys(variables).length) definition.variables = variables
   definition.spec = selectWorkflowSpec(definition.spec, {
     globalHeaders: !!definition.headers,
     stepHeaders: steps.some((step) => step.request.headers && Object.keys(step.request.headers).length)
@@ -779,6 +798,34 @@ onMounted(loadData)
 
         <div v-if="formError" class="wf-form-error"><AlertTriangle :size="14" /><span>{{ formError }}</span></div>
 
+        <div v-if="availableAliases.length" class="wf-alias-bar">
+          <span class="wf-alias-label">引用</span>
+          <button v-for="alias in availableAliases" :key="alias" class="wf-alias" @click="insertAlias(alias)">
+            {{ alias }}
+          </button>
+          <span class="wf-alias-tip">聚焦输入框后点击插入；提取 alias 在生成后可用</span>
+        </div>
+
+        <div class="wf-section wf-sec-variables">
+          <div class="wf-sec-head wf-section-head">
+            <span class="wf-sec-title">全局变量 <em class="wf-hint">在步骤执行前初始化一次</em></span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" @click="addDateVariables"><Sparkles :size="12" /> 添加月份 / 日期</button>
+            <button class="btn btn-ghost btn-sm" @click="addKv(form.variables)"><Plus :size="12" /> 添加变量</button>
+          </div>
+          <div class="wf-section-body">
+            <div v-if="form.variables.length" class="wf-kv">
+              <div v-for="(variable, variableIndex) in form.variables" :key="variableIndex" class="wf-kv-row">
+                <input v-model="variable.key" class="input mono wf-kv-key" placeholder="变量名，如 month" spellcheck="false" />
+                <input v-model="variable.value" class="input mono" placeholder='JSON 值或文本，如 "{{runtime#/date}}"' spellcheck="false" @focus="onFocus" />
+                <button class="icon-btn wf-del" title="移除" @click="removeKv(form.variables, variableIndex)"><X :size="13" /></button>
+              </div>
+            </div>
+            <div v-else class="wf-extract-empty">未配置全局变量</div>
+            <span class="wf-hint" v-pre>支持 JSON 值、{{变量名}} 和 {{runtime#/date}}；日期使用服务器时区。内置 {{runtime#/month}} 仅为 MM，完整年月请用 {{runtime#/year_month}}；“添加月份 / 日期”创建的 {{month}} 格式为 YYYY-MM。变量可用于路径、Body、Headers 和 jq 提取表达式（$vars.month 或 {{month}}）。</span>
+          </div>
+        </div>
+
         <div class="wf-section wf-sec-headers">
           <div class="wf-sec-head wf-section-head">
             <span class="wf-sec-title">全局 Headers <em class="wf-hint">附加到每个步骤请求</em></span>
@@ -808,14 +855,6 @@ onMounted(loadData)
             <button class="btn btn-primary btn-sm" @click="addStep"><Plus :size="13" /> 添加步骤</button>
           </div>
           <div class="wf-section-body">
-            <div v-if="availableAliases.length" class="wf-alias-bar">
-              <span class="wf-alias-label">引用</span>
-              <button v-for="alias in availableAliases" :key="alias" class="wf-alias" @click="insertAlias(alias)">
-                {{ alias }}
-              </button>
-              <span class="wf-alias-tip">点击插入</span>
-            </div>
-
             <div v-for="(st, i) in form.steps" :key="i" class="wf-step" :class="{ open: stepOpen[i] }">
           <div class="wf-step-head" @click="stepOpen[i] = !stepOpen[i]">
             <span class="wf-step-idx mono">{{ String(i + 1).padStart(2, '0') }}</span>
@@ -857,7 +896,7 @@ onMounted(loadData)
 
             <div class="wf-extract">
               <div class="wf-sec-head sub">
-                <span class="wf-sec-title">Extract 提取 <em class="wf-hint">响应值保存为 alias</em></span>
+                <span class="wf-sec-title">Extract 提取 <em class="wf-hint" v-pre>jq 支持 $vars.name 和 {{name}}</em></span>
                 <div class="spacer"></div>
                 <button class="btn btn-ghost btn-sm" @click="addExtract(st)"><ListPlus :size="13" /> 添加提取</button>
               </div>
@@ -892,12 +931,14 @@ onMounted(loadData)
                     <input
                       v-model="st.turnstilekey"
                       class="input mono"
-                      placeholder="站点提供的 Turnstile sitekey"
+                      placeholder="站点 Key 或 {{turnstile_key}}"
                       spellcheck="false"
                       :disabled="!st.turnstile"
+                      @focus="onFocus"
                     />
                   </div>
                 </div>
+                <span class="wf-hint" v-pre>支持固定 sitekey 或 {{变量名}}（例如 {{turnstile_key}}）；$vars.turnstile_key 仅用于 jq 表达式。</span>
                 <div class="field">
                   <label class="field-label">Foreach <em class="wf-hint">对数组 alias 逐项执行</em></label>
                   <div class="wf-foreach-line">
@@ -1179,6 +1220,7 @@ onMounted(loadData)
   background: var(--sec-accent, transparent);
 }
 .wf-sec-headers { --sec-accent: #22d3ee; --sec-soft: rgba(34, 211, 238, 0.1); }
+.wf-sec-variables { --sec-accent: #fbbf24; --sec-soft: rgba(251, 191, 36, 0.1); }
 .wf-sec-steps { --sec-accent: #8b5cf6; --sec-soft: rgba(139, 92, 246, 0.1); }
 .wf-sec-output { --sec-accent: #34d399; --sec-soft: rgba(52, 211, 153, 0.1); }
 

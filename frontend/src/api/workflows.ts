@@ -48,6 +48,7 @@ export interface WorkflowDefinition {
   spec: string
   id: string
   name: string
+  variables?: Record<string, unknown>
   headers?: Record<string, unknown>
   steps: WorkflowStep[]
   output: unknown
