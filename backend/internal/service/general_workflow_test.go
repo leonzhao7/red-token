@@ -151,6 +151,104 @@ func TestGeneralWorkflowExecuteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
+	definition := mustParseGeneralWorkflow(t, `{
+  "spec":"http-workflow/v1",
+  "id":"turnstile-trigger",
+  "name":"Turnstile trigger",
+  "steps":[{
+    "id":"checkin",
+    "request":{"method":"POST","path":"/api/checkin","body":{"action":"checkin"}},
+    "expect":"$response.status == 200",
+    "extract":[{"alias":"message","expression":".message"}]
+  }],
+  "output":{"message":"{{message}}"}
+}`)
+
+	tests := []struct {
+		name             string
+		status           int
+		body             string
+		expectSolverCall bool
+		retryBody        string
+	}{
+		{
+			name:             "ordinary response",
+			status:           http.StatusOK,
+			body:             `{"message":"check-in complete"}`,
+			expectSolverCall: false,
+		},
+		{
+			name:             "Turnstile response",
+			status:           http.StatusBadRequest,
+			body:             `{"message":"Turnstile token is empty"}`,
+			expectSolverCall: true,
+			retryBody:        `{"message":"check-in complete"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requestCount := 0
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requestCount++
+				return &http.Response{
+					StatusCode: test.status,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(test.body)),
+					Request:    request,
+				}, nil
+			})}
+			workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
+			solverCalls := 0
+			result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+				BaseURL: "https://console.example",
+				TurnstileSolver: func(_ context.Context, request GeneralWorkflowTurnstileRequest) (GeneralWorkflowTurnstileResult, error) {
+					solverCalls++
+					if request.ResponseText != test.body {
+						t.Fatalf("solver received response body %q, want %q", request.ResponseText, test.body)
+					}
+					return GeneralWorkflowTurnstileResult{
+						Token: "turnstile-token",
+						Response: &GeneralWorkflowTurnstileResponse{
+							Status:  http.StatusOK,
+							Headers: http.Header{"Content-Type": []string{"application/json"}},
+							Body:    []byte(test.retryBody),
+						},
+					}, nil
+				},
+			})
+			if test.expectSolverCall {
+				if err != nil {
+					t.Fatalf("execute workflow: %v", err)
+				}
+				if solverCalls != 1 {
+					t.Fatalf("solver calls=%d, want 1", solverCalls)
+				}
+				if requestCount != 1 {
+					t.Fatalf("initial request count=%d, want 1", requestCount)
+				}
+				if got := result.Output.(map[string]any)["message"]; got != "check-in complete" {
+					t.Fatalf("retry output=%#v", result.Output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("execute workflow: %v", err)
+			}
+			if solverCalls != 0 {
+				t.Fatalf("solver calls=%d, want 0", solverCalls)
+			}
+			if requestCount != 1 {
+				t.Fatalf("ordinary request count=%d, want 1", requestCount)
+			}
+			if got := result.Output.(map[string]any)["message"]; got != "check-in complete" {
+				t.Fatalf("ordinary output=%#v", result.Output)
+			}
+		})
+	}
+}
+
 func TestGeneralWorkflowCarriesResponseCookiesAndGlobalHeaders(t *testing.T) {
 	requestIndex := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {

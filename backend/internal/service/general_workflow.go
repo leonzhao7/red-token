@@ -143,9 +143,9 @@ func (expect GeneralWorkflowExpect) MarshalJSON() ([]byte, error) {
 }
 
 type GeneralWorkflowRequest struct {
-	Method  string         `json:"method"`
-	Path    string         `json:"path"`
-	Headers map[string]any `json:"headers,omitempty"`
+	Method  string          `json:"method"`
+	Path    string          `json:"path"`
+	Headers map[string]any  `json:"headers,omitempty"`
 	Body    json.RawMessage `json:"body,omitempty"`
 }
 
@@ -164,13 +164,42 @@ type GeneralWorkflowOptions struct {
 }
 
 type GeneralWorkflowRunOptions struct {
-	BaseURL        string
+	BaseURL         string
+	Headers         http.Header
+	InitialAliases  map[string]any
+	Runtime         map[string]any
+	TurnstileSolver func(context.Context, GeneralWorkflowTurnstileRequest) (GeneralWorkflowTurnstileResult, error)
+	Recorder        ConsoleRequestRecorder
+	DebugLog        func(GeneralWorkflowDebugLog)
+	ValidateOutput  func(any) error
+}
+
+// GeneralWorkflowTurnstileRequest describes a failed request that was
+// rejected because the upstream requires a Turnstile token.
+type GeneralWorkflowTurnstileRequest struct {
+	Method         string
+	URL            string
 	Headers        http.Header
-	InitialAliases map[string]any
-	Runtime        map[string]any
-	Recorder       ConsoleRequestRecorder
-	DebugLog       func(GeneralWorkflowDebugLog)
-	ValidateOutput func(any) error
+	Body           []byte
+	ResponseStatus int
+	ResponseText   string
+}
+
+// GeneralWorkflowTurnstileResult contains the browser-produced token and any
+// cookies acquired while completing the challenge.
+type GeneralWorkflowTurnstileResult struct {
+	Token    string
+	Cookies  []*http.Cookie
+	Response *GeneralWorkflowTurnstileResponse
+}
+
+// GeneralWorkflowTurnstileResponse is an optional response produced by the
+// browser retry. When present, the workflow uses it instead of sending the
+// retry through the ordinary HTTP client.
+type GeneralWorkflowTurnstileResponse struct {
+	Status  int
+	Headers http.Header
+	Body    []byte
 }
 
 type GeneralWorkflowDebugLog struct {
@@ -1017,6 +1046,54 @@ stepLoop:
 			if err != nil {
 				return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "request", Err: iterationError(err)}
 			}
+			if options.TurnstileSolver != nil && generalWorkflowTurnstileRequired(response) {
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "warn", "turnstile", "upstream requested Turnstile verification", withIteration(map[string]any{
+					"response_status": generalWorkflowResponseStatus(response),
+				}), time.Since(requestStartedAt).Milliseconds()))
+				turnstileRequestURL, urlErr := buildGeneralWorkflowTargetURL(baseURL, request.path)
+				if urlErr != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(urlErr)}
+				}
+				turnstileResult, solveErr := options.TurnstileSolver(ctx, GeneralWorkflowTurnstileRequest{
+					Method:         request.method,
+					URL:            turnstileRequestURL.String(),
+					Headers:        request.headers.Clone(),
+					Body:           append([]byte(nil), request.bodyBytes...),
+					ResponseStatus: generalWorkflowResponseStatus(response),
+					ResponseText:   generalWorkflowResponseText(response),
+				})
+				if solveErr != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(solveErr)}
+				}
+				if strings.TrimSpace(turnstileResult.Token) == "" {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(errors.New("Turnstile solver returned an empty token"))}
+				}
+				if target, targetErr := buildGeneralWorkflowTargetURL(baseURL, request.path); targetErr == nil {
+					cookieJar.SetCookies(target, turnstileResult.Cookies)
+				}
+				request, err = addGeneralWorkflowTurnstileToken(request, turnstileResult.Token)
+				if err != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(err)}
+				}
+				if err := applyGeneralWorkflowCookiePreview(baseURL, &request, cookieJar); err != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile", Err: iterationError(err)}
+				}
+				retryURL, retryURLErr := buildGeneralWorkflowTargetURL(baseURL, request.path)
+				if retryURLErr != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile retry", Err: iterationError(retryURLErr)}
+				}
+				if turnstileResult.Response != nil {
+					response, err = workflow.responseFromBody(request.method, retryURL, turnstileResult.Response.Status, turnstileResult.Response.Headers, turnstileResult.Response.Body, options.Recorder)
+				} else {
+					response, err = workflow.doRequest(ctx, runClient, baseURL, request, options.Recorder)
+				}
+				if err != nil {
+					return GeneralWorkflowResult{}, &GeneralWorkflowError{StepID: step.definition.ID, Phase: "turnstile retry", Err: iterationError(err)}
+				}
+				workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "info", "turnstile_retry", "request retried with Turnstile token", withIteration(map[string]any{
+					"response_status": generalWorkflowResponseStatus(response),
+				}), time.Since(requestStartedAt).Milliseconds()))
+			}
 			lastRequest = request
 			lastResponse = response
 			workflow.emitDebug(options.DebugLog, generalWorkflowDebugWith(stepLog, "debug", "response", "HTTP response received", withIteration(map[string]any{
@@ -1651,26 +1728,92 @@ func (workflow *GeneralWorkflow) doRequest(ctx context.Context, client *http.Cli
 		recordConsoleRequest(recorder, rendered.method, generalWorkflowRecordedRequestURI(request.URL), response.StatusCode, err.Error())
 		return generalWorkflowHTTPResponse{}, err
 	}
+	return workflow.responseFromBody(rendered.method, request.URL, response.StatusCode, response.Header, body, recorder)
+}
+
+func (workflow *GeneralWorkflow) responseFromBody(method string, target *url.URL, status int, headers http.Header, body []byte, recorder ConsoleRequestRecorder) (generalWorkflowHTTPResponse, error) {
 	recordedBody := generalWorkflowRecordedBody(body)
-	recordConsoleRequest(recorder, rendered.method, generalWorkflowRecordedRequestURI(request.URL), response.StatusCode, recordedBody)
+	recordConsoleRequest(recorder, method, generalWorkflowRecordedRequestURI(target), status, recordedBody)
 	if !utf8.Valid(body) {
 		return generalWorkflowHTTPResponse{}, errors.New("response body is not valid UTF-8")
 	}
 	var decoded any
+	var err error
 	if len(body) > 0 {
 		decoded, err = decodeGeneralWorkflowJSON(body)
 		if err != nil {
-			return generalWorkflowHTTPResponse{}, fmt.Errorf("decode response JSON: %w", err)
+			if strings.Contains(strings.ToLower(string(body)), "turnstile") {
+				decoded = string(body)
+			} else {
+				return generalWorkflowHTTPResponse{}, fmt.Errorf("decode response JSON: %w", err)
+			}
 		}
 	}
 	envelope := map[string]any{
-		"status":   response.StatusCode,
-		"headers":  generalWorkflowHeaderObject(response.Header),
+		"status":   status,
+		"headers":  generalWorkflowHeaderObject(headers),
 		"has_body": len(body) > 0,
 		"body":     decoded,
 		"text":     string(body),
 	}
 	return generalWorkflowHTTPResponse{body: decoded, envelope: envelope}, nil
+}
+
+func generalWorkflowTurnstileRequired(response generalWorkflowHTTPResponse) bool {
+	text := strings.ToLower(generalWorkflowResponseText(response))
+	return strings.Contains(text, "turnstile")
+}
+
+func generalWorkflowResponseStatus(response generalWorkflowHTTPResponse) int {
+	status, _ := response.envelope["status"].(int)
+	return status
+}
+
+func generalWorkflowResponseText(response generalWorkflowHTTPResponse) string {
+	text, _ := response.envelope["text"].(string)
+	return text
+}
+
+func addGeneralWorkflowTurnstileToken(request renderedGeneralWorkflowRequest, token string) (renderedGeneralWorkflowRequest, error) {
+	parsed, err := url.Parse(request.path)
+	if err != nil {
+		return renderedGeneralWorkflowRequest{}, fmt.Errorf("invalid request path: %w", err)
+	}
+	query := parsed.Query()
+	query.Set("turnstile", token)
+	parsed.RawQuery = query.Encode()
+	request.path = parsed.String()
+
+	var body any
+	if request.hasBody && len(request.bodyBytes) > 0 {
+		body, err = decodeGeneralWorkflowJSON(request.bodyBytes)
+		if err != nil {
+			return renderedGeneralWorkflowRequest{}, fmt.Errorf("decode request body for Turnstile retry: %w", err)
+		}
+	} else {
+		body = map[string]any{}
+		request.hasBody = true
+	}
+	bodyObject, ok := body.(map[string]any)
+	if !ok {
+		return renderedGeneralWorkflowRequest{}, fmt.Errorf("request body must be a JSON object for Turnstile retry")
+	}
+	bodyObject["turnstile"] = token
+	request.body = bodyObject
+	if _, configured := generalWorkflowHeaderLookup(request.headers, "content-type"); !configured {
+		request.headers.Set("Content-Type", "application/json")
+	}
+	request.bodyBytes, err = json.Marshal(bodyObject)
+	if err != nil {
+		return renderedGeneralWorkflowRequest{}, fmt.Errorf("encode request body for Turnstile retry: %w", err)
+	}
+	if request.jqValue == nil {
+		request.jqValue = map[string]any{}
+	}
+	request.jqValue["path"] = request.path
+	request.jqValue["has_body"] = request.hasBody
+	request.jqValue["body"] = request.body
+	return request, nil
 }
 
 func (workflow *GeneralWorkflow) newRunHTTPClient(baseURL *url.URL, baseHeaders http.Header) (*http.Client, *generalWorkflowCookieJar, error) {
@@ -1756,7 +1899,13 @@ func generalWorkflowRecordedRequestURI(target *url.URL) string {
 	if target == nil {
 		return ""
 	}
-	return target.RequestURI()
+	copy := *target
+	query := copy.Query()
+	if query.Has("turnstile") {
+		query.Set("turnstile", "[redacted]")
+		copy.RawQuery = query.Encode()
+	}
+	return copy.RequestURI()
 }
 
 func generalWorkflowHeaderObject(headers http.Header) map[string]any {

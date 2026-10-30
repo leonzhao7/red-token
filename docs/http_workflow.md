@@ -313,6 +313,34 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 - 执行成功后，**console_headers** 会合并到后端配置中
 - 其余 output 字段会被保存为快照，并用于更新后端的配额、模型、API 密钥信息
 
+## 12. 完整示例
+
+下面的示例展示一个最小可执行的签到工作流。具体接口路径和响应字段需要按目标平台调整。
+
+```json
+{
+  "spec": "http-workflow/v1",
+  "id": "relay-default-checkin",
+  "name": "中转站默认签到",
+  "steps": [
+    {
+      "id": "checkin",
+      "request": {
+        "method": "POST",
+        "path": "/api/user/checkin"
+      },
+      "expect": "$response.status >= 200 and $response.status < 300 and (.success == true)",
+      "extract": [
+        { "alias": "message", "expression": ".message // \"签到成功\"" }
+      ]
+    }
+  ],
+  "output": {
+    "message": "{{message}}"
+  }
+}
+```
+
 ## 执行流程
 
 1. **验证**: 编译工作流定义和所有 jq 表达式
@@ -325,6 +353,8 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
    - 条件判断（when）
 4. **输出渲染**: 使用最终别名变量渲染 output 模板
 5. **持久化**: 验证并保存 output，更新后端配置
+
+如果签到请求的响应文本包含 `turnstile`，服务端会使用系统设置中的 `cdp_address` 连接 Chrome，通过 CDP 在控制台页面中完成 Turnstile 验证，再将 token 同时加入原请求的 URL 参数和 JSON body 重试。CDP 地址不可用、页面验证失败或无法获取 token 时，签到直接失败。
 
 ### 控制流
 

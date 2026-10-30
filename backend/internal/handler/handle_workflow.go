@@ -23,9 +23,10 @@ import (
 const maxWorkflowDefinitionBytes = 4 << 20
 
 type WorkflowHandler struct {
-	store      *store.Store
-	cfg        *config.Config
-	httpClient *http.Client
+	store           *store.Store
+	cfg             *config.Config
+	httpClient      *http.Client
+	turnstileSolver func(context.Context, service.GeneralWorkflowTurnstileRequest) (service.GeneralWorkflowTurnstileResult, error)
 }
 
 func NewWorkflowHandler(st *store.Store) *WorkflowHandler {
@@ -47,6 +48,12 @@ func (h *WorkflowHandler) focusModelPatterns() string {
 // useful for tests and controlled embedding environments.
 func (h *WorkflowHandler) SetHTTPClient(client *http.Client) {
 	h.httpClient = client
+}
+
+// SetTurnstileSolver overrides the browser-backed solver for tests and
+// controlled embedding environments.
+func (h *WorkflowHandler) SetTurnstileSolver(solver func(context.Context, service.GeneralWorkflowTurnstileRequest) (service.GeneralWorkflowTurnstileResult, error)) {
+	h.turnstileSolver = solver
 }
 
 type workflowView struct {
@@ -294,6 +301,13 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		UserAgent:        h.consoleUserAgent(),
 		ProtectedHeaders: []string{},
 	})
+	turnstileSolver := h.turnstileSolver
+	if turnstileSolver == nil {
+		endpoint := h.chromeCDPEndpoint()
+		turnstileSolver = func(solveCtx context.Context, request service.GeneralWorkflowTurnstileRequest) (service.GeneralWorkflowTurnstileResult, error) {
+			return service.SolveTurnstile(solveCtx, endpoint, request)
+		}
+	}
 	result, err := engine.Execute(ctx, definition, service.GeneralWorkflowRunOptions{
 		BaseURL:        backend.ConsoleURL,
 		Headers:        headers,
@@ -307,9 +321,10 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 			"user_id":        consoleStoredAccountID(backend),
 			"headers":        workflowRuntimeHeaders(headers),
 		},
-		Recorder:       recorder,
-		DebugLog:       debugLogs.Record,
-		ValidateOutput: service.ValidateCheckinWorkflowOutput,
+		TurnstileSolver: turnstileSolver,
+		Recorder:        recorder,
+		DebugLog:        debugLogs.Record,
+		ValidateOutput:  service.ValidateCheckinWorkflowOutput,
 	})
 	if err != nil {
 		if len(result.ResponseCookies) > 0 {
@@ -712,6 +727,13 @@ func (h *WorkflowHandler) consoleUserAgent() string {
 		return config.DefaultBackendConsoleUserAgent
 	}
 	return strings.TrimSpace(h.cfg.BackendConsoleUserAgent)
+}
+
+func (h *WorkflowHandler) chromeCDPEndpoint() string {
+	if h.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.cfg.ChromeCDPEndpoint)
 }
 
 func writeWorkflowExecutionError(w http.ResponseWriter, status int, message string, requests []service.ConsoleRequestLog, debugLogs []service.GeneralWorkflowDebugLog) {
