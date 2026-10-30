@@ -54,6 +54,7 @@ interface ExpectRouteRow {
 interface StepForm {
   id: string
   turnstile: boolean
+  turnstilekey: string
   foreachAlias: string
   foreachAs: string
   foreachIndexAs: string
@@ -92,6 +93,7 @@ function emptyStep(): StepForm {
   return {
     id: '',
     turnstile: false,
+    turnstilekey: '',
     foreachAlias: '',
     foreachAs: '',
     foreachIndexAs: '',
@@ -244,6 +246,7 @@ function defToForm(def: WorkflowDefinition) {
   form.steps = def.steps.map((step) => ({
     id: step.id,
     turnstile: step.turnstile === 'enable',
+    turnstilekey: step.turnstilekey || '',
     foreachAlias: step.foreach?.alias || '',
     foreachAs: step.foreach?.as || '',
     foreachIndexAs: step.foreach?.index_as || '',
@@ -522,6 +525,7 @@ function validateForm(): string[] {
         errors.push(`${label}：Body 不是合法 JSON`)
       }
     }
+    if (st.turnstile && !st.turnstilekey.trim()) errors.push(`${label}：启用 Turnstile 时必须填写 Turnstile Key`)
     const when = st.when.trim()
     const whenGoto = st.whenGoto.trim()
     if ((when === '') !== (whenGoto === '')) errors.push(`${label}：When 条件和跳转目标必须同时配置`)
@@ -586,7 +590,10 @@ function formToDef(): WorkflowDefinition {
       id: st.id.trim(),
       request: request as WorkflowStep['request']
     }
-    if (st.turnstile) step.turnstile = 'enable'
+    if (st.turnstile) {
+      step.turnstile = 'enable'
+      step.turnstilekey = st.turnstilekey.trim()
+    }
     const foreachAlias = st.foreachAlias.trim()
     const foreachAs = st.foreachAs.trim()
     const foreachIndexAs = st.foreachIndexAs.trim()
@@ -844,6 +851,10 @@ onMounted(loadData)
                   <option :value="true">enable</option>
                 </select>
                 <span class="wf-hint">仅响应 body 包含 Turnstile 时触发</span>
+              </div>
+              <div v-if="st.turnstile" class="field">
+                <label class="field-label">Turnstile Key</label>
+                <input v-model="st.turnstilekey" class="input mono" placeholder="站点提供的 Turnstile sitekey" spellcheck="false" />
               </div>
               <div class="field">
                 <label class="field-label">请求 <em class="wf-hint">相对路径，支持引用</em></label>

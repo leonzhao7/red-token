@@ -159,6 +159,7 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
   "steps":[{
     "id":"checkin",
     "turnstile":"enable",
+    "turnstilekey":"configured-sitekey",
     "request":{"method":"POST","path":"/api/checkin","body":{"action":"checkin"}},
     "expect":"$response.status == 200",
     "extract":[{"alias":"message","expression":".message"}]
@@ -170,26 +171,44 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
 		name             string
 		status           int
 		body             string
+		turnstile        string
 		expectSolverCall bool
 		retryBody        string
+		wantOutput       string
 	}{
 		{
 			name:             "ordinary response",
 			status:           http.StatusOK,
 			body:             `{"message":"check-in complete"}`,
+			turnstile:        "enable",
 			expectSolverCall: false,
+			wantOutput:       "check-in complete",
+		},
+		{
+			name:       "Turnstile response with disabled step",
+			status:     http.StatusOK,
+			body:       `{"message":"Turnstile token is empty"}`,
+			wantOutput: "Turnstile token is empty",
 		},
 		{
 			name:             "Turnstile response",
 			status:           http.StatusBadRequest,
 			body:             `{"message":"Turnstile token is empty"}`,
+			turnstile:        "enable",
 			expectSolverCall: true,
 			retryBody:        `{"message":"check-in complete"}`,
+			wantOutput:       "check-in complete",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			testDefinition := definition
+			testDefinition.Steps = append([]GeneralWorkflowStep(nil), definition.Steps...)
+			testDefinition.Steps[0].Turnstile = test.turnstile
+			if test.turnstile == "" {
+				testDefinition.Steps[0].TurnstileKey = ""
+			}
 			requestCount := 0
 			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				requestCount++
@@ -202,10 +221,13 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
 			})}
 			workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
 			solverCalls := 0
-			result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
+			result, err := workflow.Execute(context.Background(), testDefinition, GeneralWorkflowRunOptions{
 				BaseURL: "https://console.example",
 				TurnstileSolver: func(_ context.Context, request GeneralWorkflowTurnstileRequest) (GeneralWorkflowTurnstileResult, error) {
 					solverCalls++
+					if request.SiteKey != "configured-sitekey" {
+						t.Fatalf("solver received sitekey %q, want configured-sitekey", request.SiteKey)
+					}
 					if request.ResponseText != test.body {
 						t.Fatalf("solver received response body %q, want %q", request.ResponseText, test.body)
 					}
@@ -229,7 +251,7 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
 				if requestCount != 1 {
 					t.Fatalf("initial request count=%d, want 1", requestCount)
 				}
-				if got := result.Output.(map[string]any)["message"]; got != "check-in complete" {
+				if got := result.Output.(map[string]any)["message"]; got != test.wantOutput {
 					t.Fatalf("retry output=%#v", result.Output)
 				}
 				return
@@ -243,7 +265,7 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
 			if requestCount != 1 {
 				t.Fatalf("ordinary request count=%d, want 1", requestCount)
 			}
-			if got := result.Output.(map[string]any)["message"]; got != "check-in complete" {
+			if got := result.Output.(map[string]any)["message"]; got != test.wantOutput {
 				t.Fatalf("ordinary output=%#v", result.Output)
 			}
 		})
@@ -1152,6 +1174,16 @@ func TestParseGeneralWorkflowRejectsInvalidDefinitions(t *testing.T) {
 			name:       "step name is unsupported",
 			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","name":"Step","request":{"method":"GET","path":"/"}}],"output":{}}`,
 			want:       "unknown field \"name\"",
+		},
+		{
+			name:       "turnstile key required when enabled",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","turnstile":"enable","request":{"method":"GET","path":"/"}}],"output":{}}`,
+			want:       "turnstilekey is required when turnstile is enabled",
+		},
+		{
+			name:       "turnstile key requires enabled feature",
+			definition: `{"spec":"http-workflow/v1","id":"test","name":"Test","steps":[{"id":"step","turnstilekey":"site-key","request":{"method":"GET","path":"/"}}],"output":{}}`,
+			want:       "turnstilekey requires turnstile to be \"enable\"",
 		},
 	}
 	for _, test := range tests {

@@ -80,13 +80,14 @@ type GeneralWorkflowDefinition struct {
 }
 
 type GeneralWorkflowStep struct {
-	ID        string                      `json:"id"`
-	Turnstile string                      `json:"turnstile,omitempty"`
-	Foreach   *GeneralWorkflowForeach     `json:"foreach,omitempty"`
-	Request   GeneralWorkflowRequest      `json:"request"`
-	Expect    *GeneralWorkflowExpect      `json:"expect,omitempty"`
-	Extract   []GeneralWorkflowExtraction `json:"extract,omitempty"`
-	When      *GeneralWorkflowWhen        `json:"when,omitempty"`
+	ID           string                      `json:"id"`
+	Turnstile    string                      `json:"turnstile,omitempty"`
+	TurnstileKey string                      `json:"turnstilekey,omitempty"`
+	Foreach      *GeneralWorkflowForeach     `json:"foreach,omitempty"`
+	Request      GeneralWorkflowRequest      `json:"request"`
+	Expect       *GeneralWorkflowExpect      `json:"expect,omitempty"`
+	Extract      []GeneralWorkflowExtraction `json:"extract,omitempty"`
+	When         *GeneralWorkflowWhen        `json:"when,omitempty"`
 }
 
 type GeneralWorkflowForeach struct {
@@ -180,6 +181,7 @@ type GeneralWorkflowRunOptions struct {
 type GeneralWorkflowTurnstileRequest struct {
 	Method         string
 	URL            string
+	SiteKey        string
 	Headers        http.Header
 	Body           []byte
 	ResponseStatus int
@@ -444,6 +446,25 @@ func validateGeneralWorkflowDefinitionShape(value any) error {
 				return fmt.Errorf("%s/turnstile must be \"enable\" when configured", path)
 			}
 		}
+		turnstileEnabled := step["turnstile"] == "enable"
+		if turnstileKey, exists := step["turnstilekey"]; exists {
+			value, ok := turnstileKey.(string)
+			if !ok {
+				return fmt.Errorf("%s/turnstilekey must be a string", path)
+			}
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s/turnstilekey must not be empty", path)
+			}
+			if !turnstileEnabled {
+				return fmt.Errorf("%s/turnstilekey requires turnstile to be \"enable\"", path)
+			}
+		}
+		if turnstileEnabled {
+			key, exists := step["turnstilekey"].(string)
+			if !exists || strings.TrimSpace(key) == "" {
+				return fmt.Errorf("%s/turnstilekey is required when turnstile is enabled", path)
+			}
+		}
 		if foreachValue, exists := step["foreach"]; exists {
 			foreach, ok := foreachValue.(map[string]any)
 			if !ok {
@@ -641,6 +662,12 @@ func compileGeneralWorkflow(definition GeneralWorkflowDefinition) (compiledGener
 		stepIDs[step.ID] = index
 		if step.Turnstile != "" && step.Turnstile != "enable" {
 			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstile must be \"enable\" when configured", index)
+		}
+		if step.Turnstile == "enable" && strings.TrimSpace(step.TurnstileKey) == "" {
+			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstilekey is required when turnstile is enabled", index)
+		}
+		if step.Turnstile != "enable" && step.TurnstileKey != "" {
+			return compiledGeneralWorkflow{}, fmt.Errorf("steps[%d] turnstilekey requires turnstile to be \"enable\"", index)
 		}
 		if step.Foreach != nil {
 			if definition.Spec != GeneralWorkflowSpecV3 && definition.Spec != GeneralWorkflowSpecV4 && definition.Spec != GeneralWorkflowSpecV5 {
@@ -1070,6 +1097,7 @@ stepLoop:
 				turnstileResult, solveErr := options.TurnstileSolver(ctx, GeneralWorkflowTurnstileRequest{
 					Method:         request.method,
 					URL:            turnstileRequestURL.String(),
+					SiteKey:        step.definition.TurnstileKey,
 					Headers:        request.headers.Clone(),
 					Body:           append([]byte(nil), request.bodyBytes...),
 					ResponseStatus: generalWorkflowResponseStatus(response),

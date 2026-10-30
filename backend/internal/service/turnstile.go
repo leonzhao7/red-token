@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	turnstilePageTimeout = 60 * time.Second
+	turnstilePageTimeout = 180 * time.Second
 	turnstileDefaultWait = 120 * time.Second
 )
 
@@ -29,6 +29,10 @@ func SolveTurnstile(ctx context.Context, endpoint string, request GeneralWorkflo
 	target, err := url.Parse(strings.TrimSpace(request.URL))
 	if err != nil || target.Scheme != "http" && target.Scheme != "https" || target.Host == "" {
 		return GeneralWorkflowTurnstileResult{}, errors.New("invalid Turnstile request URL")
+	}
+	sitekey := strings.TrimSpace(request.SiteKey)
+	if sitekey == "" {
+		return GeneralWorkflowTurnstileResult{}, errors.New("Turnstile sitekey is not configured for this workflow step")
 	}
 	pageURL := *target
 	pageURL.Path = "/"
@@ -48,20 +52,11 @@ func SolveTurnstile(ctx context.Context, endpoint string, request GeneralWorkflo
 	if err := client.enable(pageURL.String(), request.Headers); err != nil {
 		return GeneralWorkflowTurnstileResult{}, err
 	}
-	defer client.clearExtraHeaders()
 	if _, err := client.command(ctx, "Page.navigate", map[string]any{"url": pageURL.String()}); err != nil {
 		return GeneralWorkflowTurnstileResult{}, fmt.Errorf("navigate Chrome page: %w", err)
 	}
-	if err := client.waitForPage(ctx); err != nil {
+	if err := client.waitForCloudflarePass(ctx, target.Hostname()); err != nil {
 		return GeneralWorkflowTurnstileResult{}, err
-	}
-
-	sitekey, err := client.sitekey(ctx)
-	if err != nil {
-		return GeneralWorkflowTurnstileResult{}, err
-	}
-	if sitekey == "" {
-		return GeneralWorkflowTurnstileResult{}, errors.New("Turnstile sitekey was not found")
 	}
 
 	wait := turnstileDefaultWait
@@ -231,18 +226,6 @@ func (client *turnstileCDPClient) enable(pageURL string, headers http.Header) er
 	if _, err := client.command(ctx, "Network.enable", nil); err != nil {
 		return fmt.Errorf("enable Chrome Network domain: %w", err)
 	}
-	headerValues := make(map[string]string, len(headers))
-	for name, values := range headers {
-		if strings.EqualFold(name, "content-length") || strings.EqualFold(name, "host") || strings.EqualFold(name, "cookie") {
-			continue
-		}
-		if len(values) > 0 {
-			headerValues[name] = strings.Join(values, ", ")
-		}
-	}
-	if _, err := client.command(ctx, "Network.setExtraHTTPHeaders", map[string]any{"headers": headerValues}); err != nil {
-		return fmt.Errorf("set Chrome request headers: %w", err)
-	}
 	for name, values := range headers {
 		if !strings.EqualFold(name, "cookie") {
 			continue
@@ -261,50 +244,111 @@ func (client *turnstileCDPClient) enable(pageURL string, headers http.Header) er
 	return nil
 }
 
-func (client *turnstileCDPClient) clearExtraHeaders() {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, _ = client.command(ctx, "Network.setExtraHTTPHeaders", map[string]any{"headers": map[string]string{}})
+type turnstilePageSnapshot struct {
+	URL       string
+	Title     string
+	Ready     string
+	Text      string
+	Challenge bool
 }
 
-func (client *turnstileCDPClient) waitForPage(ctx context.Context) error {
+func (client *turnstileCDPClient) waitForCloudflarePass(ctx context.Context, expectedHost string) error {
 	deadline := time.Now().Add(turnstilePageTimeout)
+	clearSnapshots := 0
+	var lastSnapshot turnstilePageSnapshot
 	for time.Now().Before(deadline) {
-		value, err := client.evaluate(ctx, `(() => ({title: document.title || '', ready: document.readyState || ''}))()`)
+		value, err := client.evaluate(ctx, `(() => ({
+  url: location.href || '',
+  title: document.title || '',
+  ready: document.readyState || '',
+  text: (document.body && document.body.innerText || '').slice(0, 3000),
+  challenge: Array.from(document.querySelectorAll('#challenge-form, #cf-challenge-running, #challenge-stage, iframe[src*="/cdn-cgi/challenge-platform/"]')).some(element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })
+    || location.pathname.includes('/cdn-cgi/challenge-platform/')
+    || location.search.includes('__cf_chl')
+}))()`)
 		if err == nil {
 			if state, ok := value.(map[string]any); ok {
-				title, _ := state["title"].(string)
-				ready, _ := state["ready"].(string)
-				lowerTitle := strings.ToLower(title)
-				if ready != "loading" && !strings.Contains(lowerTitle, "just a moment") && !strings.Contains(lowerTitle, "attention required") && !strings.Contains(lowerTitle, "checking your browser") {
-					return nil
+				lastSnapshot = turnstilePageSnapshot{
+					URL:       stringFromMap(state, "url"),
+					Title:     stringFromMap(state, "title"),
+					Ready:     stringFromMap(state, "ready"),
+					Text:      stringFromMap(state, "text"),
+					Challenge: state["challenge"] == true,
+				}
+				if turnstileCloudflareVerificationFailed(lastSnapshot) {
+					return fmt.Errorf("Cloudflare verification failed on the relay page (title: %q)", lastSnapshot.Title)
+				}
+				if turnstileCloudflareChallengeActive(lastSnapshot, expectedHost) || lastSnapshot.Ready == "loading" {
+					clearSnapshots = 0
+				} else {
+					clearSnapshots++
+					if clearSnapshots >= 3 {
+						return nil
+					}
 				}
 			}
 		}
-		if err := sleepWithContext(ctx, 2*time.Second); err != nil {
+		if err := sleepWithContext(ctx, time.Second); err != nil {
 			return err
 		}
 	}
-	return errors.New("waiting for Cloudflare page timed out")
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if turnstileCloudflareChallengeActive(lastSnapshot, expectedHost) {
+		return fmt.Errorf("Cloudflare verification is still active after %s (page title: %q); complete the browser check and retry", turnstilePageTimeout, lastSnapshot.Title)
+	}
+	return fmt.Errorf("waiting for the relay page to finish loading timed out after %s", turnstilePageTimeout)
 }
 
-func (client *turnstileCDPClient) sitekey(ctx context.Context) (string, error) {
-	value, err := client.evaluate(ctx, `(async () => {
-  try {
-    const response = await fetch('/api/status', {credentials: 'include'});
-    const data = await response.json();
-    const key = (data && data.data && (data.data.turnstile_site_key || data.data.turnstile_sitekey)) || (data && data.turnstile_site_key) || '';
-    if (key) return key;
-  } catch (_) {
-  }
-  const element = document.querySelector('[data-sitekey]');
-  return element ? (element.getAttribute('data-sitekey') || '') : '';
-})()`)
-	if err != nil {
-		return "", fmt.Errorf("read Turnstile sitekey: %w", err)
+func turnstileCloudflareVerificationFailed(snapshot turnstilePageSnapshot) bool {
+	pageText := strings.ToLower(snapshot.Title + "\n" + snapshot.Text)
+	for _, marker := range []string{"verification failed", "验证失败", "验证未通过"} {
+		if strings.Contains(pageText, marker) {
+			return true
+		}
 	}
-	result, _ := value.(string)
-	return strings.TrimSpace(result), nil
+	return false
+}
+
+func turnstileCloudflareChallengeActive(snapshot turnstilePageSnapshot, expectedHost string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(snapshot.URL))
+	if err != nil || !strings.EqualFold(parsed.Hostname(), expectedHost) {
+		return true
+	}
+	if snapshot.Challenge {
+		return true
+	}
+	pageText := strings.ToLower(snapshot.Title + "\n" + snapshot.Text)
+	for _, marker := range []string{
+		"just a moment",
+		"attention required",
+		"checking your browser",
+		"verify you are human",
+		"verify you are a human",
+		"performing security verification",
+		"complete the security check",
+		"security verification",
+		"验证您是人类",
+		"验证您是真人",
+		"确认您是人类",
+		"请完成人机验证",
+		"正在验证您的浏览器",
+	} {
+		if strings.Contains(pageText, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringFromMap(value map[string]any, key string) string {
+	result, _ := value[key].(string)
+	return result
 }
 
 func (client *turnstileCDPClient) solve(ctx context.Context, sitekey string, wait time.Duration) (string, error) {

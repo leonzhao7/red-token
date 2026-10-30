@@ -792,7 +792,7 @@ X-Api-Key: tg-xxxxxxxx
 - `console_headers` 保存工作流和 Chrome CDP 使用的控制台请求头。
 - `console_headers` 的名称和值不能为空，名称必须是合法 HTTP Header 名，值不能含非法控制字符。
 - `console_checkin_workflow_id` 非空时启用签到；工作流输出负责更新账户、API Key 和模型价格。
-- 只有签到步骤配置 `turnstile: "enable"` 且响应 body 包含 `Turnstile` 时，服务端才会使用系统配置中的 `cdp_address` 连接 Chrome，完成验证后把 token 同时放入原请求的 URL 参数和 JSON body 重试；CDP 不可用或验证失败时签到失败。
+- 只有签到步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且响应 body 包含 `Turnstile` 时，服务端才会使用系统配置中的 `cdp_address` 连接 Chrome，完成验证后把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试；CDP 不可用或验证失败时签到失败。
 - `manual_checkin` 为布尔值，默认 `false`；每次签到工作流执行都会将其作为 `$runtime.manual_checkin` 和 `{{runtime#/manual_checkin}}` 提供。
 - 请求中的 `status` 和 `endpoints` 当前会被解析但不会用于创建；新后端状态固定归一化为 `normal`。
 
@@ -948,7 +948,7 @@ Content-Type: application/json
 
 - 后端存在且 `console_url` 为合法 HTTP(S) URL。
 - 必须配置存在的 `console_checkin_workflow_id`。
-- 工作流使用控制台请求头、用户名密码、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。只有步骤配置 `turnstile: "enable"` 且服务端返回 body 包含 `turnstile` 的错误消息时，签到才会使用系统配置中的 `cdp_address` 连接 Chrome 完成人机验证，再把 token 同时放入原请求的 URL 参数和 JSON body 重试；CDP 不可用或验证失败会返回签到失败。
+- 工作流使用控制台请求头、用户名密码、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。只有步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且服务端返回 body 包含 `turnstile` 的错误消息时，签到才会使用系统配置中的 `cdp_address` 连接 Chrome 完成人机验证，再把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试；CDP 不可用或验证失败会返回签到失败。
 
 普通 JSON 响应 `200`：
 
