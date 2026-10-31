@@ -165,6 +165,7 @@ func (h *UsageLogHandler) HandleGetUsageLog(w http.ResponseWriter, r *http.Reque
 			"input_tokens":       entry.InputTokens,
 			"output_tokens":      entry.OutputTokens,
 			"input_cache_tokens": entry.InputCacheTokens,
+			"first_token_ms":     entry.FirstTokenMS,
 		},
 		"request": map[string]any{
 			"bytes":        entry.RequestBytes,

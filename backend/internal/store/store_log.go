@@ -128,7 +128,7 @@ func (s *Store) migrateLegacyUsageLogModels(ctx context.Context) error {
 	allRows, err := tx.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
@@ -184,7 +184,7 @@ func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordC
 		INSERT INTO usage_logs(
 			request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
@@ -193,7 +193,7 @@ func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordC
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?
@@ -217,6 +217,7 @@ func (s *Store) appendUsageLog(ctx context.Context, log domain.UsageLog, recordC
 		log.StatusCode,
 		nonEmpty(log.StatusFamily, statusFamily(log.StatusCode)),
 		log.DurationMS,
+		log.FirstTokenMS,
 		strings.TrimSpace(log.ErrorMessage),
 		strings.TrimSpace(log.ClientIP),
 		strings.TrimSpace(log.UserAgent),
@@ -258,7 +259,7 @@ func (s *Store) GetUsageLog(ctx context.Context, id int64) (domain.UsageLog, err
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
@@ -273,7 +274,7 @@ func (s *Store) UsageLogStats(ctx context.Context, filter UsageLogFilter) (Usage
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
@@ -360,7 +361,7 @@ func (s *Store) ListUsageLogsPageFiltered(ctx context.Context, filter UsageLogFi
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
@@ -559,6 +560,7 @@ func scanUsageLog(s scanner) (domain.UsageLog, error) {
 		&entry.StatusCode,
 		&entry.StatusFamily,
 		&entry.DurationMS,
+		&entry.FirstTokenMS,
 		&entry.ErrorMessage,
 		&entry.ClientIP,
 		&entry.UserAgent,
@@ -592,7 +594,7 @@ func (s *Store) listUsageLogsSince(ctx context.Context, since time.Time) ([]doma
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at
@@ -639,7 +641,7 @@ func (s *Store) listUsageLogsByColumn(ctx context.Context, column string, id int
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, client_id, client_name, client_token_prefix,
 			method, path, query, endpoint, model, requested_model, backend_id, backend_name, proxy_id, proxy_name,
-			attempts, status_code, status_family, duration_ms, error_message, client_ip, user_agent, trace_id,
+			attempts, status_code, status_family, duration_ms, first_token_ms, error_message, client_ip, user_agent, trace_id,
 			request_bytes, response_bytes, input_tokens, output_tokens, input_cache_tokens,
 			request_headers_json, request_body_preview, response_headers_json, response_body_preview,
 			preview_truncated, is_stream, created_at

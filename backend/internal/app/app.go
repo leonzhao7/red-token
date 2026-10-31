@@ -538,6 +538,12 @@ func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
+		resp.Body = &firstByteTrackingBody{
+			ReadCloser: resp.Body,
+			onFirstByte: func() {
+				usageLog.FirstTokenMS = time.Since(attemptStartedAt).Milliseconds()
+			},
+		}
 		resp, err = decodeUpstreamResponse(resp)
 		if err != nil {
 			if requestContextCanceled(r.Context(), err) {
@@ -730,6 +736,7 @@ func resetAttemptUsageLog(log *domain.UsageLog, requestPreviewTruncated bool) {
 	log.StatusFamily = ""
 	log.Model = log.RequestedModel
 	log.DurationMS = 0
+	log.FirstTokenMS = 0
 	log.ErrorMessage = ""
 	log.BackendID = 0
 	log.BackendName = ""
@@ -743,6 +750,23 @@ func resetAttemptUsageLog(log *domain.UsageLog, requestPreviewTruncated bool) {
 	log.ResponseBodyPreview = ""
 	log.PreviewTruncated = requestPreviewTruncated
 	log.IsStream = false
+}
+
+type firstByteTrackingBody struct {
+	io.ReadCloser
+	onFirstByte func()
+	recorded    bool
+}
+
+func (b *firstByteTrackingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 && !b.recorded {
+		b.recorded = true
+		if b.onFirstByte != nil {
+			b.onFirstByte()
+		}
+	}
+	return n, err
 }
 
 func requestContextCanceled(ctx context.Context, err error) bool {

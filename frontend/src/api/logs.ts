@@ -16,6 +16,7 @@ export interface UsageLog {
   output_tokens: number
   input_cache_tokens?: number
   duration_ms?: number
+  first_token_ms?: number
   request_bytes?: number
   response_bytes?: number
   path?: string

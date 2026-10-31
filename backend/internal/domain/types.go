@@ -166,6 +166,7 @@ type UsageLog struct {
 	StatusCode          int       `json:"status_code"`
 	StatusFamily        string    `json:"status_family"`
 	DurationMS          int64     `json:"duration_ms"`
+	FirstTokenMS        int64     `json:"first_token_ms,omitempty"`
 	ErrorMessage        string    `json:"error_message"`
 	ClientIP            string    `json:"client_ip"`
 	UserAgent           string    `json:"user_agent"`

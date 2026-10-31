@@ -232,6 +232,7 @@ X-Api-Key: tg-xxxxxxxx
   "status_code": 200,
   "status_family": "2xx",
   "duration_ms": 820,
+  "first_token_ms": 320,
   "error_message": "",
   "client_ip": "127.0.0.1:50000",
   "user_agent": "curl/8.0",

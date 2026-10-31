@@ -262,10 +262,13 @@ onMounted(() => {
                   <span class="status-code" :class="statusColor(l)">{{ l.status_code || '—' }}</span>
                 </td>
                 <td>
-                  <span v-if="l.duration_ms != null" class="mono latency" :class="l.duration_ms > 60000 ? 'slow' : ''">
-                    <Timer :size="12" /> {{ (l.duration_ms / 1000).toFixed(2) }}s
-                  </span>
-                  <span v-else class="text-faint">—</span>
+                  <div class="cell-l1">
+                    <span v-if="l.duration_ms != null" class="mono latency" :class="l.duration_ms > 60000 ? 'slow' : ''">
+                      <Timer :size="12" /> {{ (l.duration_ms / 1000).toFixed(2) }}s
+                    </span>
+                    <span v-else class="text-faint">—</span>
+                  </div>
+                  <div class="cell-l2 mono">{{ l.first_token_ms != null && l.first_token_ms > 0 ? (l.first_token_ms / 1000).toFixed(2) + 's' : '—' }}</div>
                 </td>
                 <td class="mono">
                   <div class="cell-l1">输入 {{ (l.input_tokens || 0).toLocaleString() }}</div>
