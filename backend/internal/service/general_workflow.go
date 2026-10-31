@@ -1532,10 +1532,8 @@ func generalWorkflowDebugValue(name string, value any) any {
 
 func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[string]any) (map[string]any, error) {
 	runtime := map[string]any{
-		"username": "",
-		"password": "",
-		"user_id":  "",
-		"headers":  map[string]any{},
+		"user_id": "",
+		"headers": map[string]any{},
 	}
 	if values != nil {
 		normalized, err := canonicalGeneralWorkflowJSON(values, "runtime")
@@ -1550,6 +1548,8 @@ func (workflow *GeneralWorkflow) buildRuntime(workflowID string, values map[stri
 			runtime[name] = value
 		}
 	}
+	delete(runtime, "password")
+	delete(runtime, "username")
 	startedAt := workflow.now()
 	runtime["workflow_id"] = workflowID
 	runtime["started_at"] = startedAt.UTC().Format(time.RFC3339Nano)

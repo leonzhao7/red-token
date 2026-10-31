@@ -211,8 +211,6 @@ const SAMPLE_DEFINITION = `{
 const activeEditor = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const availableAliases = computed(() => {
   const seen: string[] = [
-    'runtime#/username',
-    'runtime#/password',
     'runtime#/user_id',
     'runtime#/manual_checkin',
     'runtime#/headers',

@@ -47,8 +47,6 @@ export interface BackendResponse {
   api_keys: BackendApiKey[]
   console_url: string
   tags: string[]
-  console_username: string
-  console_password: string
   console_refresh_token: string
   console_checkin_workflow_id: string
   manual_checkin: boolean
@@ -72,8 +70,6 @@ export interface BackendWritePayload {
   api_keys?: BackendApiKey[]
   console_url?: string
   tags?: string[]
-  console_username?: string
-  console_password?: string
   console_refresh_token?: string
   user_id?: string
   console_checkin_workflow_id?: string

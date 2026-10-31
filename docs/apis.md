@@ -27,7 +27,7 @@ X-Api-Key: tg-xxxxxxxx
 
 当两个请求头同时存在时优先使用 `Authorization`。`Authorization` 也接受不带 `Bearer` 前缀的原始密钥。
 
-当前 `/admin/api/*` 管理接口没有鉴权中间件。部署到非可信网络前，必须在反向代理层增加访问控制。管理接口的部分响应包含上游 API Key、控制台凭据、代理密码、客户端 Token 和请求/响应预览等敏感数据。
+当前 `/admin/api/*` 管理接口没有鉴权中间件。部署到非可信网络前，必须在反向代理层增加访问控制。管理接口的部分响应包含上游 API Key、控制台请求头、代理密码、客户端 Token 和请求/响应预览等敏感数据。
 
 ### 1.2 JSON 请求约定
 
@@ -164,8 +164,6 @@ X-Api-Key: tg-xxxxxxxx
 | `api_keys` | `BackendAPIKey[]` | 上游密钥及模型路由配置 |
 | `console_url` | string | 管理控制台基础地址 |
 | `tags` | string[] | 标签 |
-| `console_username` | string | 控制台用户名 |
-| `console_password` | string | 控制台密码，可省略 |
 | `console_checkin_workflow_id` | string | 绑定的签到工作流 ID；空值表示不启用签到 |
 | `manual_checkin` | boolean | 传递给签到工作流 `$runtime.manual_checkin` 的手工签到标记，默认 `false` |
 | `console_headers` | object<string,string> | 控制台请求头 |
@@ -692,8 +690,6 @@ X-Api-Key: tg-xxxxxxxx
         }
       ],
       "console_url": "https://free.lyclaude.site",
-      "console_username": "user@example.com",
-      "console_password": "password",
       "console_checkin_workflow_id": "relay-default-checkin",
       "console_headers": {"Cookie": "session=..."},
       "console_models": "[{\"cheapest_groups\":[\"default\"],\"in_price\":2.5,\"name\":\"gpt-5.6-sol\",\"out_price\":20,\"price_type\":0}]",
@@ -714,7 +710,7 @@ X-Api-Key: tg-xxxxxxxx
 }
 ```
 
-该管理接口包含未脱敏的 API Key、控制台密码和控制台请求头，只能暴露在受保护的管理端。
+该管理接口包含未脱敏的 API Key 和控制台请求头，只能暴露在受保护的管理端。
 
 ### 6.2 后端详情
 
@@ -728,7 +724,7 @@ X-Api-Key: tg-xxxxxxxx
 
 - `overview`：控制台地址、签到工作流、状态、失败次数、恢复时间、代理、协议和权重等。
 - `configuration`：已脱敏的 API Key、标签、备注、基础地址、控制台账户和定价对象。
-- `raw`：已对 API Key、控制台密码、Cookie 和控制台请求头值做 `set` 标记。
+- `raw`：已对 API Key、Cookie 和控制台请求头值做 `set` 标记。
 - `activity.usage` 与 `activity.usage_logs`：最近 10 条相关用量日志。
 - `activity.events`：最近 10 条相关事件。
 
@@ -758,8 +754,6 @@ X-Api-Key: tg-xxxxxxxx
   ],
   "console_url": "https://console.example.com",
   "tags": ["primary"],
-  "console_username": "admin",
-  "console_password": "password",
   "console_checkin_workflow_id": "relay-default-checkin",
   "manual_checkin": false,
   "console_headers": {"Authorization": "Bearer ..."},
@@ -814,8 +808,6 @@ X-Api-Key: tg-xxxxxxxx
   "api_keys": [],
   "console_url": "https://console.example.com",
   "tags": ["primary", "updated"],
-  "console_username": "admin",
-  "console_password": "new-password",
   "console_checkin_workflow_id": "relay-default-checkin",
   "manual_checkin": true,
   "console_headers": {"Cookie": "session=..."},
@@ -882,9 +874,7 @@ Content-Type: application/json
       "api_keys": [],
       "console_url": "https://console.example.com",
       "tags": [],
-      "console_username": "admin",
-      "console_password": "password",
-      "console_headers": {},
+          "console_headers": {},
       "console_account_json": "{}",
       "console_pricing_json": "{}",
       "notes": "",
@@ -948,7 +938,7 @@ Content-Type: application/json
 
 - 后端存在且 `console_url` 为合法 HTTP(S) URL。
 - 必须配置存在的 `console_checkin_workflow_id`。
-- 工作流使用控制台请求头、用户名密码、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。只有步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且服务端返回 body 包含 `turnstile` 的错误消息时，签到才会使用系统配置中的 `cdp_address` 连接 Chrome 完成人机验证，再把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试。`turnstilekey` 支持 `{{alias}}` 模板引用，`$vars.name` 仅适用于 jq 表达式；CDP 不可用或验证失败会返回签到失败。
+- 工作流使用控制台请求头、Chrome CDP 写入的 Cookie/Authorization 和代理配置完成签到，并通过固定输出同步账户、API Key 与模型价格。只有步骤配置 `turnstile: "enable"` 和 `turnstilekey` 且服务端返回 body 包含 `turnstile` 的错误消息时，签到才会使用系统配置中的 `cdp_address` 连接 Chrome 完成人机验证，再把 token 同时放入该步骤原请求的 URL 参数和 JSON body 重试。`turnstilekey` 支持 `{{alias}}` 模板引用，`$vars.name` 仅适用于 jq 表达式；CDP 不可用或验证失败会返回签到失败。
 
 普通 JSON 响应 `200`：
 
@@ -1008,7 +998,7 @@ NDJSON 响应：HTTP 状态在流建立时固定为 `200`，每行一个 JSON �
 
 请求体：无。
 
-要求合法 `console_url` 和已绑定的 `console_checkin_workflow_id`。工作流使用中转站保存的 Headers、用户名、密码和 Chrome CDP 凭据。
+要求合法 `console_url` 和已绑定的 `console_checkin_workflow_id`。工作流使用中转站保存的 Headers 和 Chrome CDP 凭据。
 
 响应 `200`：
 
@@ -1234,7 +1224,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 - `backend_id`：必填正整数，指定执行请求所使用的后端/中转站。
 - `aliases`：可选对象，作为本次运行的初始 alias store；名称和值仍受工作流规范约束。
-- `$runtime` 除规范字段外还包含 `backend_id`、`backend_name`，并使用所选中转站填充 `username`、`password`、`user_id`、`manual_checkin` 和宿主提供的基础控制台 `headers` 字典。`manual_checkin` 是中转站配置的布尔值。jq 表达式通过 `$runtime.username`、`$runtime.manual_checkin` 等字段读取；请求模板通过 `{{runtime#/username}}`、`{{runtime#/password}}`、`{{runtime#/user_id}}`、`{{runtime#/manual_checkin}}` 和 `{{runtime#/headers/Header-Name}}` 读取。`runtime` 不会写入响应的 `aliases`。
+- `$runtime` 除规范字段外还包含 `backend_id`、`backend_name`，并使用所选中转站填充 `user_id`、`manual_checkin` 和宿主提供的基础控制台 `headers` 字典。`manual_checkin` 是中转站配置的布尔值。jq 表达式通过 `$runtime.manual_checkin` 等字段读取；请求模板通过 `{{runtime#/user_id}}`、`{{runtime#/manual_checkin}}` 和 `{{runtime#/headers/Header-Name}}` 读取。`runtime` 不会写入响应的 `aliases`。
 
 响应 `200`：
 

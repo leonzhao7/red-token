@@ -95,8 +95,6 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			api_keys_json TEXT NOT NULL DEFAULT '[]',
 			console_url TEXT NOT NULL DEFAULT '',
 			tag_list TEXT NOT NULL DEFAULT '[]',
-			console_username TEXT NOT NULL DEFAULT '',
-			console_password TEXT NOT NULL DEFAULT '',
 			new_api_refresh TEXT NOT NULL DEFAULT '',
 			console_authorization TEXT NOT NULL DEFAULT '',
 				console_checkin_path TEXT NOT NULL DEFAULT '',
@@ -245,6 +243,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			return nil, fmt.Errorf("exec schema: %w", err)
 		}
 	}
+	for _, column := range []string{"console_password", "console_username"} {
+		if err := dropColumnIfExists(ctx, db, "backends", column); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate backends %s: %w", column, err)
+		}
+	}
 
 	if err := ensureColumn(ctx, db, "client_keys", "token", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()
@@ -311,14 +315,6 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureColumn(ctx, db, "backends", "tag_list", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate backends tag_list: %w", err)
-	}
-	if err := ensureColumn(ctx, db, "backends", "console_username", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrate backends console_username: %w", err)
-	}
-	if err := ensureColumn(ctx, db, "backends", "console_password", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrate backends console_password: %w", err)
 	}
 	if err := ensureColumn(ctx, db, "backends", "new_api_refresh", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		_ = db.Close()
@@ -491,6 +487,43 @@ func ensureColumn(ctx context.Context, db *sql.DB, table, column, definition str
 	}
 
 	_, err = db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+func dropColumnIfExists(ctx context.Context, db *sql.DB, table, column string) error {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column))
 	return err
 }
 

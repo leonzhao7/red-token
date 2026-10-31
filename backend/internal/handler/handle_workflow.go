@@ -316,8 +316,6 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 			"backend_id":     backend.ID,
 			"backend_name":   backend.Name,
 			"manual_checkin": backend.ManualCheckin,
-			"username":       backend.ConsoleUsername,
-			"password":       backend.ConsolePassword,
 			"user_id":        consoleStoredAccountID(backend),
 			"headers":        workflowRuntimeHeaders(headers),
 		},

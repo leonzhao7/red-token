@@ -129,7 +129,7 @@ func TestBuildBackendFrontendViewNormalizesContract(t *testing.T) {
 	}
 	requiredFields := []string{
 		"id", "name", "protocol", "base_url", "api_keys", "console_url",
-		"console_username", "console_password", "console_refresh_token", "console_checkin_workflow_id", "console_headers",
+		"console_refresh_token", "console_checkin_workflow_id", "console_headers",
 		"manual_checkin", "frozen",
 		"console_models", "console_account", "notes", "proxy_id", "status",
 		"weight", "created_at", "updated_at", "avg_latency_ms", "tags",

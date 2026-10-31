@@ -628,7 +628,7 @@ func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
 		if err := json.Unmarshal(body, &payload); err != nil {
 			t.Fatalf("decode runtime request body: %v", err)
 		}
-		want := map[string]any{"username": "alice", "password": "secret", "user_id": "user-42"}
+		want := map[string]any{"user_id": "user-42"}
 		if !reflect.DeepEqual(payload, want) {
 			t.Fatalf("unexpected runtime request body: got %#v want %#v", payload, want)
 		}
@@ -645,29 +645,27 @@ func TestGeneralWorkflowRuntimeIsAvailableToJQAndTemplates(t *testing.T) {
     "id":"login",
     "request":{
       "method":"POST","path":"/login",
-      "body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}"}
+      "body":{"user_id":"{{runtime#/user_id}}"}
     },
-    "expect":"$runtime.username == \"alice\" and $runtime.password == \"secret\" and $runtime.user_id == \"user-42\" and $runtime.headers[\"X-Console\"] == \"configured\"",
-    "extract":[{"alias":"runtime_username","expression":"$runtime.username"}]
+    "expect":"$runtime.user_id == \"user-42\" and $runtime.headers[\"X-Console\"] == \"configured\"",
+    "extract":[{"alias":"runtime_user_id","expression":"$runtime.user_id"}]
   }],
-  "output":{"username":"{{runtime#/username}}","copied_username":"{{runtime_username}}"}
+  "output":{"user_id":"{{runtime#/user_id}}","copied_user_id":"{{runtime_user_id}}"}
 }`)
 
 	workflow := NewGeneralWorkflow(GeneralWorkflowOptions{HTTPClient: client})
 	result, err := workflow.Execute(context.Background(), definition, GeneralWorkflowRunOptions{
 		BaseURL: "https://console.example",
 		Runtime: map[string]any{
-			"username": "alice",
-			"password": "secret",
-			"user_id":  "user-42",
-			"headers":  map[string]string{"X-Console": "configured"},
+			"user_id": "user-42",
+			"headers": map[string]string{"X-Console": "configured"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("execute runtime workflow: %v", err)
 	}
 	output := result.Output.(map[string]any)
-	if output["username"] != "alice" || output["copied_username"] != "alice" {
+	if output["user_id"] != "user-42" || output["copied_user_id"] != "user-42" {
 		t.Fatalf("unexpected runtime output: %#v", output)
 	}
 	if _, exists := result.Aliases["runtime"]; exists {
@@ -681,7 +679,7 @@ func TestGeneralWorkflowRuntimeHasStableCredentialDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build default runtime: %v", err)
 	}
-	for _, field := range []string{"username", "password", "user_id"} {
+	for _, field := range []string{"user_id"} {
 		if runtime[field] != "" {
 			t.Fatalf("runtime %s default = %#v, want empty string", field, runtime[field])
 		}

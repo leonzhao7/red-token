@@ -90,8 +90,6 @@ type backendUpdatePayload struct {
 	APIKey                 *string                 `json:"api_key"`
 	ConsoleURL             *string                 `json:"console_url"`
 	Tags                   *[]string               `json:"tags"`
-	ConsoleUsername        *string                 `json:"console_username"`
-	ConsolePassword        *string                 `json:"console_password"`
 	ConsoleCheckinWorkflow *string                 `json:"console_checkin_workflow_id"`
 	ManualCheckin          *bool                   `json:"manual_checkin"`
 	Frozen                 *bool                   `json:"frozen"`
@@ -115,8 +113,6 @@ type backendImportExportItem struct {
 	APIKey                 string                 `json:"api_key,omitempty"`
 	ConsoleURL             string                 `json:"console_url"`
 	Tags                   []string               `json:"tags"`
-	ConsoleUsername        string                 `json:"console_username"`
-	ConsolePassword        string                 `json:"console_password"`
 	ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id,omitempty"`
 	ManualCheckin          bool                   `json:"manual_checkin"`
 	Frozen                 bool                   `json:"frozen"`
@@ -273,8 +269,6 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		APIKey                 string                 `json:"api_key"`
 		ConsoleURL             string                 `json:"console_url"`
 		Tags                   []string               `json:"tags"`
-		ConsoleUsername        string                 `json:"console_username"`
-		ConsolePassword        string                 `json:"console_password"`
 		UserID                 string                 `json:"user_id"`
 		ConsoleCheckinWorkflow string                 `json:"console_checkin_workflow_id"`
 		ManualCheckin          bool                   `json:"manual_checkin"`
@@ -340,8 +334,6 @@ func (h *BackendHandler) HandleCreateBackend(w http.ResponseWriter, r *http.Requ
 		APIKeys:                apiKeys,
 		ConsoleURL:             payload.ConsoleURL,
 		Tags:                   payload.Tags,
-		ConsoleUsername:        payload.ConsoleUsername,
-		ConsolePassword:        payload.ConsolePassword,
 		ConsoleAccountJSON:     consoleAccountJSON,
 		ConsoleCheckinWorkflow: consoleCheckinWorkflow,
 		ManualCheckin:          payload.ManualCheckin,
@@ -406,17 +398,15 @@ func (h *BackendHandler) HandleUpdateBackend(w http.ResponseWriter, r *http.Requ
 	}
 
 	patch := store.BackendPatch{
-		Name:            payload.Name,
-		Protocol:        payload.Protocol,
-		BaseURL:         payload.BaseURL,
-		APIKeys:         nil,
-		ConsoleURL:      payload.ConsoleURL,
-		Tags:            payload.Tags,
-		ConsoleUsername: payload.ConsoleUsername,
-		ConsolePassword: payload.ConsolePassword,
-		Notes:           payload.Notes,
-		ProxyID:         payload.ProxyID,
-		Weight:          payload.Weight,
+		Name:       payload.Name,
+		Protocol:   payload.Protocol,
+		BaseURL:    payload.BaseURL,
+		APIKeys:    nil,
+		ConsoleURL: payload.ConsoleURL,
+		Tags:       payload.Tags,
+		Notes:      payload.Notes,
+		ProxyID:    payload.ProxyID,
+		Weight:     payload.Weight,
 	}
 	if payload.APIKeys != nil {
 		apiKeys, apiKeysErr := validateBackendAPIKeys(*payload.APIKeys, "", nil, nil)
@@ -769,8 +759,6 @@ func (h *BackendHandler) validateBackendImportPayload(ctx context.Context, paylo
 			APIKeys:                apiKeys,
 			ConsoleURL:             item.ConsoleURL,
 			Tags:                   item.Tags,
-			ConsoleUsername:        item.ConsoleUsername,
-			ConsolePassword:        item.ConsolePassword,
 			ConsoleCheckinWorkflow: consoleCheckinWorkflow,
 			ManualCheckin:          item.ManualCheckin,
 			Frozen:                 item.Frozen,
@@ -795,8 +783,6 @@ func backendToImportExportItem(backend domain.Backend) backendImportExportItem {
 		APIKeys:                backend.APIKeys,
 		ConsoleURL:             backend.ConsoleURL,
 		Tags:                   backend.Tags,
-		ConsoleUsername:        backend.ConsoleUsername,
-		ConsolePassword:        backend.ConsolePassword,
 		ConsoleCheckinWorkflow: backend.ConsoleCheckinWorkflow,
 		ManualCheckin:          backend.ManualCheckin,
 		Frozen:                 backend.Frozen,
@@ -868,8 +854,6 @@ func (h *BackendHandler) HandleBackendDetail(w http.ResponseWriter, r *http.Requ
 		Overview: []resourceDetailEntry{
 			detailEntry("name", "Name", detail.Backend.Name),
 			detailEntry("console_url", "Console URL", detail.Backend.ConsoleURL),
-			detailEntry("console_username", "Console Username", detail.Backend.ConsoleUsername),
-			detailEntry("console_password", "Console Password", secretPresenceValue(detail.Backend.ConsolePassword)),
 			detailEntry("console_checkin_workflow_id", "Check-in Workflow", detail.Backend.ConsoleCheckinWorkflow),
 			detailEntry("console_headers", "Console Headers", consoleHeaderPresence(detail.Backend)),
 			detailEntry("status", "Status", detail.Backend.Status),
@@ -1617,7 +1601,6 @@ func maskedBackendDetail(backend domain.Backend) domain.Backend {
 	copy := backend
 	copy.APIKey = secretPresenceValue(copy.APIKey)
 	copy.APIKeys = maskedBackendAPIKeys(copy.APIKeys)
-	copy.ConsolePassword = secretPresenceValue(copy.ConsolePassword)
 	copy.ConsoleCookie = secretPresenceValue(copy.ConsoleCookie)
 	if len(copy.ConsoleHeaders) > 0 {
 		copy.ConsoleHeaders = make(map[string]string, len(copy.ConsoleHeaders))

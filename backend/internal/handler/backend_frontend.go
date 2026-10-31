@@ -26,8 +26,6 @@ type backendFrontendView struct {
 	BaseURL                string                  `json:"base_url"`
 	APIKeys                []backendFrontendAPIKey `json:"api_keys"`
 	ConsoleURL             string                  `json:"console_url"`
-	ConsoleUsername        string                  `json:"console_username"`
-	ConsolePassword        string                  `json:"console_password"`
 	ConsoleRefreshToken    string                  `json:"console_refresh_token"`
 	ConsoleCheckinWorkflow string                  `json:"console_checkin_workflow_id"`
 	ManualCheckin          bool                    `json:"manual_checkin"`
@@ -86,8 +84,6 @@ func buildBackendFrontendView(backend domain.Backend, avgLatencyMS float64) back
 		BaseURL:                backend.BaseURL,
 		APIKeys:                apiKeys,
 		ConsoleURL:             backend.ConsoleURL,
-		ConsoleUsername:        backend.ConsoleUsername,
-		ConsolePassword:        backend.ConsolePassword,
 		ConsoleRefreshToken:    backend.ConsoleRefreshToken,
 		ConsoleCheckinWorkflow: backend.ConsoleCheckinWorkflow,
 		ManualCheckin:          backend.ManualCheckin,

@@ -91,8 +91,6 @@ type Backend struct {
 	APIKeys                []BackendAPIKey `json:"api_keys"`
 	ConsoleURL             string          `json:"console_url"`
 	Tags                   []string        `json:"tags"`
-	ConsoleUsername        string          `json:"console_username"`
-	ConsolePassword        string          `json:"console_password,omitempty"`
 	ConsoleCheckinWorkflow string          `json:"console_checkin_workflow_id,omitempty"`
 	ManualCheckin          bool            `json:"manual_checkin"`
 	Frozen                 bool            `json:"frozen"`

@@ -476,8 +476,6 @@ func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 			t.Fatalf("decode runtime body: %v", err)
 		}
 		want := map[string]any{
-			"username":       "relay-user",
-			"password":       "relay-password",
 			"user_id":        "account-42",
 			"authorization":  "Bearer console-token",
 			"header":         "configured",
@@ -499,7 +497,7 @@ func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 	definitionText := strings.Replace(
 		workflowTestDefinition("runtime-workflow"),
 		`"request":{"method":"GET","path":"/snapshot"}`,
-		`"request":{"method":"POST","path":"/snapshot","body":{"username":"{{runtime#/username}}","password":"{{runtime#/password}}","user_id":"{{runtime#/user_id}}","authorization":"{{runtime#/headers/Authorization}}","header":"{{runtime#/headers/X-Console}}","manual_checkin":"{{runtime#/manual_checkin}}"}}`,
+		`"request":{"method":"POST","path":"/snapshot","body":{"user_id":"{{runtime#/user_id}}","authorization":"{{runtime#/headers/Authorization}}","header":"{{runtime#/headers/X-Console}}","manual_checkin":"{{runtime#/manual_checkin}}"}}`,
 		1,
 	)
 	definition, err := service.ParseGeneralWorkflow([]byte(definitionText))
@@ -516,8 +514,6 @@ func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 	backend, err := st.CreateBackend(context.Background(), domain.Backend{
 		Name:               "runtime-backend",
 		ConsoleURL:         "https://runtime-console.test",
-		ConsoleUsername:    "relay-user",
-		ConsolePassword:    "relay-password",
 		ManualCheckin:      true,
 		ConsoleHeaders:     map[string]string{"Authorization": "Bearer console-token", "X-Console": "configured"},
 		ConsoleAccountJSON: `{"id":"account-42"}`,

@@ -213,7 +213,7 @@ function accountValues(backend: BackendResponse, keys: BackendApiKey[]) {
     balance: numberValue(account.quota),
     used: account.used_quota !== undefined ? numberValue(account.used_quota) : keyUsed,
     quotaUnit: String(account.quota_unit || 'USD').trim() || 'USD',
-    username: String(account.username || account.email || account.id || backend.console_username || ''),
+    username: String(account.username || account.email || account.id || ''),
     checkinAt: String(account.last_checkin_at || ''),
     todayReward: numberValue(account.today_reward)
   }
@@ -611,8 +611,6 @@ const form = ref<{
   url: string
   protocol: 'openai' | 'anthropic' | 'both'
   consoleUrl: string
-  username: string
-  password: string
   userId: string
   consoleRefreshToken: string
   consoleHeaders: string
@@ -629,8 +627,6 @@ const form = ref<{
   url: '',
   protocol: 'openai',
   consoleUrl: '',
-  username: '',
-  password: '',
   userId: '',
   consoleRefreshToken: '',
   consoleHeaders: '',
@@ -646,7 +642,6 @@ const form = ref<{
 
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
-const passwordVisible = ref(false)
 const isEditing = computed(() => editingId.value !== null)
 const consoleHeadersError = computed(() => {
   try {
@@ -666,9 +661,8 @@ const modelMappingErrors = computed(() => form.value.keys.map((key) => {
 }))
 
 function resetForm() {
-  passwordVisible.value = false
   form.value = {
-    name: '', url: '', protocol: 'openai', consoleUrl: '', username: '', password: '',
+    name: '', url: '', protocol: 'openai', consoleUrl: '',
     userId: '', consoleRefreshToken: '',
     consoleHeaders: '',
     consoleCheckinWorkflowId: '', manualCheckin: false, frozen: false, healthCheck: false, tagsInput: '',
@@ -684,15 +678,12 @@ function openCreate() {
 
 function openEditRelay(r: RelayView) {
   editingId.value = r.id
-  passwordVisible.value = false
   const account = parseObject(r.raw.console_account)
   form.value = {
     name: r.name,
     url: r.url,
     protocol: r.protocol,
     consoleUrl: r.raw.console_url || '',
-    username: r.raw.console_username || '',
-    password: r.raw.console_password || '',
     userId: String(account.id || ''),
     consoleRefreshToken: r.raw.console_refresh_token || '',
     consoleHeaders: formatConsoleHeaders(r.raw.console_headers),
@@ -745,8 +736,6 @@ function buildPayload() {
     api_keys: apiKeys,
     console_url: form.value.consoleUrl.trim(),
     tags: parseTagList(form.value.tagsInput),
-    console_username: form.value.username.trim(),
-    console_password: form.value.password,
     user_id: form.value.userId.trim(),
     console_refresh_token: form.value.consoleRefreshToken.trim(),
     console_headers: parseConsoleHeaders(form.value.consoleHeaders),
@@ -1163,26 +1152,6 @@ onMounted(loadData)
           </div>
 
           <div class="form-grid-2">
-            <div class="field">
-              <label class="field-label">用户名</label>
-              <input v-model="form.username" class="input mono" placeholder="admin" />
-            </div>
-            <div class="field">
-              <label class="field-label">密码</label>
-              <div class="secret-input">
-                <input v-model="form.password" class="input mono" :type="passwordVisible ? 'text' : 'password'" placeholder="••••••" />
-                <button
-                  type="button"
-                  class="secret-toggle"
-                  :title="passwordVisible ? '隐藏密码' : '显示密码'"
-                  :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
-                  @click="passwordVisible = !passwordVisible"
-                >
-                  <EyeOff v-if="passwordVisible" :size="15" />
-                  <Eye v-else :size="15" />
-                </button>
-              </div>
-            </div>
             <div class="field">
               <label class="field-label">用户 ID</label>
               <input v-model="form.userId" class="input mono" placeholder="user_123456" />

@@ -203,8 +203,6 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 ### 特殊变量
 
 - `{{runtime}}`: 运行时上下文
-  - `{{runtime#/username}}`: 后端用户名
-  - `{{runtime#/password}}`: 后端密码
   - `{{runtime#/user_id}}`: 控制台账户 ID
   - `{{runtime#/headers}}`: 运行时请求头
   - `{{runtime#/backend_id}}`: 后端 ID
