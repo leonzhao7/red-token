@@ -922,7 +922,8 @@ onUnmounted(() => {
             </div>
             <div class="rl-cell money">
               <span class="mono rl-bal" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</span>
-              <span class="mono rl-reward" :title="`当天签到额 ${fmtMoney(todayRewardFor(r), r.quotaUnit)}`">+{{ fmtMoney(todayRewardFor(r), r.quotaUnit) }}</span>
+              <span v-if="r.consoleSyncSupported" class="mono rl-reward" :title="`当天签到额 ${fmtMoney(todayRewardFor(r), r.quotaUnit)}`">+{{ fmtMoney(todayRewardFor(r), r.quotaUnit) }}</span>
+              <span v-else class="mono rl-reward disabled">-</span>
               <span class="mono rl-used">{{ fmtMoney(r.used, r.quotaUnit) }}</span>
             </div>
             <div class="rl-cell weight"><span class="mono rl-weight">{{ r.raw.weight }}</span></div>
@@ -1450,6 +1451,7 @@ onUnmounted(() => {
 .rl-bal.low { color: var(--danger); }
 .rl-used { font-size: 11px; color: var(--text-faint); }
 .rl-reward { font-size: 11px; color: var(--success); }
+.rl-reward.disabled { color: var(--text-faint); }
 .rl-cell.weight { display: flex; align-items: center; }
 .rl-weight { font-size: 13px; font-weight: 700; color: var(--text-soft); }
 
