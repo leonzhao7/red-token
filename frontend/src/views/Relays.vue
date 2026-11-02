@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import {
   Plus,
   Search,
@@ -85,6 +85,8 @@ const loading = ref(true)
 const loadError = ref('')
 const saving = ref(false)
 const syncingAll = ref(false)
+const now = ref(new Date())
+let clockTimer: ReturnType<typeof setInterval> | undefined
 const busyIds = ref<Set<string>>(new Set())
 const cookieBusyIds = ref<Set<string>>(new Set())
 const healthCheckBackendIDs = ref<number[]>([])
@@ -219,6 +221,10 @@ function accountValues(backend: BackendResponse, keys: BackendApiKey[]) {
   }
 }
 
+function todayRewardFor(relay: RelayView) {
+  return isToday(relay.checkinAt) ? relay.todayReward : 0
+}
+
 function protocolOf(value: string) {
   const normalized = value.trim().toLowerCase()
   if (normalized === 'anthropic') return 'anthropic' as const
@@ -341,18 +347,18 @@ function formatDate(value: string) {
 function isToday(value: string) {
   if (!value) return false
   const date = new Date(value)
-  const now = new Date()
-  return !Number.isNaN(date.getTime()) && date.toDateString() === now.toDateString()
+  return !Number.isNaN(date.getTime()) && date.toDateString() === now.value.toDateString()
 }
 
 function signinText(r: RelayView): string {
-  if (!r.consoleSyncSupported) return r.todayReward > 0 ? fmtMoney(r.todayReward, r.quotaUnit) : '未配置'
-  if (isToday(r.checkinAt)) return fmtMoney(r.todayReward, r.quotaUnit)
+  const reward = todayRewardFor(r)
+  if (!r.consoleSyncSupported) return reward > 0 ? fmtMoney(reward, r.quotaUnit) : '未配置'
+  if (isToday(r.checkinAt)) return fmtMoney(reward, r.quotaUnit)
   return '未签到'
 }
 
 function signinState(r: RelayView): string {
-  if (!r.consoleSyncSupported) return r.todayReward > 0 ? 'ok' : 'faint'
+  if (!r.consoleSyncSupported) return todayRewardFor(r) > 0 ? 'ok' : 'faint'
   return isToday(r.checkinAt) ? 'ok' : 'warn'
 }
 
@@ -834,7 +840,14 @@ async function loadData() {
   }
 }
 
-onMounted(loadData)
+onMounted(() => {
+  clockTimer = setInterval(() => (now.value = new Date()), 1000 * 60)
+  loadData()
+})
+
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
+})
 </script>
 
 <template>
@@ -909,7 +922,7 @@ onMounted(loadData)
             </div>
             <div class="rl-cell money">
               <span class="mono rl-bal" :class="{ low: r.balance < 20 }">{{ fmtMoney(r.balance, r.quotaUnit) }}</span>
-              <span class="mono rl-reward" :title="`当天签到额 ${fmtMoney(r.todayReward, r.quotaUnit)}`">+{{ fmtMoney(r.todayReward, r.quotaUnit) }}</span>
+              <span class="mono rl-reward" :title="`当天签到额 ${fmtMoney(todayRewardFor(r), r.quotaUnit)}`">+{{ fmtMoney(todayRewardFor(r), r.quotaUnit) }}</span>
               <span class="mono rl-used">{{ fmtMoney(r.used, r.quotaUnit) }}</span>
             </div>
             <div class="rl-cell weight"><span class="mono rl-weight">{{ r.raw.weight }}</span></div>
