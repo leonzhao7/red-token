@@ -94,7 +94,7 @@ func (s *Store) ListBackends(ctx context.Context) ([]domain.Backend, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.manual_checkin, b.frozen, b.channel_url, b.console_cookie, b.console_headers_json, b.console_refresh_token, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
-			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
+			p.id, p.name, p.protocol, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
 		ORDER BY b.id DESC
@@ -315,7 +315,7 @@ func (s *Store) ListBackendsPage(ctx context.Context, limit, offset int) ([]doma
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.manual_checkin, b.frozen, b.channel_url, b.console_cookie, b.console_headers_json, b.console_refresh_token, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
-			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
+			p.id, p.name, p.protocol, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
 		ORDER BY b.id DESC
@@ -602,7 +602,7 @@ func (s *Store) GetBackend(ctx context.Context, id int64) (domain.Backend, error
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.manual_checkin, b.frozen, b.channel_url, b.console_cookie, b.console_headers_json, b.console_refresh_token, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
-			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
+			p.id, p.name, p.protocol, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
 		WHERE b.id = ?
@@ -881,6 +881,7 @@ func scanBackend(s scanner) (domain.Backend, error) {
 		frozen                                                                                                                                int64
 		proxyID                                                                                                                               sql.NullInt64
 		proxyName                                                                                                                             sql.NullString
+		proxyProtocol                                                                                                                         sql.NullString
 		proxyAddress                                                                                                                          sql.NullString
 		proxyUsername                                                                                                                         sql.NullString
 		proxyPassword                                                                                                                         sql.NullString
@@ -923,6 +924,7 @@ func scanBackend(s scanner) (domain.Backend, error) {
 		&updatedAt,
 		&proxyID,
 		&proxyName,
+		&proxyProtocol,
 		&proxyAddress,
 		&proxyUsername,
 		&proxyPassword,
@@ -964,6 +966,7 @@ func scanBackend(s scanner) (domain.Backend, error) {
 		backend.Proxy = &domain.SocksProxy{
 			ID:        proxyID.Int64,
 			Name:      proxyName.String,
+			Protocol:  domain.NormalizeProxyProtocol(proxyProtocol.String),
 			Address:   proxyAddress.String,
 			Username:  proxyUsername.String,
 			Password:  proxyPassword.String,
@@ -979,7 +982,7 @@ func (s *Store) listBackendsByProxyID(ctx context.Context, proxyID int64) ([]dom
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			b.id, b.name, b.protocol, b.backend_type, b.base_url, b.api_key, b.api_keys_json, b.console_url, b.tag_list, b.new_api_refresh, b.console_authorization, b.console_checkin_path, b.console_checkin_workflow_id, b.manual_checkin, b.frozen, b.channel_url, b.console_cookie, b.console_headers_json, b.console_refresh_token, b.console_account_json, b.console_pricing_json, b.notes, b.proxy_id, b.status, b.consecutive_failures, b.recover_at, b.weight, b.model_list, b.model_mapping, b.endpoint_list, b.created_at, b.updated_at,
-			p.id, p.name, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
+			p.id, p.name, p.protocol, p.address, p.username, p.password, p.enabled, p.created_at, p.updated_at
 		FROM backends b
 		LEFT JOIN socks_proxies p ON p.id = b.proxy_id
 		WHERE b.proxy_id = ?

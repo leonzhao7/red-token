@@ -161,6 +161,7 @@ func backendAttemptAttrs(backend domain.Backend, attempt int) []slog.Attr {
 	}
 	if backend.Proxy != nil {
 		attrs = append(attrs,
+			slog.String("backend_proxy_protocol", domain.NormalizeProxyProtocol(backend.Proxy.Protocol)),
 			slog.String("backend_proxy_name", backend.Proxy.Name),
 			slog.String("backend_proxy_address", backend.Proxy.Address),
 			slog.Bool("backend_proxy_enabled", backend.Proxy.Enabled),

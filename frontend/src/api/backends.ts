@@ -17,6 +17,7 @@ export interface BackendApiKey {
 export interface SocksProxyResponse {
   id: number
   name: string
+  protocol: 'socks5' | 'transparent'
   address: string
   username: string
   password?: string
@@ -33,6 +34,7 @@ export interface SocksProxyListItem extends SocksProxyResponse {
 
 export interface SocksProxyWrite {
   name: string
+  protocol: 'socks5' | 'transparent'
   address: string
   username: string
   password: string
@@ -128,25 +130,25 @@ export function listBackends() {
 }
 
 export function listSocksProxies() {
-  return request<PagedResponse<SocksProxyListItem>>('/admin/api/socks-proxies?page=1&limit=10000')
+  return request<PagedResponse<SocksProxyListItem>>('/admin/api/proxies?page=1&limit=10000')
 }
 
 export function createSocksProxy(payload: SocksProxyWrite) {
-  return request<SocksProxyResponse>('/admin/api/socks-proxies', {
+  return request<SocksProxyResponse>('/admin/api/proxies', {
     method: 'POST',
     body: JSON.stringify(payload)
   })
 }
 
 export function updateSocksProxy(id: number, payload: SocksProxyWrite) {
-  return request<SocksProxyResponse>(`/admin/api/socks-proxies/${id}`, {
+  return request<SocksProxyResponse>(`/admin/api/proxies/${id}`, {
     method: 'PUT',
     body: JSON.stringify(payload)
   })
 }
 
 export function deleteSocksProxy(id: number) {
-  return request<{ deleted: number }>(`/admin/api/socks-proxies/${id}`, { method: 'DELETE' })
+  return request<{ deleted: number }>(`/admin/api/proxies/${id}`, { method: 'DELETE' })
 }
 
 export function createBackend(payload: BackendWritePayload) {

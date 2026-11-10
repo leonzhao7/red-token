@@ -1096,7 +1096,7 @@ func (h *BackendHandler) validateSocksProxyReference(ctx context.Context, proxyI
 		return nil
 	}
 	if _, err := h.store.GetSocksProxy(ctx, proxyID); err != nil {
-		return errors.New("socks proxy not found")
+		return errors.New("proxy not found")
 	}
 	return nil
 }

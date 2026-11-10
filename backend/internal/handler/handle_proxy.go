@@ -1,19 +1,25 @@
 package handler
 
 import (
-	"errors"
-	"net"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"red-token/internal/domain"
+	"red-token/internal/proxy"
 	"red-token/internal/store"
 )
 
 type ProxyHandler struct {
 	store *store.Store
+}
+
+type proxyWritePayload struct {
+	Name     string  `json:"name"`
+	Protocol *string `json:"protocol"`
+	Address  string  `json:"address"`
+	Username string  `json:"username"`
+	Password string  `json:"password"`
+	Enabled  bool    `json:"enabled"`
 }
 
 func NewProxyHandler(st *store.Store) *ProxyHandler {
@@ -72,6 +78,7 @@ func (a *ProxyHandler) HandleListSocksProxies(w http.ResponseWriter, r *http.Req
 func (a *ProxyHandler) HandleCreateSocksProxy(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Name     string `json:"name"`
+		Protocol string `json:"protocol"`
 		Address  string `json:"address"`
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -81,18 +88,20 @@ func (a *ProxyHandler) HandleCreateSocksProxy(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateSocksProxyAddress(payload.Address); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	proxy, err := a.store.CreateSocksProxy(r.Context(), domain.SocksProxy{
+	server := domain.ProxyServer{
 		Name:     payload.Name,
+		Protocol: domain.NormalizeProxyProtocol(payload.Protocol),
 		Address:  payload.Address,
 		Username: payload.Username,
 		Password: payload.Password,
 		Enabled:  payload.Enabled,
-	})
+	}
+	if err := proxy.ValidateServer(server); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	proxy, err := a.store.CreateSocksProxy(r.Context(), server)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -103,7 +112,7 @@ func (a *ProxyHandler) HandleCreateSocksProxy(w http.ResponseWriter, r *http.Req
 		Actor:        "admin",
 		ResourceType: "socks_proxy",
 		ResourceID:   proxy.ID,
-		Message:      "socks proxy created: " + proxy.Name,
+		Message:      "proxy created: " + proxy.Name,
 	})
 	writeJSON(w, http.StatusCreated, proxy)
 }
@@ -117,31 +126,31 @@ func (a *ProxyHandler) HandleUpdateSocksProxy(w http.ResponseWriter, r *http.Req
 
 	current, err := a.store.GetSocksProxy(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "socks proxy not found")
+		writeError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 
-	var payload struct {
-		Name     string `json:"name"`
-		Address  string `json:"address"`
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Enabled  bool   `json:"enabled"`
-	}
+	var payload proxyWritePayload
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateSocksProxyAddress(payload.Address); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
 	current.Name = payload.Name
+	if payload.Protocol != nil {
+		current.Protocol = domain.NormalizeProxyProtocol(*payload.Protocol)
+	}
 	current.Address = payload.Address
 	current.Username = payload.Username
 	current.Password = payload.Password
 	current.Enabled = payload.Enabled
+	if payload.Protocol == nil && domain.NormalizeProxyProtocol(current.Protocol) == domain.ProxyProtocolTransparent {
+		current.Username = ""
+		current.Password = ""
+	}
+	if err := proxy.ValidateServer(current); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	proxy, err := a.store.UpdateSocksProxy(r.Context(), current)
 	if err != nil {
@@ -159,7 +168,7 @@ func (a *ProxyHandler) HandleDeleteSocksProxy(w http.ResponseWriter, r *http.Req
 	}
 	proxy, err := a.store.GetSocksProxy(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "socks proxy not found")
+		writeError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 	if err := a.store.DeleteSocksProxy(r.Context(), id); err != nil {
@@ -172,7 +181,7 @@ func (a *ProxyHandler) HandleDeleteSocksProxy(w http.ResponseWriter, r *http.Req
 		Actor:        "admin",
 		ResourceType: "socks_proxy",
 		ResourceID:   proxy.ID,
-		Message:      "socks proxy deleted: " + proxy.Name,
+		Message:      "proxy deleted: " + proxy.Name,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
@@ -185,7 +194,7 @@ func (a *ProxyHandler) HandleSocksProxyDetail(w http.ResponseWriter, r *http.Req
 	}
 	detail, err := a.store.SocksProxyDetail(r.Context(), id, 10)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "socks proxy not found")
+		writeError(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, resourceDetailPayload{
@@ -195,6 +204,7 @@ func (a *ProxyHandler) HandleSocksProxyDetail(w http.ResponseWriter, r *http.Req
 			detailEntry("bound_backends", "Bound Backends", len(detail.Backends)),
 		},
 		Configuration: []resourceDetailEntry{
+			detailEntry("protocol", "Protocol", detail.Proxy.Protocol),
 			detailEntry("address", "Address", detail.Proxy.Address),
 			detailEntry("username", "Username", detail.Proxy.Username),
 		},
@@ -211,25 +221,6 @@ func (a *ProxyHandler) HandleSocksProxyDetail(w http.ResponseWriter, r *http.Req
 			Backends:  detail.Backends,
 		},
 	})
-}
-
-func validateSocksProxyAddress(value string) error {
-	address := strings.TrimSpace(value)
-	if address == "" {
-		return errors.New("proxy address is required")
-	}
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return errors.New("proxy address must be host:port")
-	}
-	if strings.TrimSpace(host) == "" {
-		return errors.New("proxy address must include host")
-	}
-	parsedPort, err := strconv.Atoi(port)
-	if err != nil || parsedPort < 1 || parsedPort > 65535 {
-		return errors.New("proxy address port must be 1-65535")
-	}
-	return nil
 }
 
 func ensureSocksProxies(values []domain.SocksProxy) []domain.SocksProxy {

@@ -25,7 +25,7 @@ type SocksProxyDetailData struct {
 
 func (s *Store) ListSocksProxies(ctx context.Context) ([]domain.SocksProxy, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, address, username, password, enabled, created_at, updated_at
+		SELECT id, name, protocol, address, username, password, enabled, created_at, updated_at
 		FROM socks_proxies
 		ORDER BY id DESC
 	`)
@@ -51,7 +51,7 @@ func (s *Store) CountSocksProxies(ctx context.Context) (int, error) {
 
 func (s *Store) ListSocksProxiesPage(ctx context.Context, limit, offset int) ([]domain.SocksProxy, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, address, username, password, enabled, created_at, updated_at
+		SELECT id, name, protocol, address, username, password, enabled, created_at, updated_at
 		FROM socks_proxies
 		ORDER BY id DESC
 		LIMIT ? OFFSET ?
@@ -76,12 +76,14 @@ func (s *Store) CreateSocksProxy(ctx context.Context, proxy domain.SocksProxy) (
 	now := time.Now().UTC()
 	proxy.CreatedAt = now
 	proxy.UpdatedAt = now
+	proxy.Protocol = domain.NormalizeProxyProtocol(proxy.Protocol)
 
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO socks_proxies(name, address, username, password, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO socks_proxies(name, protocol, address, username, password, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		strings.TrimSpace(proxy.Name),
+		proxy.Protocol,
 		strings.TrimSpace(proxy.Address),
 		strings.TrimSpace(proxy.Username),
 		strings.TrimSpace(proxy.Password),
@@ -100,13 +102,15 @@ func (s *Store) CreateSocksProxy(ctx context.Context, proxy domain.SocksProxy) (
 func (s *Store) UpdateSocksProxy(ctx context.Context, proxy domain.SocksProxy) (domain.SocksProxy, error) {
 	now := time.Now().UTC()
 	proxy.UpdatedAt = now
+	proxy.Protocol = domain.NormalizeProxyProtocol(proxy.Protocol)
 
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE socks_proxies
-		SET name = ?, address = ?, username = ?, password = ?, enabled = ?, updated_at = ?
+		SET name = ?, protocol = ?, address = ?, username = ?, password = ?, enabled = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		strings.TrimSpace(proxy.Name),
+		proxy.Protocol,
 		strings.TrimSpace(proxy.Address),
 		strings.TrimSpace(proxy.Username),
 		strings.TrimSpace(proxy.Password),
@@ -122,7 +126,7 @@ func (s *Store) UpdateSocksProxy(ctx context.Context, proxy domain.SocksProxy) (
 
 func (s *Store) GetSocksProxy(ctx context.Context, id int64) (domain.SocksProxy, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, address, username, password, enabled, created_at, updated_at
+		SELECT id, name, protocol, address, username, password, enabled, created_at, updated_at
 		FROM socks_proxies
 		WHERE id = ?
 	`, id)
@@ -218,6 +222,7 @@ func scanSocksProxy(s scanner) (domain.SocksProxy, error) {
 	err := s.Scan(
 		&proxy.ID,
 		&proxy.Name,
+		&proxy.Protocol,
 		&proxy.Address,
 		&proxy.Username,
 		&proxy.Password,
@@ -229,6 +234,7 @@ func scanSocksProxy(s scanner) (domain.SocksProxy, error) {
 		return domain.SocksProxy{}, err
 	}
 	proxy.Enabled = enabled == 1
+	proxy.Protocol = domain.NormalizeProxyProtocol(proxy.Protocol)
 	proxy.CreatedAt = parseTime(createdAt)
 	proxy.UpdatedAt = parseTime(updatedAt)
 	return proxy, nil

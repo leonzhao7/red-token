@@ -75,6 +75,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS socks_proxies (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
+			protocol TEXT NOT NULL DEFAULT 'socks5',
 			address TEXT NOT NULL,
 			username TEXT NOT NULL DEFAULT '',
 			password TEXT NOT NULL DEFAULT '',
@@ -272,6 +273,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate client_keys %s: %w", column.name, err)
 		}
+	}
+	if err := ensureColumn(ctx, db, "socks_proxies", "protocol", "TEXT NOT NULL DEFAULT 'socks5'"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate proxy protocol: %w", err)
 	}
 	if err := ensureColumn(ctx, db, "backends", "proxy_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		_ = db.Close()
@@ -719,7 +724,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) (SearchResu
 	}
 
 	proxyRows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, address, username, enabled
+		SELECT id, name, protocol, address, username, enabled
 		FROM socks_proxies
 		WHERE lower(name) LIKE ? OR lower(address) LIKE ? OR lower(username) LIKE ?
 		ORDER BY
@@ -743,11 +748,12 @@ func (s *Store) Search(ctx context.Context, query string, limit int) (SearchResu
 		var (
 			id       int64
 			name     string
+			protocol string
 			address  string
 			username string
 			enabled  int
 		)
-		if err := proxyRows.Scan(&id, &name, &address, &username, &enabled); err != nil {
+		if err := proxyRows.Scan(&id, &name, &protocol, &address, &username, &enabled); err != nil {
 			return SearchResults{}, err
 		}
 		results.Proxies = append(results.Proxies, SearchResult{
@@ -755,9 +761,9 @@ func (s *Store) Search(ctx context.Context, query string, limit int) (SearchResu
 			ID:         id,
 			Title:      name,
 			Subtitle:   address,
-			Meta:       map[string]any{"username": username},
+			Meta:       map[string]any{"username": username, "protocol": protocol},
 			Status:     enabledStatus(enabled == 1),
-			TargetPage: "socks-proxies",
+			TargetPage: "proxies",
 			TargetID:   id,
 		})
 	}

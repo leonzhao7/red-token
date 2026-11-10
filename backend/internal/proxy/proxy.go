@@ -127,24 +127,37 @@ func NewHTTPClientForBackend(backend domain.Backend, connectTimeout, requestTime
 		}, nil
 	}
 	if backend.Proxy == nil {
-		return nil, errors.New("backend socks5 proxy not found")
+		return nil, errors.New("backend proxy not found")
 	}
 	if !backend.Proxy.Enabled {
-		return nil, errors.New("backend socks5 proxy is disabled")
+		return nil, errors.New("backend proxy is disabled")
 	}
-	if strings.TrimSpace(backend.Proxy.Address) == "" {
-		return nil, errors.New("backend socks5 proxy address is empty")
+	if err := ValidateServer(*backend.Proxy); err != nil {
+		return nil, err
 	}
 
-	dialer := &socks5Dialer{
-		address:        backend.Proxy.Address,
-		username:       backend.Proxy.Username,
-		password:       backend.Proxy.Password,
-		connectTimeout: connectTimeout,
+	var dialContext func(context.Context, string, string) (net.Conn, error)
+	switch domain.NormalizeProxyProtocol(backend.Proxy.Protocol) {
+	case domain.ProxyProtocolSOCKS5:
+		dialer := &socks5Dialer{
+			address:        backend.Proxy.Address,
+			username:       backend.Proxy.Username,
+			password:       backend.Proxy.Password,
+			connectTimeout: connectTimeout,
+		}
+		dialContext = dialer.DialContext
+	case domain.ProxyProtocolTransparent:
+		dialer := &net.Dialer{Timeout: connectTimeout}
+		address := strings.TrimSpace(backend.Proxy.Address)
+		// Only the TCP destination changes. TLS verification, SNI and HTTP
+		// Host still use the upstream URL.
+		dialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		}
 	}
 	return &http.Client{
 		Timeout:   requestTimeout,
-		Transport: newTransport(connectTimeout, requestTimeout, dialer.DialContext),
+		Transport: newTransport(connectTimeout, requestTimeout, dialContext),
 	}, nil
 }
 
@@ -156,31 +169,21 @@ func (s *Service) clientForBackend(backend domain.Backend) (*http.Client, error)
 		return s.directClient, nil
 	}
 	if backend.Proxy == nil {
-		return nil, errors.New("backend socks5 proxy not found")
+		return nil, errors.New("backend proxy not found")
 	}
 	if !backend.Proxy.Enabled {
-		return nil, errors.New("backend socks5 proxy is disabled")
+		return nil, errors.New("backend proxy is disabled")
 	}
-	if strings.TrimSpace(backend.Proxy.Address) == "" {
-		return nil, errors.New("backend socks5 proxy address is empty")
-	}
-
-	key := socksProxyKey(*backend.Proxy)
+	key := proxyKey(*backend.Proxy)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if client, ok := s.proxyClients[key]; ok {
 		return client, nil
 	}
 
-	dialer := &socks5Dialer{
-		address:        backend.Proxy.Address,
-		username:       backend.Proxy.Username,
-		password:       backend.Proxy.Password,
-		connectTimeout: s.connectTimeout,
-	}
-	client := &http.Client{
-		Timeout:   s.requestTimeout,
-		Transport: newTransport(s.connectTimeout, s.requestTimeout, dialer.DialContext),
+	client, err := NewHTTPClientForBackend(backend, s.connectTimeout, s.requestTimeout)
+	if err != nil {
+		return nil, err
 	}
 	s.proxyClients[key] = client
 	return client, nil
@@ -207,9 +210,10 @@ func newTransport(connectTimeout, requestTimeout time.Duration, dialContext func
 	return transport
 }
 
-func socksProxyKey(proxy domain.SocksProxy) string {
+func proxyKey(proxy domain.ProxyServer) string {
 	return strings.Join([]string{
 		"proxy",
+		domain.NormalizeProxyProtocol(proxy.Protocol),
 		strings.TrimSpace(proxy.Name),
 		strings.TrimSpace(proxy.Address),
 		strings.TrimSpace(proxy.Username),

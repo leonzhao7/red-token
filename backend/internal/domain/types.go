@@ -22,6 +22,9 @@ const (
 	BackendProtocolOpenAI    = "openai"
 	BackendProtocolAnthropic = "anthropic"
 	BackendProtocolBoth      = "both"
+
+	ProxyProtocolSOCKS5      = "socks5"
+	ProxyProtocolTransparent = "transparent"
 )
 
 type User struct {
@@ -103,7 +106,7 @@ type Backend struct {
 	ConsolePricingJSON  string            `json:"console_pricing_json"`
 	Notes               string            `json:"notes"`
 	ProxyID             int64             `json:"proxy_id"`
-	Proxy               *SocksProxy       `json:"proxy,omitempty"`
+	Proxy               *ProxyServer      `json:"proxy,omitempty"`
 	Status              string            `json:"status"`
 	ConsecutiveFailures int               `json:"consecutive_failures"`
 	RecoverAt           *time.Time        `json:"recover_at,omitempty"`
@@ -118,15 +121,27 @@ type Backend struct {
 	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
-type SocksProxy struct {
+type ProxyServer struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
+	Protocol  string    `json:"protocol"`
 	Address   string    `json:"address"`
 	Username  string    `json:"username"`
 	Password  string    `json:"password,omitempty"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SocksProxy keeps existing callers compatible with the shared proxy model.
+type SocksProxy = ProxyServer
+
+func NormalizeProxyProtocol(protocol string) string {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		return ProxyProtocolSOCKS5
+	}
+	return protocol
 }
 
 type AuditEvent struct {

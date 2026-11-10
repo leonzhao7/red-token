@@ -136,12 +136,13 @@ X-Api-Key: tg-xxxxxxxx
 }
 ```
 
-### 2.2 `SocksProxy`
+### 2.2 `ProxyServer`
 
 ```json
 {
   "id": 1,
   "name": "proxy-cn",
+  "protocol": "socks5",
   "address": "127.0.0.1:1080",
   "username": "user",
   "password": "password",
@@ -151,7 +152,7 @@ X-Api-Key: tg-xxxxxxxx
 }
 ```
 
-`password` 为空时可省略。
+`protocol` 为 `socks5`（默认）或 `transparent`。`transparent` 表示通过 TCP 连接到指定 `address`，不进行 SOCKS 握手；目标地址应运行 TCP 转发服务，TLS SNI 与 HTTP Host 继续使用后端 `base_url` 的主机名。透明转发不支持用户名或密码。`password` 为空时可省略。
 
 ### 2.3 前端 `Backend`
 
@@ -170,7 +171,7 @@ X-Api-Key: tg-xxxxxxxx
 | `console_account` | string | 已归一化账户对象的 JSON 字符串；额度均为最终金额 |
 | `console_models` | string | 已归一化模型数组的 JSON 字符串；价格均为最终价格 |
 | `notes` | string | 备注 |
-| `proxy_id` | integer | SOCKS5 代理 ID；`0` 表示直连 |
+| `proxy_id` | integer | 代理服务器 ID；`0` 表示直连，可绑定 SOCKS5 或 TCP 透明转发服务器 |
 | `status` | string | `normal`、`abnormal` 或 `disabled` |
 | `weight` | integer | 调度权重，最小为 `1`，数值越大优先级越高 |
 | `created_at` | string | 创建时间 |
@@ -277,7 +278,7 @@ X-Api-Key: tg-xxxxxxxx
 
 ### 2.8 资源详情格式
 
-后端、客户端密钥和 SOCKS5 代理详情接口使用以下通用结构：
+后端、客户端密钥和代理服务器详情接口使用以下通用结构：
 
 ```json
 {
@@ -570,15 +571,15 @@ X-Api-Key: tg-xxxxxxxx
 
 `kind` 可能为 `backend`、`client_key`、`socks_proxy`、`usage_log` 或 `event`；`meta` 内容随资源类型变化。
 
-## 5. SOCKS5 代理管理
+## 5. 代理服务器管理
 
 ### 5.1 代理列表
 
-`GET /admin/api/socks-proxies`
+`GET /admin/api/proxies`
 
 请求：无请求体；支持通用分页参数。
 
-响应 `200`：通用分页结构，`items` 每项包含 `SocksProxy` 全部字段以及：
+响应 `200`：通用分页结构，`items` 每项包含 `ProxyServer` 全部字段以及：
 
 ```json
 {
@@ -594,7 +595,7 @@ X-Api-Key: tg-xxxxxxxx
 
 ### 5.2 代理详情
 
-`GET /admin/api/socks-proxies/{id}/detail`
+`GET /admin/api/proxies/{id}/detail`
 
 路径参数：`id` 必须为正整数。
 
@@ -602,7 +603,7 @@ X-Api-Key: tg-xxxxxxxx
 
 响应 `200`：资源详情格式。
 
-- `raw`：完整 `SocksProxy`，可能包含密码。
+- `raw`：完整 `ProxyServer`，可能包含密码。
 - `activity.usage` 与 `activity.usage_logs`：最近 10 条相关用量日志。
 - `activity.backends`：绑定该代理的后端列表。
 - `activity.events`：当前为空。
@@ -611,13 +612,14 @@ X-Api-Key: tg-xxxxxxxx
 
 ### 5.3 创建代理
 
-`POST /admin/api/socks-proxies`
+`POST /admin/api/proxies`
 
 请求体：
 
 ```json
 {
   "name": "proxy-cn",
+  "protocol": "socks5",
   "address": "127.0.0.1:1080",
   "username": "user",
   "password": "password",
@@ -627,27 +629,29 @@ X-Api-Key: tg-xxxxxxxx
 
 校验：
 
+- `protocol` 为 `socks5` 或 `transparent`，省略时默认为 `socks5`。
 - `address` 必填，必须为 `host:port`。
 - 主机不能为空，端口必须在 `1-65535`。
+- `transparent` 直接连接到配置的 TCP 转发服务，不进行代理协议握手；TLS SNI、证书校验及 HTTP Host 使用后端 `base_url` 的主机名，且不支持用户名或密码。
 - `name` 受数据库唯一约束。
 
-响应 `201`：创建后的 `SocksProxy`。
+响应 `201`：创建后的 `ProxyServer`。
 
 ### 5.4 更新代理
 
-`PUT /admin/api/socks-proxies/{id}`
+`PUT /admin/api/proxies/{id}`
 
 路径参数：`id` 必须为正整数。
 
-请求体与创建接口相同，所有字段都会覆盖原值；省略字段会使用 Go 零值，因此应发送完整对象。
+请求体与创建接口相同；名称、地址、认证和启用状态都会覆盖原值，省略 `protocol` 时保留原类型，因此应发送完整对象。
 
-响应 `200`：更新后的 `SocksProxy`。
+响应 `200`：更新后的 `ProxyServer`。
 
 错误：无效 ID 或参数返回 `400`，不存在返回 `404`。
 
 ### 5.5 删除代理
 
-`DELETE /admin/api/socks-proxies/{id}`
+`DELETE /admin/api/proxies/{id}`
 
 请求：无请求体。
 
@@ -660,6 +664,8 @@ X-Api-Key: tg-xxxxxxxx
 ```
 
 错误：无效 ID 返回 `400`，不存在返回 `404`，数据库删除失败返回 `500`。
+
+旧版 `/admin/api/socks-proxies` 路径仍作为兼容别名保留。
 
 ## 6. 后端管理
 
@@ -1623,7 +1629,7 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 }
 ```
 
-所有数组均去重并按字符串升序排列。`proxies` 来源于已配置的 SOCKS5 代理，不会自动加入用量日志中的 `direct`。
+所有数组均去重并按字符串升序排列。`proxies` 来源于已配置的代理服务器，不会自动加入用量日志中的 `direct`。
 
 ### 10.5 清理日志
 
@@ -1765,11 +1771,11 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 | `GET` | `/admin/api/dashboard/usage` | 仪表盘用量序列 |
 | `GET` | `/admin/api/dashboard/activity` | 最近活动 |
 | `GET` | `/admin/api/search` | 全局搜索 |
-| `GET` | `/admin/api/socks-proxies` | 代理列表 |
-| `GET` | `/admin/api/socks-proxies/{id}/detail` | 代理详情 |
-| `POST` | `/admin/api/socks-proxies` | 创建代理 |
-| `PUT` | `/admin/api/socks-proxies/{id}` | 更新代理 |
-| `DELETE` | `/admin/api/socks-proxies/{id}` | 删除代理 |
+| `GET` | `/admin/api/proxies` | 代理服务器列表 |
+| `GET` | `/admin/api/proxies/{id}/detail` | 代理服务器详情 |
+| `POST` | `/admin/api/proxies` | 创建代理服务器 |
+| `PUT` | `/admin/api/proxies/{id}` | 更新代理服务器 |
+| `DELETE` | `/admin/api/proxies/{id}` | 删除代理服务器 |
 | `GET` | `/admin/api/backends` | 后端列表 |
 | `GET` | `/admin/api/backends/export` | 导出后端 |
 | `GET` | `/admin/api/backends/{id}/detail` | 后端详情 |

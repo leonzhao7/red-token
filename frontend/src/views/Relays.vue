@@ -1104,7 +1104,7 @@ onUnmounted(() => {
               <label class="field-label">代理</label>
               <select v-model="form.proxyId" class="select">
                 <option value="">无代理</option>
-                <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.address }}</option>
+                <option v-for="p in proxyOptions.filter((proxy) => proxy.enabled)" :key="p.id" :value="p.id">{{ p.name }} · {{ p.protocol === 'transparent' ? 'TCP 透明' : 'SOCKS5' }} · {{ p.address }}</option>
               </select>
             </div>
           </div>

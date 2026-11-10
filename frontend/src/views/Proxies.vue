@@ -55,17 +55,25 @@ const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const isEditing = computed(() => editingId.value !== null)
 const saving = ref(false)
-const form = ref({ name: '', address: '', username: '', password: '', enabled: true })
+const form = ref({ name: '', protocol: 'socks5' as 'socks5' | 'transparent', address: '', username: '', password: '', enabled: true })
+
+function setProtocol(protocol: 'socks5' | 'transparent') {
+  form.value.protocol = protocol
+  if (protocol === 'transparent') {
+    form.value.username = ''
+    form.value.password = ''
+  }
+}
 
 function openCreate() {
   editingId.value = null
-  form.value = { name: '', address: '', username: '', password: '', enabled: true }
+  form.value = { name: '', protocol: 'socks5', address: '', username: '', password: '', enabled: true }
   showForm.value = true
 }
 
 function openEdit(p: SocksProxyListItem) {
   editingId.value = p.id
-  form.value = { name: p.name, address: p.address, username: p.username, password: '', enabled: p.enabled }
+  form.value = { name: p.name, protocol: p.protocol || 'socks5', address: p.address, username: p.username, password: '', enabled: p.enabled }
   showForm.value = true
 }
 
@@ -112,6 +120,7 @@ async function toggleEnabled(p: SocksProxyListItem) {
   try {
     const updated = await updateSocksProxy(p.id, {
       name: p.name,
+      protocol: p.protocol || 'socks5',
       address: p.address,
       username: p.username,
       password: p.password ?? '',
@@ -169,7 +178,7 @@ onMounted(loadData)
         </header>
 
         <div class="pc-badge-row">
-          <span class="tag pink">SOCKS5</span>
+          <span class="tag" :class="p.protocol === 'transparent' ? 'green' : 'pink'">{{ p.protocol === 'transparent' ? 'TCP 透明转发' : 'SOCKS5' }}</span>
           <span v-if="p.bound_backend_count" class="pill info">
             <Link2 :size="10" /> {{ p.bound_backend_count }} 个中转站
           </span>
@@ -181,12 +190,12 @@ onMounted(loadData)
             <span class="pc-row-label">地址</span>
             <span class="pc-row-val mono">{{ p.address }}</span>
           </div>
-          <div class="pc-row">
+          <div v-if="p.protocol !== 'transparent'" class="pc-row">
             <User :size="13" />
             <span class="pc-row-label">用户名</span>
             <span class="pc-row-val mono">{{ p.username || '—' }}</span>
           </div>
-          <div class="pc-row">
+          <div v-if="p.protocol !== 'transparent'" class="pc-row">
             <Lock :size="13" />
             <span class="pc-row-label">密码</span>
             <span class="pc-row-val mono">{{ p.password ? (revealed.has(p.id) ? p.password : '••••••••') : '—' }}</span>
@@ -214,7 +223,14 @@ onMounted(loadData)
 
     </section>
 
-    <Modal :open="showForm" :title="isEditing ? '修改代理' : '添加代理'" subtitle="SOCKS5 代理配置" :icon="Network" @close="showForm = false">
+    <Modal :open="showForm" :title="isEditing ? '修改代理' : '添加代理'" subtitle="选择请求的出口转发方式" :icon="Network" @close="showForm = false">
+      <div class="field">
+        <label class="field-label">转发方式</label>
+        <select :value="form.protocol" class="select" @change="setProtocol(($event.target as HTMLSelectElement).value as 'socks5' | 'transparent')">
+          <option value="socks5">SOCKS5</option>
+          <option value="transparent">TCP 透明转发</option>
+        </select>
+      </div>
       <div class="form-grid-2">
         <div class="field">
           <label class="field-label">名称 <span class="req">*</span></label>
@@ -222,10 +238,11 @@ onMounted(loadData)
         </div>
         <div class="field">
           <label class="field-label">地址 <span class="req">*</span></label>
-          <input v-model="form.address" class="input mono" placeholder="127.0.0.1:1080" />
+          <input v-model="form.address" class="input mono" :placeholder="form.protocol === 'transparent' ? '127.0.0.1:443' : '127.0.0.1:1080'" />
         </div>
       </div>
-      <div class="form-grid-2">
+      <div v-if="form.protocol === 'transparent'" class="field-hint proxy-hint">此 TCP 服务负责转发上游连接。TLS SNI 与 HTTP Host 保持中转站上游地址中的域名。</div>
+      <div v-else class="form-grid-2">
         <div class="field">
           <label class="field-label">用户名</label>
           <input v-model="form.username" class="input mono" placeholder="留空表示无认证" />
@@ -347,5 +364,6 @@ onMounted(loadData)
 .field:last-child { margin-bottom: 0; }
 .field-label { font-size: 12.5px; font-weight: 600; color: var(--text-soft); }
 .field-hint { font-size: 11.5px; color: var(--text-faint); }
+.proxy-hint { margin: -4px 0 14px; line-height: 1.5; }
 .req { color: var(--danger); }
 </style>
