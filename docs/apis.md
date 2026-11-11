@@ -1112,6 +1112,58 @@ Chrome 运行在宿主机、后端运行在 WSL 时，默认使用 `http://127.0
 
 未提供的查询字段在响应中为 `null`。统计中的 Token、延迟和流量字段只累计成功请求。
 
+### 6.14 检测模型工具调用
+
+`POST /admin/api/backends/{id}/tool-probe`
+
+需要管理员登录。每次向指定中转站发送一次非流式真实请求，使用所选 API Key、对应模型映射和中转站代理，会消耗上游额度。允许检测已停用的中转站；结果不改变健康状态和调度配置。
+
+检测会模拟 Agent 请求调用 `bash(command)`，提示模型在当前目录运行 `ls -la`。服务端只校验结构化调用及参数，不执行命令；返回的命令参数可由本地 Agent 接手执行。
+
+```json
+{
+  "model": "client-model",
+  "key_index": 0,
+  "endpoint": "chat",
+  "tool_choice": "auto"
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `model` | 必填，具体模型名；允许手工输入未配置到模型列表的名称，应用所选 Key 的 `model_mapping` |
+| `key_index` | `api_keys` 数组下标，从 `0` 开始；默认 `0` |
+| `endpoint` | `chat`、`responses` 或 `messages`；OpenAI 协议允许前两者，Anthropic 允许 `messages`，`both` 允许全部。默认 OpenAI / both 为 `chat`，Anthropic 为 `messages` |
+| `tool_choice` | `auto`（默认）按提示调用工具；`forced` 指定检测工具，同时验证上游是否接受指定工具的 `tool_choice` |
+
+有效检测请求返回 `200`，上游 HTTP 状态另见 `http_status`：
+
+```json
+{
+  "status": "supported",
+  "message": "支持工具调用：收到结构化工具调用，工具名称、调用 ID 和参数校验通过",
+  "model": "client-model",
+  "upstream_model": "actual-upstream-model",
+  "key_index": 0,
+  "endpoint": "chat",
+  "tool_choice": "auto",
+  "http_status": 200,
+  "duration_ms": 1250,
+  "checked_at": "2026-11-11T08:00:00Z",
+  "tool_name": "bash",
+  "arguments": { "command": "ls -la" },
+  "response_body": "...中转站原始响应..."
+}
+```
+
+- `supported`：收到有效的 `tool_calls`、`function_call` 或 `tool_use`，工具名称、调用 ID 和 JSON 参数均通过校验。普通文本中描述调用不会通过。
+- `unsupported`：本次未通过检测，正常完成的响应未提供有效工具调用。自动模式下模型可能未选择工具，因此不能据此断定模型在所有模式或接口下都不支持；可切换模式或接口重试。
+- `inconclusive`：网络/代理错误、超时、上游非 2xx、错误 JSON、响应格式异常、输出未完成或拒绝请求，本次无法判断。
+
+`response_body` 最多展示 16,000 个字符，响应读取上限为 1 MiB。连接和请求超时使用系统配置；所选 API Key 在错误消息和响应预览中做脱敏。检测仅验证模型生成工具调用，不执行工具或验证工具结果回传。结果在当前检测窗口展示，不持久化。
+
+错误：无效 ID、参数、协议组合、基础地址或未配置可用 API Key 返回 `400`；中转站不存在返回 `404`。
+
 ## 7. HTTP 工作流管理
 
 工作流配置使用 [`http-workflow/v1`](http_workflow.md) 至 `http-workflow/v5` 语义。需要基于当前响应状态码执行条件跳转时使用 v2 或更高版本；需要对数组 alias 逐项串行发送请求时使用 v3 或更高版本；需要工作流全局请求 Header 时使用 v4；需要为单个步骤单独配置请求 Header（覆盖同名全局 Header）时使用 v5。创建和更新接口的请求体就是完整工作流定义，不需要再包一层字符串字段。数据库只保存通过语法、表达式编译以及固定签到 `output` 顶层字段校验后的规范化配置。

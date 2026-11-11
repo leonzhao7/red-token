@@ -219,6 +219,7 @@ func (a *App) routes() {
 	a.adminMux.Handle("POST /admin/api/backends/{id}/console/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleSync))
 	a.adminMux.Handle("POST /admin/api/backends/{id}/console/cookie/sync", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCookieSync))
 	a.adminMux.Handle("POST /admin/api/backends/{id}/console/checkin", http.HandlerFunc(a.backendHandler.HandleBackendConsoleCheckin))
+	a.adminMux.Handle("POST /admin/api/backends/{id}/tool-probe", http.HandlerFunc(a.backendHandler.HandleBackendToolProbe))
 	a.adminMux.Handle("POST /admin/api/backends/import", http.HandlerFunc(a.backendHandler.HandleImportBackends))
 	a.adminMux.Handle("PUT /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleUpdateBackend))
 	a.adminMux.Handle("DELETE /admin/api/backends/{id}", http.HandlerFunc(a.backendHandler.HandleDeleteBackend))

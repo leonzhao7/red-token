@@ -118,6 +118,37 @@ export interface BackendSyncResponse {
   debug_logs?: BackendWorkflowDebugLog[]
 }
 
+export type ToolProbeEndpoint = 'chat' | 'responses' | 'messages'
+export type ToolProbeChoice = 'auto' | 'forced'
+
+export interface BackendToolProbeResult {
+  status: 'supported' | 'unsupported' | 'inconclusive'
+  message: string
+  model: string
+  upstream_model: string
+  key_index: number
+  endpoint: ToolProbeEndpoint
+  tool_choice: ToolProbeChoice
+  http_status: number
+  duration_ms: number
+  checked_at: string
+  tool_name?: string
+  arguments?: Record<string, unknown>
+  response_body?: string
+}
+
+export function probeBackendToolCalling(
+  id: number,
+  payload: { model: string; key_index: number; endpoint: ToolProbeEndpoint; tool_choice: ToolProbeChoice },
+  signal?: AbortSignal
+) {
+  return request<BackendToolProbeResult>(`/admin/api/backends/${id}/tool-probe`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    signal
+  })
+}
+
 export type BackendConsoleStreamEvent =
   | { type: 'request'; request: BackendConsoleRequestLog }
   | { type: 'workflow_log'; log: BackendWorkflowDebugLog }

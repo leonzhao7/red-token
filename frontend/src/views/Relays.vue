@@ -26,6 +26,8 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Wrench,
+  CheckCircle2,
   X
 } from 'lucide-vue-next'
 import Modal from '../components/Modal.vue'
@@ -37,6 +39,7 @@ import {
   deleteBackend,
   listBackends,
   listSocksProxies,
+  probeBackendToolCalling,
   recordBackendSyncSummary,
   syncBackendCookies,
   syncBackendStream,
@@ -44,6 +47,9 @@ import {
   type BackendApiKey,
   type BackendResponse,
   type BackendSyncResponse,
+  type BackendToolProbeResult,
+  type ToolProbeEndpoint,
+  type ToolProbeChoice,
   type SocksProxyResponse
 } from '../api/backends'
 import { listWorkflows, type WorkflowRecord } from '../api/workflows'
@@ -455,6 +461,174 @@ async function copyModelName(name: string) {
   }
 }
 
+const probeRelay = ref<RelayView | null>(null)
+const probeForm = ref<{ keyIndex: number; model: string; endpoint: ToolProbeEndpoint; toolChoice: ToolProbeChoice }>({
+  keyIndex: 0, model: '', endpoint: 'chat', toolChoice: 'auto'
+})
+const probeBusy = ref(false)
+const probeError = ref('')
+const probeResult = ref<BackendToolProbeResult | null>(null)
+const probeModelMenuOpen = ref(false)
+const probeModelActiveIndex = ref(-1)
+const probeModelFiltering = ref(false)
+let probeController: AbortController | undefined
+
+const probeEndpoints = computed(() => {
+  const options: Array<{ value: ToolProbeEndpoint; label: string }> = []
+  if (probeRelay.value?.protocol !== 'anthropic') {
+    options.push({ value: 'chat', label: 'Chat Completions' }, { value: 'responses', label: 'Responses' })
+  }
+  if (probeRelay.value?.protocol !== 'openai') options.push({ value: 'messages', label: 'Anthropic Messages' })
+  return options
+})
+
+function probeModelsForKey(key?: BackendApiKey) {
+  return [...new Set([...(key?.models || []), ...Object.keys(key?.model_mapping || {})])]
+    .filter(model => model.trim() && !/[*?]/.test(model))
+}
+
+const probeModelOptions = computed(() => {
+  const key = probeRelay.value?.raw.api_keys[probeForm.value.keyIndex]
+  return probeModelsForKey(key)
+})
+
+const filteredProbeModelOptions = computed(() => {
+  const query = probeModelFiltering.value ? probeForm.value.model.trim().toLowerCase() : ''
+  return probeModelOptions.value.filter(model => !query || model.toLowerCase().includes(query))
+})
+
+const probeUpstreamModel = computed(() => {
+  const model = probeForm.value.model.trim()
+  return probeRelay.value?.raw.api_keys[probeForm.value.keyIndex]?.model_mapping[model] || model
+})
+
+const probeStatusLabel = computed(() => {
+  if (probeResult.value?.status === 'supported') return '支持工具调用'
+  if (probeResult.value?.status === 'unsupported') return '未通过检测'
+  return '无法判断'
+})
+
+function openToolProbe(relay: RelayView, model = '') {
+  closeToolProbe()
+  probeRelay.value = relay
+  let keyIndex = model ? relay.raw.api_keys.findIndex(key => key.models.includes(model) || model in key.model_mapping) : 0
+  if (keyIndex < 0) keyIndex = 0
+  const configuredModels = probeModelsForKey(relay.raw.api_keys[keyIndex])
+  const selectedModel = model && configuredModels.includes(model) ? model : configuredModels[0] || ''
+  probeForm.value = {
+    keyIndex, model: selectedModel, endpoint: relay.protocol === 'anthropic' ? 'messages' : 'chat', toolChoice: 'auto'
+  }
+}
+
+function closeToolProbe() {
+  probeController?.abort()
+  probeController = undefined
+  probeBusy.value = false
+  probeRelay.value = null
+  probeResult.value = null
+  probeError.value = ''
+  probeModelMenuOpen.value = false
+  probeModelActiveIndex.value = -1
+  probeModelFiltering.value = false
+}
+
+function openProbeModelMenu() {
+  probeModelMenuOpen.value = true
+  probeModelFiltering.value = false
+  probeModelActiveIndex.value = filteredProbeModelOptions.value.findIndex(model => model === probeForm.value.model.trim())
+}
+
+function closeProbeModelMenu() {
+  probeModelMenuOpen.value = false
+  probeModelActiveIndex.value = -1
+  probeModelFiltering.value = false
+}
+
+function toggleProbeModelMenu() {
+  if (probeModelMenuOpen.value) closeProbeModelMenu()
+  else openProbeModelMenu()
+}
+
+function selectProbeModel(model: string) {
+  probeForm.value.model = model
+  closeProbeModelMenu()
+}
+
+function handleProbeModelInput() {
+  probeModelMenuOpen.value = true
+  probeModelActiveIndex.value = -1
+  probeModelFiltering.value = true
+}
+
+function handleProbeModelKeydown(event: KeyboardEvent) {
+  const optionsCount = filteredProbeModelOptions.value.length
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    if (!probeModelMenuOpen.value) {
+      openProbeModelMenu()
+      if (optionsCount) probeModelActiveIndex.value = 0
+    } else if (optionsCount) {
+      probeModelActiveIndex.value = (probeModelActiveIndex.value + 1) % optionsCount
+    }
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (!probeModelMenuOpen.value) {
+      openProbeModelMenu()
+      if (optionsCount) probeModelActiveIndex.value = optionsCount - 1
+    } else if (optionsCount) {
+      probeModelActiveIndex.value = probeModelActiveIndex.value <= 0
+        ? optionsCount - 1
+        : probeModelActiveIndex.value - 1
+    }
+  } else if (event.key === 'Enter' && probeModelMenuOpen.value && probeModelActiveIndex.value >= 0) {
+    event.preventDefault()
+    const model = filteredProbeModelOptions.value[probeModelActiveIndex.value]
+    if (model) selectProbeModel(model)
+  } else if (event.key === 'Escape' && probeModelMenuOpen.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    closeProbeModelMenu()
+  }
+}
+
+function updateProbeKeyModel() {
+  const key = probeRelay.value?.raw.api_keys[probeForm.value.keyIndex]
+  const models = probeModelsForKey(key)
+  if (models.length && !models.includes(probeForm.value.model)) probeForm.value.model = models[0]
+}
+
+watch(probeForm, () => {
+  probeResult.value = null
+  probeError.value = ''
+}, { deep: true })
+
+async function runToolProbe() {
+  const relay = probeRelay.value
+  const model = probeForm.value.model.trim()
+  if (!relay || !model || probeBusy.value) return
+  probeBusy.value = true
+  probeError.value = ''
+  probeResult.value = null
+  const controller = new AbortController()
+  probeController = controller
+  try {
+    const result = await probeBackendToolCalling(Number(relay.id), {
+      model,
+      key_index: probeForm.value.keyIndex,
+      endpoint: probeForm.value.endpoint,
+      tool_choice: probeForm.value.toolChoice
+    }, controller.signal)
+    if (!controller.signal.aborted) probeResult.value = result
+  } catch (error) {
+    if (!controller.signal.aborted) probeError.value = errorMessage(error)
+  } finally {
+    if (probeController === controller) {
+      probeBusy.value = false
+      probeController = undefined
+    }
+  }
+}
+
 async function toggleStatus(r: RelayView) {
   const next = r.status === 'active' ? 'disabled' : 'normal'
   setBusy(r.id, true)
@@ -847,6 +1021,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer)
+  closeToolProbe()
 })
 </script>
 
@@ -959,6 +1134,7 @@ onUnmounted(() => {
                 <Cookie v-else :size="14" />
               </button>
               <button class="icon-btn op-edit" title="编辑" @click.stop="openEditRelay(r)"><Pencil :size="14" /></button>
+              <button class="icon-btn" :disabled="!r.keys.length" title="检测模型工具调用" aria-label="检测模型工具调用" @click.stop="openToolProbe(r)"><Wrench :size="14" /></button>
               <button class="icon-btn op-del" title="删除" @click.stop="askRemove(r)"><Trash2 :size="14" /></button>
               <ChevronDown :size="16" class="rl-chev" :class="{ on: expandedId === r.id }" />
             </div>
@@ -1050,6 +1226,7 @@ onUnmounted(() => {
                         <span>in {{ fmtPrice(m.priceIn, r.quotaUnit) }}</span>
                         <span>out {{ fmtPrice(m.priceOut, r.quotaUnit) }}</span>
                       </span>
+                      <button class="icon-btn" :disabled="!r.keys.length" :title="`检测 ${m.name} 工具调用`" :aria-label="`检测 ${m.name} 工具调用`" @click="openToolProbe(r, m.name)"><Wrench :size="12" /></button>
                     </div>
                   </div>
                 </div>
@@ -1074,6 +1251,99 @@ onUnmounted(() => {
         </div>
       </div>
     </section>
+
+    <Modal :open="!!probeRelay" title="检测模型工具调用" :subtitle="probeRelay?.name" :icon="Wrench" width="680px" @close="closeToolProbe">
+      <form id="tool-probe-form" class="tool-probe-form" @submit.prevent="runToolProbe">
+        <fieldset :disabled="probeBusy" class="tool-probe-fields">
+          <div class="field">
+            <label class="field-label" for="probe-key">API Key</label>
+            <select id="probe-key" v-model="probeForm.keyIndex" class="select" @change="updateProbeKeyModel">
+              <option v-for="(key, index) in probeRelay?.raw.api_keys" :key="index" :value="index">{{ key.name || `API Key ${index + 1}` }} · {{ key.group || 'default' }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="probe-model">模型</label>
+            <div class="tool-probe-model">
+              <input
+                id="probe-model"
+                v-model="probeForm.model"
+                class="input mono"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-haspopup="listbox"
+                :aria-expanded="probeModelMenuOpen"
+                aria-controls="probe-model-options"
+                :aria-activedescendant="probeModelMenuOpen && probeModelActiveIndex >= 0 ? `probe-model-option-${probeModelActiveIndex}` : undefined"
+                placeholder="输入或选择具体模型名称"
+                required
+                @focus="openProbeModelMenu"
+                @blur="closeProbeModelMenu"
+                @input="handleProbeModelInput"
+                @keydown="handleProbeModelKeydown"
+              />
+              <button
+                type="button"
+                class="tool-probe-model-toggle"
+                :aria-label="probeModelMenuOpen ? '收起模型选项' : '展开模型选项'"
+                :aria-expanded="probeModelMenuOpen"
+                @mousedown.prevent
+                @click="toggleProbeModelMenu"
+              ><ChevronDown :size="15" :class="{ on: probeModelMenuOpen }" /></button>
+              <div v-if="probeModelMenuOpen" id="probe-model-options" class="tool-probe-model-menu" role="listbox" aria-labelledby="probe-model">
+                <button
+                  v-for="(model, index) in filteredProbeModelOptions"
+                  :id="`probe-model-option-${index}`"
+                  :key="model"
+                  type="button"
+                  class="tool-probe-model-option mono"
+                  :class="{ active: index === probeModelActiveIndex }"
+                  role="option"
+                  :aria-selected="index === probeModelActiveIndex"
+                  @mouseenter="probeModelActiveIndex = index"
+                  @mousedown.prevent
+                  @click="selectProbeModel(model)"
+                >{{ model }}</button>
+                <div v-if="!filteredProbeModelOptions.length" class="tool-probe-model-empty">无匹配模型</div>
+              </div>
+            </div>
+            <span v-if="probeUpstreamModel && probeUpstreamModel !== probeForm.model.trim()" class="field-hint">映射到：{{ probeUpstreamModel }}</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="probe-endpoint">接口</label>
+            <select id="probe-endpoint" v-model="probeForm.endpoint" class="select">
+              <option v-for="endpoint in probeEndpoints" :key="endpoint.value" :value="endpoint.value">{{ endpoint.label }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="probe-choice">调用模式</label>
+            <select id="probe-choice" v-model="probeForm.toolChoice" class="select">
+              <option value="auto">自动选择（按提示调用工具）</option>
+              <option value="forced">指定工具（同时检测 tool_choice）</option>
+            </select>
+          </div>
+        </fieldset>
+        <p class="field-hint">每次检测向该中转站发送一次真实请求，使用已配置的代理和模型映射，会消耗少量额度。检测验证模型生成工具调用的能力。</p>
+        <div v-if="probeBusy" class="tool-probe-progress" role="status"><LoaderCircle :size="16" class="spin" /> 正在等待模型返回工具调用…</div>
+        <div v-if="probeError" class="tool-probe-error" role="alert">{{ probeError }}</div>
+        <div v-if="probeResult" class="tool-probe-result" :class="probeResult.status" role="status">
+          <strong class="tool-probe-status"><CheckCircle2 v-if="probeResult.status === 'supported'" :size="18" /><AlertTriangle v-else :size="18" />{{ probeStatusLabel }}</strong>
+          <p>{{ probeResult.message }}</p>
+          <div class="tool-probe-meta mono">{{ probeResult.upstream_model }} · {{ probeResult.endpoint }} · {{ probeResult.tool_choice === 'forced' ? '指定工具' : '自动选择' }} · HTTP {{ probeResult.http_status || '—' }} · {{ probeResult.duration_ms }} ms</div>
+          <div class="field-hint">{{ formatDate(probeResult.checked_at) }}</div>
+          <pre v-if="probeResult.arguments" class="tool-probe-body mono">{{ JSON.stringify({ name: probeResult.tool_name, arguments: probeResult.arguments }, null, 2) }}</pre>
+          <details v-if="probeResult.response_body" class="tool-probe-response">
+            <summary>查看中转站响应</summary>
+            <pre class="tool-probe-body mono">{{ probeResult.response_body }}</pre>
+          </details>
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-ghost" @click="closeToolProbe">{{ probeBusy ? '取消检测' : '关闭' }}</button>
+        <button class="btn btn-primary" type="submit" form="tool-probe-form" :disabled="probeBusy || !probeForm.model.trim() || !probeRelay?.keys.length">
+          <LoaderCircle v-if="probeBusy" :size="15" class="spin" /><Wrench v-else :size="15" />{{ probeBusy ? '检测中…' : '开始检测' }}
+        </button>
+      </template>
+    </Modal>
 
     <!-- add / edit modal -->
     <Modal :open="showForm" :title="isEditing ? '编辑中转站' : '添加中转站'" :subtitle="isEditing ? '修改后端账户配置，保存后立即生效' : '接入后端账户并配置 API Key 与签到工作流'" :icon="Server" width="760px" @close="showForm = false">
@@ -1304,6 +1574,31 @@ onUnmounted(() => {
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--space-4); }
 
+.tool-probe-form { display: flex; flex-direction: column; gap: 16px; }
+.tool-probe-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.tool-probe-fields .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tool-probe-model { position: relative; }
+.tool-probe-model > .input { padding-right: 38px; }
+.tool-probe-model-toggle { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.tool-probe-model-toggle:hover { background: var(--surface-2); color: var(--text); }
+.tool-probe-model-toggle svg { transition: transform 0.18s ease; }
+.tool-probe-model-toggle svg.on { transform: rotate(180deg); }
+.tool-probe-model-menu { position: absolute; z-index: 20; top: calc(100% + 5px); left: 0; right: 0; max-height: 240px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text); box-shadow: var(--shadow-md); }
+.tool-probe-model-option { display: block; width: 100%; padding: 8px 10px; overflow: hidden; border: 0; border-radius: 6px; background: transparent; color: var(--text-soft); font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.tool-probe-model-option:hover, .tool-probe-model-option.active { background: var(--surface-2); color: var(--text); }
+.tool-probe-model-empty { padding: 9px 10px; color: var(--text-faint); font-size: 12px; }
+.tool-probe-progress, .tool-probe-status { display: flex; align-items: center; gap: 8px; }
+.tool-probe-progress { color: var(--text-muted); font-size: 13px; }
+.tool-probe-error { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.tool-probe-result { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); font-size: 13px; overflow-wrap: anywhere; }
+.tool-probe-result.supported .tool-probe-status { color: var(--success); }
+.tool-probe-result.unsupported .tool-probe-status { color: var(--danger); }
+.tool-probe-result.inconclusive .tool-probe-status { color: var(--warning); }
+.tool-probe-meta { color: var(--text-muted); font-size: 11px; }
+.tool-probe-response summary { cursor: pointer; color: var(--text-muted); }
+.tool-probe-body { padding: 12px; margin-top: 8px; background: var(--surface-2); border-radius: var(--radius-md); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; font-size: 11px; user-select: text; }
+@media (max-width: 560px) { .tool-probe-fields { grid-template-columns: 1fr; } }
+
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-danger:hover { background: color-mix(in srgb, var(--danger) 82%, #000); }
 .btn-danger:active { transform: translateY(0) scale(0.98); }
@@ -1396,7 +1691,7 @@ onUnmounted(() => {
 .relay-list { display: flex; flex-direction: column; overflow: hidden; padding: 0; position: relative; }
 .rl-head {
   display: grid;
-  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 170px;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 198px;
   gap: 14px;
   align-items: center;
   padding: 12px 18px;
@@ -1418,7 +1713,7 @@ onUnmounted(() => {
 
 .rl-main {
   display: grid;
-  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 170px;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.15fr) minmax(240px, 1.9fr) 96px 48px 198px;
   gap: 14px;
   align-items: center;
   padding: 13px 18px;
@@ -1529,7 +1824,7 @@ onUnmounted(() => {
 .rm-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; padding-right: 2px; }
 .rm-item {
   display: grid;
-  grid-template-columns: 2fr 2fr 1fr;
+  grid-template-columns: 2fr 2fr 1fr auto;
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
