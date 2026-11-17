@@ -70,6 +70,9 @@ func ConsoleHeaders(backend domain.Backend) map[string]string {
 			headers["Cookie"] = cookie
 		}
 	}
+	if cookie, ok := headers["Cookie"]; ok {
+		headers["Cookie"] = normalizeConsoleCookieValue(cookie)
+	}
 	return headers
 }
 
@@ -86,7 +89,7 @@ func ConsoleHeadersWithCookieValue(headers map[string]string, cookieValue string
 		}
 	}
 	if cookieValue = strings.TrimSpace(cookieValue); cookieValue != "" {
-		out["Cookie"] = cookieValue
+		out["Cookie"] = normalizeConsoleCookieValue(cookieValue)
 	}
 	return out
 }
@@ -118,7 +121,7 @@ func ConsoleHeadersWithResponseCookies(headers map[string]string, cookies []*htt
 	cookieValue := ""
 	for key, value := range headers {
 		if strings.EqualFold(key, "Cookie") {
-			cookieValue = value
+			cookieValue = normalizeConsoleCookieValue(value)
 			continue
 		}
 		out[http.CanonicalHeaderKey(strings.TrimSpace(key))] = strings.TrimSpace(value)
@@ -154,7 +157,9 @@ func mergeCookieValue(raw string, cookie *http.Cookie) string {
 		}
 		name, _, ok := strings.Cut(part, "=")
 		if ok && strings.TrimSpace(name) == cookie.Name {
-			out = append(out, replacement)
+			if !replaced {
+				out = append(out, replacement)
+			}
 			replaced = true
 			continue
 		}
@@ -162,6 +167,29 @@ func mergeCookieValue(raw string, cookie *http.Cookie) string {
 	}
 	if !replaced {
 		out = append(out, replacement)
+	}
+	return strings.Join(out, "; ")
+}
+
+// The persisted Cookie header has no domain/path metadata. Keep one value per
+// name, using the last value just as seeding the workflow's cookie jar does.
+func normalizeConsoleCookieValue(raw string) string {
+	out := make([]string, 0)
+	positions := make(map[string]int)
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if name, _, ok := strings.Cut(part, "="); ok {
+			name = strings.TrimSpace(name)
+			if index, exists := positions[name]; exists {
+				out[index] = part
+				continue
+			}
+			positions[name] = len(out)
+		}
+		out = append(out, part)
 	}
 	return strings.Join(out, "; ")
 }

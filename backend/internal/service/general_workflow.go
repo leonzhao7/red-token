@@ -316,6 +316,14 @@ func (jar *generalWorkflowCookieJar) SetCookies(target *url.URL, cookies []*http
 		if cookie == nil {
 			continue
 		}
+		// Only persist cookies whose domain the jar accepts for this origin.
+		// Probe without expiry, Secure or path restrictions so valid deletions
+		// and cookies for other paths are still recorded.
+		scope, _ := cookiejar.New(nil)
+		scope.SetCookies(target, []*http.Cookie{{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: "/"}})
+		if len(scope.Cookies(target)) == 0 {
+			continue
+		}
 		copy := *cookie
 		jar.updates = append(jar.updates, &copy)
 	}

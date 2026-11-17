@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -270,6 +271,33 @@ func TestGeneralWorkflowTurnstileOnlyUsesResponseBodyMarker(t *testing.T) {
 				t.Fatalf("ordinary output=%#v", result.Output)
 			}
 		})
+	}
+}
+
+func TestGeneralWorkflowCookieJarOnlyRecordsAcceptedDomains(t *testing.T) {
+	target, err := url.Parse("https://console.example/api/checkin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar, err := newGeneralWorkflowCookieJar()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := []*http.Cookie{
+		{Name: "session", Value: "current"},
+		{Name: "cf_clearance", Value: "fresh", Domain: "console.example", Secure: true},
+		{Name: "parent", Value: "yes", Domain: ".example"},
+		{Name: "removed", MaxAge: -1, Path: "/other"},
+		{Name: "expired", Expires: time.Now().Add(-time.Hour)},
+		{Name: "other_path", Value: "yes", Path: "/other"},
+		{Name: "unrelated", Value: "no", Domain: "other.example"},
+		{Name: "suffix", Value: "no", Domain: "evilconsole.example"},
+		{Name: "invalid", Value: "no", Domain: "console.example."},
+		{Name: "unrelated_deletion", MaxAge: -1, Domain: "other.example"},
+	}
+	jar.SetCookies(target, cookies)
+	if got, want := jar.responseCookies(), cookies[:6]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("recorded cookies=%#v want %#v", got, want)
 	}
 }
 

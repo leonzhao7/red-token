@@ -465,6 +465,87 @@ func TestWorkflowHandlerPersistsResponseCookiesInBackendHeaders(t *testing.T) {
 	}
 }
 
+func TestWorkflowHandlerRepeatedTurnstileDoesNotGrowCookieHeader(t *testing.T) {
+	ctx := context.Background()
+	st := openWorkflowHandlerStore(t)
+	definition := strings.Replace(workflowTestDefinition("repeated-turnstile"),
+		`"id":"snapshot",`, `"id":"snapshot","turnstile":"enable","turnstilekey":"sitekey",`, 1)
+	if _, err := st.CreateHTTPWorkflow(ctx, "repeated-turnstile", "Repeated Turnstile", json.RawMessage(definition)); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := st.CreateBackend(ctx, domain.Backend{
+		Name:       "turnstile-backend",
+		ConsoleURL: "https://console.example",
+		ConsoleHeaders: map[string]string{
+			"Cookie":    "session=old; cf_clearance=stale; retained=yes; session=console; cf_clearance=seed",
+			"X-Console": "configured",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWorkflowHandler(st)
+	wantClearance := "seed"
+	handler.SetHTTPClient(&http.Client{Transport: workflowRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if len(request.Cookies()) != 3 {
+			t.Fatalf("outgoing Cookie header grew: %q", request.Header.Get("Cookie"))
+		}
+		for name, want := range map[string]string{"session": "console", "cf_clearance": wantClearance, "retained": "yes"} {
+			cookie, err := request.Cookie(name)
+			if err != nil || cookie.Value != want {
+				t.Fatalf("request cookie %s=%v err=%v want %q", name, cookie, err, want)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"Turnstile token is empty"}`)),
+			Request:    request,
+		}, nil
+	})})
+	solverCalls := 0
+	handler.SetTurnstileSolver(func(_ context.Context, _ service.GeneralWorkflowTurnstileRequest) (service.GeneralWorkflowTurnstileResult, error) {
+		solverCalls++
+		wantClearance = fmt.Sprintf("clearance-%d", solverCalls)
+		status := http.StatusOK
+		if solverCalls == 4 {
+			status = http.StatusInternalServerError
+		}
+		return service.GeneralWorkflowTurnstileResult{
+			Token: "one-time-token",
+			Cookies: []*http.Cookie{
+				{Name: "cf_clearance", Value: wantClearance, Domain: "console.example", Path: "/", Secure: true},
+				{Name: fmt.Sprintf("challenge_%d", solverCalls), Value: "unrelated-browser-cookie", Domain: "challenges.example", Path: "/"},
+			},
+			Response: &service.GeneralWorkflowTurnstileResponse{
+				Status:  status,
+				Headers: http.Header{"Content-Type": []string{"application/json"}},
+				Body:    []byte(`{"user_id":"user-1","username":"alice","quota":1,"quota_unit":"USD","used_quota":0,"today_reward":1,"api_keys":[],"models":[]}`),
+			},
+		}, nil
+	})
+	for run := 1; run <= 4; run++ {
+		_, err := handler.runCheckinWorkflow(ctx, backend, "repeated-turnstile", nil, nil, nil)
+		if run < 4 && err != nil || run == 4 && err == nil {
+			t.Fatalf("run %d: unexpected error %v", run, err)
+		}
+		backend, err = st.GetBackend(ctx, backend.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "session=console; cf_clearance=" + wantClearance + "; retained=yes"
+		if got := backend.ConsoleHeaders["Cookie"]; got != want {
+			t.Fatalf("run %d: stored Cookie=%q want %q", run, got, want)
+		}
+		if backend.ConsoleHeaders["X-Console"] != "configured" || backend.ConsoleCookie != "" {
+			t.Fatalf("run %d: unexpected stored headers: %#v", run, backend.ConsoleHeaders)
+		}
+	}
+	if solverCalls != 4 {
+		t.Fatalf("solver calls=%d want 4", solverCalls)
+	}
+}
+
 func TestWorkflowHandlerInjectsBackendRuntime(t *testing.T) {
 	client := &http.Client{Transport: workflowRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)

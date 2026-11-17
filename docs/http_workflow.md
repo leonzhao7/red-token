@@ -419,6 +419,8 @@ HTTP 工作流是一个声明式的自动化系统，用于通过一系列 HTTP 
 
 只有步骤配置了 `"turnstile": "enable"`、`turnstilekey`，且该步骤响应文本包含 `turnstile` 时，服务端才会使用系统设置中的 `cdp_address` 连接 Chrome，通过 CDP 在控制台页面中完成 Turnstile 验证，再将 token 同时加入该步骤原请求的 URL 参数和 JSON body 重试。CDP 地址不可用、页面验证失败或无法获取 token 时，签到直接失败。
 
+验证后只读取适用于该步骤请求 URL 的浏览器 Cookie，保存时校验所属域；同名 Cookie 更新已有值并清理重复项，避免连续签到导致 Cookie 请求头不断增大。
+
 ### 控制流
 
 - 步骤按顺序执行，除非发生跳转

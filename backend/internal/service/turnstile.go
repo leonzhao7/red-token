@@ -77,7 +77,7 @@ func SolveTurnstile(ctx context.Context, endpoint string, request GeneralWorkflo
 	if err != nil {
 		return GeneralWorkflowTurnstileResult{}, err
 	}
-	cookies, err := client.cookies(ctx)
+	cookies, err := client.cookies(ctx, request.URL)
 	if err != nil {
 		return GeneralWorkflowTurnstileResult{}, fmt.Errorf("read browser cookies: %w", err)
 	}
@@ -489,8 +489,10 @@ func (client *turnstileCDPClient) click(ctx context.Context, x, y float64) error
 	return nil
 }
 
-func (client *turnstileCDPClient) cookies(ctx context.Context) ([]*http.Cookie, error) {
-	result, err := client.command(ctx, "Network.getAllCookies", nil)
+func (client *turnstileCDPClient) cookies(ctx context.Context, targetURL string) ([]*http.Cookie, error) {
+	// Scope the browser snapshot to the failed request. getAllCookies also
+	// includes other relays and challenge providers in the shared browser.
+	result, err := client.command(ctx, "Network.getCookies", map[string]any{"urls": []string{targetURL}})
 	if err != nil {
 		return nil, err
 	}

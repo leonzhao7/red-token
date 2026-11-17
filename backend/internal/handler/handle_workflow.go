@@ -346,6 +346,8 @@ func (h *WorkflowHandler) runCheckinWorkflow(ctx context.Context, backend domain
 		}
 		backend.ConsoleHeaders = currentHeaders
 	}
+	backend.ConsoleHeaders = service.ConsoleHeaders(backend)
+	backend.ConsoleCookie = ""
 	outputJSON, err := json.Marshal(result.Output)
 	if err != nil {
 		return checkinWorkflowOutcome{Requests: recorder.Requests, DebugLogs: debugLogs.Logs}, &workflowRunError{status: http.StatusInternalServerError, message: err.Error()}
